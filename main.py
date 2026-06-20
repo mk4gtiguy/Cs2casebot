@@ -1,0 +1,3966 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import os
+import asyncpg
+import random
+import asyncio
+import logging
+from datetime import datetime, timedelta
+from decimal import Decimal
+from dotenv import load_dotenv
+from typing import Optional
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+if os.path.exists('.env'):
+    load_dotenv()
+
+TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+# ============================================
+# CHANNEL CONFIGURATION
+# ============================================
+
+SUPPORT_CHANNEL_ID = 1516670656266113085
+BOT_CHANNEL_ID = SUPPORT_CHANNEL_ID
+
+# ============================================
+# OTHER CONFIG
+# ============================================
+
+KO_FI_URL = "https://ko-fi.com/mk4gtiguy"
+DASHBOARD_URL = "https://cs2casebot.xyz/"
+DISCORD_INVITE_URL = "https://discord.gg/mU33pc7TDE"
+
+bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
+db_pool = None
+
+jackpot_pot = 0
+jackpot_entries = []
+jackpot_lock = asyncio.Lock()
+
+# ============================================
+# CHANNEL PERMISSION CHECK
+# ============================================
+
+async def is_bot_channel(interaction: discord.Interaction):
+    if not interaction.guild:
+        return True
+    try:
+        async with db_pool.acquire() as conn:
+            setting = await conn.fetchrow("""
+                SELECT bot_channel_id FROM guild_settings WHERE guild_id = $1
+            """, interaction.guild_id)
+        if not setting or setting['bot_channel_id'] is None:
+            return True
+        if interaction.channel_id != setting['bot_channel_id']:
+            await interaction.response.send_message(
+                f"❌ Please use bot commands in <#{setting['bot_channel_id']}>!",
+                ephemeral=True
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"is_bot_channel error: {e}")
+        return True
+
+# ============================================
+# EMOJIS
+# ============================================
+
+CASE_EMOJIS = {
+    "cs:go_weapon_case": "📦",
+    "esports_2013_case": "🎯",
+    "operation_phoenix_weapon_case": "⚡",
+    "huntsman_weapon_case": "🔥",
+    "operation_breakout_weapon_case": "💎",
+    "esports_2014_summer_case": "🌟",
+    "operation_vanguard_weapon_case": "🎨",
+    "chroma_case": "🌈",
+    "chroma_2_case": "💥",
+    "falchion_case": "🌅",
+    "shadow_case": "⚠️",
+    "revolver_case": "🤲",
+    "operation_wildfire_case": "🎪",
+    "chroma_3_case": "🏹",
+    "gamma_case": "🗡️",
+    "gamma_2_case": "🛡️",
+    "glove_case": "👑",
+    "spectrum_case": "🎰",
+    "operation_hydra_case": "🎲",
+    "spectrum_2_case": "🎳",
+    "clutch_case": "🎭",
+    "horizon_case": "🎪",
+    "danger_zone_case": "🎯",
+    "prisma_case": "🎱",
+    "shattered_web_case": "🔫",
+    "cs20_case": "🌙",
+    "prisma_2_case": "🎂",
+    "fracture_case": "💎",
+    "operation_broken_fang_case": "⚡",
+    "snakebite_case": "🌊",
+    "operation_riptide_case": "🌪️",
+    "dreams_and_nightmares_case": "🎇",
+    "recoil_case": "📦",
+    "revolution_case": "🎯",
+    "kilowatt_case": "⚡",
+    "gallery_case": "🔥",
+    "fever_case": "💎"
+}
+
+CAPSULE_EMOJIS = {
+    "recoil": "⭐", "dreams": "🌙⭐", "cs20": "🎂⭐",
+    "championship": "🏆", "legends": "👑"
+}
+
+RARITY_EMOJIS = {
+    "Blue": "🟦",
+    "Purple": "🟪",
+    "Pink": "💗",
+    "Red": "🔴",
+    "Gold": "⭐"
+}
+
+# ============================================
+# PRICING DATA
+# ============================================
+
+WEAPON_BASE_VALUES = {"Blue": 0.25, "Purple": 1.00, "Pink": 4.00, "Red": 20.00}
+GOLD_VALUES = {"Common": 150, "Rare": 300, "Epic": 600, "Legendary": 1000, "Mythic": 2500}
+CONDITION_MULTIPLIERS = {"Factory New": 2.0, "Minimal Wear": 1.5, "Field-Tested": 1.0, "Well-Worn": 0.75, "Battle-Scarred": 0.5}
+STICKER_VALUES = {"⭐": 0.10, "✨": 0.50, "💫": 2.00, "🔥": 10.00, "👑 Common": 30, "👑 Rare": 75, "👑 Epic": 150, "👑 Legendary": 300}
+DROP_RATES = {"Gold": 2.6, "Red": 2.5, "Pink": 2.5, "Purple": 5.0, "Blue": 87.4}
+
+TRADE_UP_PROGRESSION = {"Blue": "Purple", "Purple": "Pink", "Pink": "Red", "Red": "Gold"}
+GOLD_TIER_PROGRESSION = ["Common", "Rare", "Epic", "Legendary", "Mythic"]
+STICKER_TRADE_PROGRESSION = {"⭐": "✨", "✨": "💫", "💫": "🔥", "🔥": "👑 Common", "👑 Common": "👑 Rare", "👑 Rare": "👑 Epic", "👑 Epic": "👑 Legendary"}
+
+QUEST_TYPES = {
+    "open_cases": {"name": "🔑 Case Opener", "base_reward": 500, "base_required": 5},
+    "get_golds": {"name": "✨ Gold Hunter", "base_reward": 1000, "base_required": 1},
+    "earn_money": {"name": "💰 Money Maker", "base_reward": 750, "base_required": 5000},
+    "trade_up": {"name": "🔄 Trade Master", "base_reward": 800, "base_required": 3},
+    "sell_items": {"name": "💸 Salesman", "base_reward": 600, "base_required": 5},
+    "jackpot_win": {"name": "🎲 Gambler", "base_reward": 2000, "base_required": 1},
+    "daily_streak": {"name": "📅 Streak Keeper", "base_reward": 1000, "base_required": 5}
+}
+
+# ============================================
+# FLOAT SYSTEM
+# ============================================
+
+def generate_skin_float():
+    return round(random.uniform(0.00, 1.00), 4)
+
+def get_skin_condition(float_value):
+    if float_value <= 0.07:
+        return "Factory New"
+    elif float_value <= 0.15:
+        return "Minimal Wear"
+    elif float_value <= 0.38:
+        return "Field-Tested"
+    elif float_value <= 0.45:
+        return "Well-Worn"
+    else:
+        return "Battle-Scarred"
+
+# ============================================
+# CASES DATA - 37 REAL CS2 CASES!
+# ============================================
+
+CASES = {
+    "cs:go_weapon_case": {
+        "name": "CS:GO Weapon Case",
+        "emoji": "📦",
+        "price": 2.0,
+        "items": [
+            {"name": "MP7 | Skulls", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AUG | Wings", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Ultraviolet", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Dragon Tattoo", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "USP-S | Dark Water", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "M4A1-S | Dark Water", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "AK-47 | Case Hardened", "rarity": "Pink", "condition": "Well-Worn"},
+            {"name": "Desert Eagle | Hypnotic", "rarity": "Pink", "condition": "Minimal Wear"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "esports_2013_case": {
+        "name": "eSports 2013 Case",
+        "emoji": "🎯",
+        "price": 2.0,
+        "items": [
+            {"name": "M4A4 | Faded Zebra", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Memento", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Doomkitty", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Galil AR | Orange DDPAT", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "Sawed-Off | Orange DDPAT", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "P250 | Splash", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "AK-47 | Red Laminate", "rarity": "Pink", "condition": "Factory New"},
+            {"name": "AWP | BOOM", "rarity": "Pink", "condition": "Factory New"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_phoenix_weapon_case": {
+        "name": "Operation Phoenix Weapon Case",
+        "emoji": "⚡",
+        "price": 2.5,
+        "items": [
+            {"name": "UMP-45 | Corporal", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Negev | Terrain", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Tec-9 | Sandstorm", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Heaven Guard", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAC-10 | Heat", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Pulse", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Sergeant", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "USP-S | Guardian", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "huntsman_weapon_case": {
+        "name": "Huntsman Weapon Case",
+        "emoji": "🔥",
+        "price": 2.5,
+        "items": [
+            {"name": "Tec-9 | Isaac", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SSG 08 | Slashed", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Galil AR | Kami", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "CZ75-Auto | Twist", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P90 | Module", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P2000 | Pulse", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "AUG | Torque", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "PP-Bizon | Antique", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Huntsman Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Huntsman Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Huntsman Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_breakout_weapon_case": {
+        "name": "Operation Breakout Weapon Case",
+        "emoji": "💎",
+        "price": 2.5,
+        "items": [
+            {"name": "MP7 | Urban Hazard", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Negev | Desert-Strike", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P2000 | Ivory", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "SSG 08 | Abyss", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "UMP-45 | Labyrinth", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "PP-Bizon | Osiris", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "CZ75-Auto | Tigris", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "Nova | Koi", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Butterfly Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Butterfly Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Butterfly Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "esports_2014_summer_case": {
+        "name": "eSports 2014 Summer Case",
+        "emoji": "🌟",
+        "price": 2.0,
+        "items": [
+            {"name": "SSG 08 | Dark Water", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAC-10 | Ultraviolet", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "USP-S | Blood Tiger", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "CZ75-Auto | Hexane", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Negev | Bratatat", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "XM1014 | Red Python", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "PP-Bizon | Blue Streak", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "P90 | Virus", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_vanguard_weapon_case": {
+        "name": "Operation Vanguard Weapon Case",
+        "emoji": "🎨",
+        "price": 2.5,
+        "items": [
+            {"name": "G3SG1 | Murky", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Firestarter", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP9 | Dart", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Five-SeveN | Urban Hazard", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "UMP-45 | Delusion", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Glock-18 | Grinder", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "M4A1-S | Basilisk", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "M4A4 | Griffin", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "chroma_case": {
+        "name": "Chroma Case",
+        "emoji": "🌈",
+        "price": 2.0,
+        "items": [
+            {"name": "Glock-18 | Catacombs", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | System Lock", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP9 | Deadly Poison", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Grotto", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "XM1014 | Quicksilver", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Dual Berettas | Urban Shock", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "Desert Eagle | Naga", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "MAC-10 | Malachite", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bayonet | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "chroma_2_case": {
+        "name": "Chroma 2 Case",
+        "emoji": "💥",
+        "price": 2.0,
+        "items": [
+            {"name": "AK-47 | Elite Build", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP7 | Armor Core", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Bronze Deco", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P250 | Valence", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Negev | Man-o'-war", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Sawed-Off | Origami", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AWP | Worm God", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "MAG-7 | Heat", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "falchion_case": {
+        "name": "Falchion Case",
+        "emoji": "🌅",
+        "price": 2.0,
+        "items": [
+            {"name": "Galil AR | Rocket Pop", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Glock-18 | Bunsen Burner", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Nova | Ranger", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P90 | Elite Build", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "UMP-45 | Riot", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "USP-S | Torque", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "FAMAS | Neural Net", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "M4A4 | Evil Daimyo", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "★ Falchion Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Falchion Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Falchion Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "shadow_case": {
+        "name": "Shadow Case",
+        "emoji": "⚠️",
+        "price": 2.0,
+        "items": [
+            {"name": "Dual Berettas | Dualing Dragons", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "FAMAS | Survivor Z", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Glock-18 | Wraiths", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAC-10 | Rangeen", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAG-7 | Cobalt Core", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Green Marine", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "XM1014 | Scumbria", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Galil AR | Stone Cold", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Shadow Daggers", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Shadow Daggers | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Shadow Daggers | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "revolver_case": {
+        "name": "Revolver Case",
+        "emoji": "🤲",
+        "price": 2.0,
+        "items": [
+            {"name": "R8 Revolver | Crimson Web", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AUG | Ricochet", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Desert Eagle | Corinthian", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P2000 | Imperial", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Sawed-Off | Yorick", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SCAR-20 | Outbreak", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "PP-Bizon | Fuel Rod", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "Five-SeveN | Retrobution", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_wildfire_case": {
+        "name": "Operation Wildfire Case",
+        "emoji": "🎪",
+        "price": 3.0,
+        "items": [
+            {"name": "PP-Bizon | Photic Zone", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Dual Berettas | Cartel", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAC-10 | Lapis Gator", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SSG 08 | Necropos", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Tec-9 | Jambiya", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "USP-S | Lead Conduit", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "FAMAS | Valence", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "Five-SeveN | Triumvirate", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bowie Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "chroma_3_case": {
+        "name": "Chroma 3 Case",
+        "emoji": "🏹",
+        "price": 2.0,
+        "items": [
+            {"name": "Dual Berettas | Ventilators", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "G3SG1 | Orange Crash", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | Spectre", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MP9 | Bioleak", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P2000 | Oceanic", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Sawed-Off | Fubar", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SG 553 | Atlas", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "CZ75-Auto | Red Astor", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "gamma_case": {
+        "name": "Gamma Case",
+        "emoji": "🗡️",
+        "price": 2.5,
+        "items": [
+            {"name": "Five-SeveN | Violent Daimyo", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAC-10 | Carnivore", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Nova | Exo", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P250 | Iron Clad", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "PP-Bizon | Harvester", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SG 553 | Aerial", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Tec-9 | Ice Cap", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AUG | Aristocrat", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "gamma_2_case": {
+        "name": "Gamma 2 Case",
+        "emoji": "🛡️",
+        "price": 2.5,
+        "items": [
+            {"name": "CZ75-Auto | Imprint", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Five-SeveN | Scumbria", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "G3SG1 | Ventilator", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Negev | Dazzle", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P90 | Grim", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "UMP-45 | Briefing", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "XM1014 | Slipstream", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Directive", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "glove_case": {
+        "name": "Glove Case",
+        "emoji": "👑",
+        "price": 4.0,
+        "items": [
+            {"name": "CZ75-Auto | Polymer", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Glock-18 | Ironwork", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP7 | Cirrus", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Galil AR | Black Sand", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP9 | Sand Scale", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Sonar", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P2000 | Turf", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Dual Berettas | Royal Consorts", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Snakebite", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Bronzed", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Charred", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "spectrum_case": {
+        "name": "Spectrum Case",
+        "emoji": "🎰",
+        "price": 2.5,
+        "items": [
+            {"name": "PP-Bizon | Jungle Slipstream", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SCAR-20 | Blueprint", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Desert Eagle | Oxide Blaze", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Five-SeveN | Capillary", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP7 | Akoben", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P250 | Ripple", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Sawed-Off | Zander", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Galil AR | Crimson Tsunami", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bowie Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_hydra_case": {
+        "name": "Operation Hydra Case",
+        "emoji": "🎲",
+        "price": 4.0,
+        "items": [
+            {"name": "USP-S | Blueprint", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Macabre", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M4A1-S | Briefing", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAC-10 | Aloha", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Hard Water", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Tec-9 | Cut Out", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "UMP-45 | Metal Flowers", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AK-47 | Orbit Mk01", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bloodhound Gloves | Snakebite", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Bronzed", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Charred", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "spectrum_2_case": {
+        "name": "Spectrum 2 Case",
+        "emoji": "🎳",
+        "price": 3.0,
+        "items": [
+            {"name": "Sawed-Off | Morris", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "AUG | Triqua", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "G3SG1 | Hunter", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Off World", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAC-10 | Oceanic", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Tec-9 | Cracked Opal", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "SCAR-20 | Jungle Slipstream", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP9 | Goo", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "clutch_case": {
+        "name": "Clutch Case",
+        "emoji": "🎭",
+        "price": 3.0,
+        "items": [
+            {"name": "PP-Bizon | Night Riot", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Five-SeveN | Flame Test", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP9 | Black Sand", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P2000 | Urban Hazard", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "R8 Revolver | Grip", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "SG 553 | Aloha", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "XM1014 | Oxide Blaze", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Glock-18 | Moonrise", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Driver Gloves | Imperial Plaid", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | King Snake", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | Racing Green", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "horizon_case": {
+        "name": "Horizon Case",
+        "emoji": "🎪",
+        "price": 2.5,
+        "items": [
+            {"name": "AUG | Amber Slipstream", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Dual Berettas | Shred", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Glock-18 | Warhawk", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP9 | Capillary", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P90 | Traction", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "R8 Revolver | Survivalist", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Tec-9 | Snek-9", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "CZ75-Auto | Eco", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "danger_zone_case": {
+        "name": "Danger Zone Case",
+        "emoji": "🎯",
+        "price": 2.5,
+        "items": [
+            {"name": "MP9 | Modest Threat", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Glock-18 | Oxide Blaze", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Nova | Wood Fired", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "M4A4 | Magnesium", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Sawed-Off | Black Sand", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "SG 553 | Danger Close", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Tec-9 | Fubar", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "G3SG1 | Scavenger", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "prisma_case": {
+        "name": "Prisma Case",
+        "emoji": "🎱",
+        "price": 2.5,
+        "items": [
+            {"name": "FAMAS | Crypsis", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "AK-47 | Uncharted", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAC-10 | Whitefish", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Galil AR | Akoben", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP7 | Mischief", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P250 | Verdigris", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "P90 | Off World", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AWP | Atheris", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "shattered_web_case": {
+        "name": "Shattered Web Case",
+        "emoji": "🔫",
+        "price": 4.0,
+        "items": [
+            {"name": "MP5-SD | Acid Wash", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Nova | Plume", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "G3SG1 | Black Sand", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "R8 Revolver | Memento", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Dual Berettas | Balance", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SCAR-20 | Torn", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "M249 | Warbird", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "PP-Bizon | Embargo", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Nomad Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "cs20_case": {
+        "name": "CS20 Case",
+        "emoji": "🌙",
+        "price": 2.5,
+        "items": [
+            {"name": "Dual Berettas | Elite 1.6", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Tec-9 | Flash Out", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MAC-10 | Classic Crate", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Popdog", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Assault", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Decommissioned", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Sacrifice", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "M249 | Aztec", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "★ Classic Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Classic Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Classic Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "prisma_2_case": {
+        "name": "Prisma 2 Case",
+        "emoji": "🎂",
+        "price": 2.0,
+        "items": [
+            {"name": "AUG | Tom Cat", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "AWP | Capillary", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "CZ75-Auto | Distressed", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Blue Ply", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP5-SD | Desert Strike", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Negev | Prototype", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "R8 Revolver | Bone Forged", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P2000 | Acid Etched", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "fracture_case": {
+        "name": "Fracture Case",
+        "emoji": "💎",
+        "price": 2.0,
+        "items": [
+            {"name": "Negev | Ultralight", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P2000 | Gnarled", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Ol' Rusty", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "SSG 08 | Mainframe 001", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P250 | Cassette", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P90 | Freight", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "PP-Bizon | Runic", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Monster Call", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Nomad Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_broken_fang_case": {
+        "name": "Operation Broken Fang Case",
+        "emoji": "⚡",
+        "price": 3.5,
+        "items": [
+            {"name": "CZ75-Auto | Vendetta", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P90 | Cocoa Rampage", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "G3SG1 | Digital Mesh", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Galil AR | Vandal", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P250 | Contaminant", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | Deep Relief", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP5-SD | Condition Zero", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "AWP | Exoskeleton", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Yellow-banded", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Unhinged", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Needle Point", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "snakebite_case": {
+        "name": "Snakebite Case",
+        "emoji": "🌊",
+        "price": 2.5,
+        "items": [
+            {"name": "SG 553 | Heavy Metal", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Glock-18 | Clear Polymer", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "M249 | O.S.I.P.R.", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "CZ75-Auto | Circaetus", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "UMP-45 | Oscillator", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "R8 Revolver | Junk Yard", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Nova | Windblown", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P250 | Cyber Shell", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Broken Fang Gloves | Yellow-banded", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Unhinged", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Needle Point", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_riptide_case": {
+        "name": "Operation Riptide Case",
+        "emoji": "🌪️",
+        "price": 3.0,
+        "items": [
+            {"name": "AUG | Plague", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Dual Berettas | Tread", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "G3SG1 | Keeping Tabs", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP7 | Guerrilla", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "PP-Bizon | Lumen", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "USP-S | Black Lotus", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "XM1014 | Watchdog", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | BI83 Spectrum", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "dreams_and_nightmares_case": {
+        "name": "Dreams & Nightmares Case",
+        "emoji": "🎇",
+        "price": 2.5,
+        "items": [
+            {"name": "Five-SeveN | Scrawl", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MAC-10 | Ensnared", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MAG-7 | Foresight", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MP5-SD | Necro Jr.", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P2000 | Lifted Spirits", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SCAR-20 | Poultrygeist", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Sawed-Off | Spirit Board", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "PP-Bizon | Space Cat", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "recoil_case": {
+        "name": "Recoil Case",
+        "emoji": "📦",
+        "price": 2.0,
+        "items": [
+            {"name": "FAMAS | Meow 36", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Galil AR | Destroyer", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "M4A4 | Poly Mag", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAC-10 | Monkeyflage", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Negev | Drop Me", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "UMP-45 | Roadblock", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Winterized", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "R8 Revolver | Crazy 8", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Broken Fang Gloves | Yellow-banded", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Unhinged", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Needle Point", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "revolution_case": {
+        "name": "Revolution Case",
+        "emoji": "🎯",
+        "price": 2.5,
+        "items": [
+            {"name": "MAG-7 | Insomnia", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MP9 | Featherweight", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SCAR-20 | Fragments", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P250 | Re.built", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP5-SD | Liquidation", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Cyberforce", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Tec-9 | Rebel", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "M4A1-S | Emphorosaur-S", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | Imperial Plaid", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | King Snake", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | Racing Green", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "kilowatt_case": {
+        "name": "Kilowatt Case",
+        "emoji": "⚡",
+        "price": 3.5,
+        "items": [
+            {"name": "Dual Berettas | Hideout", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MAC-10 | Light Box", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Nova | Dark Sigil", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SSG 08 | Dezastre", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Tec-9 | Slag", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "UMP-45 | Motorized", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "XM1014 | Irezumi", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Glock-18 | Block-18", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Kukri Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "gallery_case": {
+        "name": "Gallery Case",
+        "emoji": "🔥",
+        "price": 3.0,
+        "items": [
+            {"name": "USP-S | 27", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Desert Eagle | Calligraffiti", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP5-SD | Statics", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "AUG | Luxe Trim", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | Hypnosis", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "R8 Revolver | Tango", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Trail Blazer", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "M4A4 | Turbine", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Kukri Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "fever_case": {
+        "name": "Fever Case",
+        "emoji": "💎",
+        "price": 4.0,
+        "items": [
+            {"name": "M4A4 | Choppa", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Resupply", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SSG 08 | Memorial", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P2000 | Sure Grip", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "USP-S | PC-GRN", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP9 | Nexus", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "XM1014 | Mockingbird", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Serpent Strike", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Survival Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Survival Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Survival Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+}
+
+# ============================================
+# STICKER CAPSULES DATA
+# ============================================
+
+STICKER_CAPSULES = {
+    "recoil": {
+        "name": "Recoil Sticker Capsule", "emoji": CAPSULE_EMOJIS["recoil"], "price": 0.50,
+        "stickers": [
+            {"name": "CS2 Logo", "rarity": "⭐"}, {"name": "AWP Sniper", "rarity": "✨"},
+            {"name": "Headshot", "rarity": "💫"}, {"name": "Clutch King", "rarity": "🔥"}
+        ]
+    },
+    "dreams": {
+        "name": "Dreams Sticker Capsule", "emoji": CAPSULE_EMOJIS["dreams"], "price": 1.00,
+        "stickers": [
+            {"name": "Phoenix Rising", "rarity": "⭐"}, {"name": "Dragon Lore", "rarity": "✨"},
+            {"name": "Royal Crown", "rarity": "👑 Common"}, {"name": "Knight's Oath", "rarity": "👑 Rare"}
+        ]
+    },
+    "cs20": {
+        "name": "CS20 Sticker Capsule", "emoji": CAPSULE_EMOJIS["cs20"], "price": 1.00,
+        "stickers": [
+            {"name": "Counter-Terrorist Elite", "rarity": "⭐"}, {"name": "Terrorist Elite", "rarity": "✨"},
+            {"name": "20 Years", "rarity": "💫"}, {"name": "Legends", "rarity": "👑 Epic"}
+        ]
+    },
+    "championship": {
+        "name": "Championship Sticker Capsule", "emoji": CAPSULE_EMOJIS["championship"], "price": 2.00,
+        "stickers": [
+            {"name": "Victory", "rarity": "✨"}, {"name": "Champion", "rarity": "💫"},
+            {"name": "Golden Trophy", "rarity": "👑 Epic"}, {"name": "Hall of Fame", "rarity": "👑 Legendary"}
+        ]
+    },
+    "legends": {
+        "name": "Legends Sticker Capsule", "emoji": CAPSULE_EMOJIS["legends"], "price": 3.00,
+        "stickers": [
+            {"name": "s1mple", "rarity": "🔥"}, {"name": "ZyWoo", "rarity": "🔥"},
+            {"name": "NiKo", "rarity": "👑 Rare"}, {"name": "KennyS", "rarity": "👑 Epic"}
+        ]
+    }
+}
+
+# ============================================
+# CALCULATION FUNCTIONS
+# ============================================
+
+def calculate_item_value(rarity, condition=None, tier=None, is_stattrak=False):
+    if rarity == "Gold" and tier:
+        base_value = GOLD_VALUES.get(tier, 150)
+    elif rarity in WEAPON_BASE_VALUES:
+        base_value = WEAPON_BASE_VALUES[rarity]
+    elif rarity in STICKER_VALUES:
+        base_value = STICKER_VALUES[rarity]
+    else:
+        base_value = 0.25
+
+    multiplier = CONDITION_MULTIPLIERS.get(condition, 1.0)
+    value = base_value * multiplier
+
+    if is_stattrak:
+        value *= 2
+
+    return round(value, 2)
+
+def get_random_item(case_id):
+    case = CASES.get(case_id)
+    if not case or not case.get('items'):
+        logger.error(f"Case {case_id} not found or has no items")
+        return None
+
+    rand = random.random() * 100
+    cumulative = 0
+
+    for rarity, chance in DROP_RATES.items():
+        cumulative += chance
+        if rand <= cumulative:
+            possible_items = [item for item in case['items'] if item['rarity'] == rarity]
+            if possible_items:
+                item = random.choice(possible_items)
+                is_stattrak = random.random() < 0.1
+                condition = item.get('condition', 'Field-Tested')
+                tier = item.get('tier', None)
+                
+                float_value = generate_skin_float()
+                condition_from_float = get_skin_condition(float_value)
+                
+                base_value = calculate_item_value(rarity, condition, tier, is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0,
+                    "Minimal Wear": 1.5,
+                    "Field-Tested": 1.0,
+                    "Well-Worn": 0.75,
+                    "Battle-Scarred": 0.5
+                }.get(condition_from_float, 1.0)
+                
+                value = round(base_value * float_multiplier, 2)
+
+                if is_stattrak:
+                    clean_name = item['name'].replace('StatTrak™ ', '').replace('StatTrak™', '')
+                    name = f"StatTrak™ {clean_name}"
+                else:
+                    name = item['name']
+
+                rarity_emoji = RARITY_EMOJIS.get(rarity, "")
+
+                return {
+                    'name': name,
+                    'display_name': f"{rarity_emoji} {name}",
+                    'rarity': rarity,
+                    'rarity_emoji': rarity_emoji,
+                    'tier': tier,
+                    'condition': condition_from_float,
+                    'float': float_value,
+                    'price': value,
+                    'is_stattrak': is_stattrak
+                }
+
+    if case['items']:
+        fallback_item = case['items'][0]
+        is_stattrak = random.random() < 0.1
+        condition = fallback_item.get('condition', 'Field-Tested')
+        tier = fallback_item.get('tier', None)
+        rarity = fallback_item['rarity']
+        
+        float_value = generate_skin_float()
+        condition_from_float = get_skin_condition(float_value)
+        
+        base_value = calculate_item_value(rarity, condition, tier, is_stattrak)
+        float_multiplier = {
+            "Factory New": 2.0,
+            "Minimal Wear": 1.5,
+            "Field-Tested": 1.0,
+            "Well-Worn": 0.75,
+            "Battle-Scarred": 0.5
+        }.get(condition_from_float, 1.0)
+        value = round(base_value * float_multiplier, 2)
+
+        if is_stattrak:
+            clean_name = fallback_item['name'].replace('StatTrak™ ', '').replace('StatTrak™', '')
+            name = f"StatTrak™ {clean_name}"
+        else:
+            name = fallback_item['name']
+
+        rarity_emoji = RARITY_EMOJIS.get(rarity, "")
+
+        return {
+            'name': name,
+            'display_name': f"{rarity_emoji} {name}",
+            'rarity': rarity,
+            'rarity_emoji': rarity_emoji,
+            'tier': tier,
+            'condition': condition_from_float,
+            'float': float_value,
+            'price': value,
+            'is_stattrak': is_stattrak
+        }
+
+    return None
+
+def get_random_sticker(capsule_id):
+    capsule = STICKER_CAPSULES.get(capsule_id)
+    if not capsule or not capsule.get('stickers'):
+        return None
+
+    sticker = random.choice(capsule['stickers'])
+    is_stattrak = random.random() < 0.1
+    value = calculate_item_value(sticker['rarity'], None, None, is_stattrak)
+
+    if is_stattrak:
+        clean_name = sticker['name'].replace('StatTrak™ ', '').replace('StatTrak™', '')
+        name = f"StatTrak™ {clean_name}"
+    else:
+        name = sticker['name']
+
+    return {
+        'name': name,
+        'rarity': sticker['rarity'],
+        'price': value,
+        'is_stattrak': is_stattrak
+    }
+
+# ============================================
+# DATABASE FUNCTIONS
+# ============================================
+
+async def init_db():
+    global db_pool
+    db_url = os.getenv('DATABASE_URL')
+    if not db_url:
+        logger.error("❌ DATABASE_URL not set!")
+        return False
+    try:
+        db_pool = await asyncpg.create_pool(db_url, min_size=5, max_size=20)
+        logger.info("✅ Database pool ready!")
+        
+        # Ensure tables exist
+        async with db_pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    balance DECIMAL(15,2) DEFAULT 1000,
+                    credits INTEGER DEFAULT 0,
+                    total_opens INTEGER DEFAULT 0,
+                    total_premium_opens INTEGER DEFAULT 0,
+                    total_golds INTEGER DEFAULT 0,
+                    total_trades INTEGER DEFAULT 0,
+                    daily_streak INTEGER DEFAULT 0,
+                    last_daily TIMESTAMP,
+                    last_hourly TIMESTAMP,
+                    last_weekly TIMESTAMP,
+                    total_hourly_claimed INTEGER DEFAULT 0,
+                    total_weekly_claimed INTEGER DEFAULT 0,
+                    xp INTEGER DEFAULT 0,
+                    level INTEGER DEFAULT 1,
+                    prestige INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS inventory (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    item_name TEXT NOT NULL,
+                    item_type TEXT DEFAULT 'weapon',
+                    rarity TEXT,
+                    price DECIMAL(15,2),
+                    condition TEXT,
+                    is_stattrak BOOLEAN DEFAULT FALSE,
+                    status TEXT DEFAULT 'kept',
+                    case_id TEXT,
+                    float_value DECIMAL(10,4),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS guild_settings (
+                    guild_id BIGINT PRIMARY KEY,
+                    name TEXT,
+                    bot_channel_id BIGINT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS quests (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    quest_type TEXT,
+                    progress INTEGER DEFAULT 0,
+                    required INTEGER,
+                    reward INTEGER,
+                    completed BOOLEAN DEFAULT FALSE,
+                    claimed BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS giveaways (
+                    id SERIAL PRIMARY KEY,
+                    message_id BIGINT,
+                    channel_id BIGINT,
+                    prize TEXT,
+                    winner_count INTEGER DEFAULT 1,
+                    end_time TIMESTAMP,
+                    ended BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS giveaway_entries (
+                    id SERIAL PRIMARY KEY,
+                    giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS coinflip_games (
+                    id SERIAL PRIMARY KEY,
+                    creator_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    opponent_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    amount DECIMAL(15,2),
+                    winner_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    status TEXT DEFAULT 'waiting',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    completed_at TIMESTAMP
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS dice_games (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    amount DECIMAL(15,2),
+                    bet_type TEXT,
+                    bet_number INTEGER,
+                    roll_number INTEGER,
+                    result TEXT,
+                    multiplier DECIMAL(10,2),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS mines_games (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    bet_amount DECIMAL(15,2),
+                    grid_size INTEGER DEFAULT 5,
+                    mine_count INTEGER DEFAULT 3,
+                    status TEXT DEFAULT 'active',
+                    mine_positions INTEGER[],
+                    revealed_tiles INTEGER[] DEFAULT '{}',
+                    multiplier DECIMAL(10,2) DEFAULT 1.0,
+                    exploded BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS slots_games (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    bet_amount DECIMAL(15,2),
+                    spin_result TEXT[],
+                    multiplier DECIMAL(10,2),
+                    win_amount DECIMAL(15,2),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_achievements (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    achievement_id TEXT,
+                    unlocked_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_streaks (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    current_streak INTEGER DEFAULT 0,
+                    best_streak INTEGER DEFAULT 0,
+                    golds_in_streak INTEGER DEFAULT 0,
+                    total_session_opens INTEGER DEFAULT 0,
+                    current_case_id TEXT,
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    theme TEXT DEFAULT 'casino',
+                    spin_speed TEXT DEFAULT 'normal',
+                    sound_enabled BOOLEAN DEFAULT TRUE,
+                    feed_enabled BOOLEAN DEFAULT TRUE,
+                    confetti_mode TEXT DEFAULT 'always',
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS live_feed (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    username TEXT,
+                    item_name TEXT,
+                    rarity TEXT,
+                    rarity_emoji TEXT,
+                    case_type TEXT,
+                    float_value DECIMAL(10,4),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS donations (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    amount DECIMAL(15,2),
+                    donor_name TEXT,
+                    donor_email TEXT,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_purchases (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    amount INTEGER,
+                    cost_usd DECIMAL(10,2),
+                    stripe_session_id TEXT,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS skin_upgrades (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                    item_id INTEGER,
+                    input_rarity TEXT,
+                    output_rarity TEXT,
+                    success BOOLEAN,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        
+        asyncio.create_task(keep_db_alive())
+        return True
+    except Exception as e:
+        logger.error(f"❌ Database error: {e}")
+        return False
+
+async def keep_db_alive():
+    while True:
+        await asyncio.sleep(300)
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+            logger.debug("Database keep-alive ping successful")
+        except Exception as e:
+            logger.error(f"Database keep-alive failed: {e}")
+            await init_db()
+
+async def ensure_user_exists(user_id: int, username: str = None, conn=None):
+    """CRITICAL FIX: Ensure user exists before any transaction"""
+    try:
+        if conn is None:
+            async with db_pool.acquire() as conn:
+                return await ensure_user_exists(user_id, username, conn)
+        
+        user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
+        if not user:
+            await conn.execute("""
+                INSERT INTO users (user_id, username, balance, created_at, updated_at)
+                VALUES ($1, $2, 1000, NOW(), NOW())
+            """, user_id, username or f"User_{user_id}")
+            logger.info(f"✅ Created user {user_id} ({username or f'User_{user_id}'})")
+            return True
+        return True
+    except Exception as e:
+        logger.error(f"ensure_user_exists error for {user_id}: {e}")
+        return False
+
+async def get_balance(user_id, conn=None):
+    if conn is None:
+        async with db_pool.acquire() as conn:
+            return await get_balance(user_id, conn)
+    
+    await ensure_user_exists(user_id, conn=conn)
+    user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+    if not user:
+        return 1000
+    return user['balance']
+
+async def create_daily_quests(user_id, conn=None):
+    if conn is None:
+        async with db_pool.acquire() as conn:
+            return await create_daily_quests(user_id, conn)
+    
+    await ensure_user_exists(user_id, conn=conn)
+    
+    last_quest = await conn.fetchrow("""
+        SELECT created_at FROM quests WHERE user_id = $1
+        ORDER BY created_at DESC LIMIT 1
+    """, user_id)
+
+    if last_quest and last_quest['created_at'].date() == datetime.now().date():
+        return
+
+    await conn.execute("DELETE FROM quests WHERE user_id = $1", user_id)
+
+    for quest_type, quest_info in QUEST_TYPES.items():
+        required = quest_info["base_required"]
+        reward = quest_info["base_reward"]
+        user = await conn.fetchrow("SELECT total_opens FROM users WHERE user_id = $1", user_id)
+        if user and user['total_opens'] > 100:
+            required = int(required * 1.5)
+            reward = int(reward * 1.2)
+        await conn.execute("""
+            INSERT INTO quests (user_id, quest_type, progress, required, reward, completed, claimed, created_at)
+            VALUES ($1, $2, 0, $3, $4, false, false, NOW())
+        """, user_id, quest_type, required, reward)
+
+async def update_quest_progress(user_id, quest_type, increment=1, conn=None):
+    if conn is None:
+        async with db_pool.acquire() as conn:
+            return await update_quest_progress(user_id, quest_type, increment, conn)
+    
+    await ensure_user_exists(user_id, conn=conn)
+    
+    quest = await conn.fetchrow("""
+        SELECT id, progress, required FROM quests
+        WHERE user_id = $1 AND quest_type = $2 AND completed = false AND claimed = false
+    """, user_id, quest_type)
+    if quest:
+        new_progress = quest['progress'] + increment
+        if new_progress >= quest['required']:
+            await conn.execute("UPDATE quests SET progress = $1, completed = true WHERE id = $2", quest['required'], quest['id'])
+        else:
+            await conn.execute("UPDATE quests SET progress = $1 WHERE id = $2", new_progress, quest['id'])
+
+@bot.event
+async def on_ready():
+    global db_pool
+    if not db_pool:
+        await init_db()
+    logger.info(f'✅ {bot.user} is now online!')
+    logger.info(f'🎮 Bot is ready on {len(bot.guilds)} servers')
+    logger.info(f'📦 Total cases loaded: {len(CASES)}')
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=f"CS2 Cases | Join: {DISCORD_INVITE_URL}"))
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"✅ Synced {len(synced)} slash commands")
+    except Exception as e:
+        logger.error(f"Error syncing commands: {e}")
+
+# ============================================
+# XP SYSTEM
+# ============================================
+
+async def add_xp(user_id: int, amount: int, conn=None):
+    if conn is None:
+        async with db_pool.acquire() as conn:
+            return await add_xp(user_id, amount, conn)
+    
+    await ensure_user_exists(user_id, conn=conn)
+    
+    async with conn.transaction():
+        user = await conn.fetchrow(
+            "SELECT xp, level, prestige FROM users WHERE user_id = $1",
+            user_id
+        )
+        if not user:
+            return
+        
+        new_xp = (user['xp'] or 0) + amount
+        current_level = user['level'] or 1
+        leveled_up = False
+        
+        xp_needed = current_level * 50 + 100
+        
+        while new_xp >= xp_needed:
+            new_xp -= xp_needed
+            current_level += 1
+            xp_needed = current_level * 50 + 100
+            leveled_up = True
+            
+            reward = current_level * 50
+            await conn.execute(
+                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                reward, user_id
+            )
+            
+            if current_level % 50 == 0:
+                prestige = (user['prestige'] or 0) + 1
+                await conn.execute(
+                    "UPDATE users SET prestige = $1 WHERE user_id = $2",
+                    prestige, user_id
+                )
+                bonus = prestige * 1000
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    bonus, user_id
+                )
+        
+        await conn.execute(
+            "UPDATE users SET xp = $1, level = $2 WHERE user_id = $3",
+            new_xp, current_level, user_id
+        )
+        
+        return {'level': current_level, 'xp': new_xp, 'leveled_up': leveled_up}
+
+# ============================================
+# PAGINATED INVENTORY VIEW
+# ============================================
+
+class InventoryView(discord.ui.View):
+    def __init__(self, items, user, items_per_page=10):
+        super().__init__(timeout=120)
+        self.items = items
+        self.user = user
+        self.items_per_page = items_per_page
+        self.current_page = 0
+        self.total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        self.message = None
+
+    def get_embed(self):
+        start = self.current_page * self.items_per_page
+        end = start + self.items_per_page
+        page_items = self.items[start:end]
+
+        total_value = sum(float(item['price']) for item in self.items)
+
+        embed = discord.Embed(title=f"📦 {self.user.display_name}'s Inventory", color=discord.Color.gold())
+
+        weapon_list = ""
+        sticker_list = ""
+
+        for item in page_items:
+            stattrak = "ⓢ™️ " if item['is_stattrak'] else ""
+            rarity_emoji = RARITY_EMOJIS.get(item['rarity'], "")
+            float_display = f" | Float: {item.get('float_value', 0.0000):.4f}" if item.get('float_value') is not None else ""
+            item_text = f"**ID:{item['id']}** {stattrak}{rarity_emoji} {item['item_name']} - ${float(item['price']):,.2f}{float_display}\n"
+            if item['item_type'] == 'weapon':
+                if len(weapon_list) + len(item_text) < 1024:
+                    weapon_list += item_text
+            else:
+                if len(sticker_list) + len(item_text) < 1024:
+                    sticker_list += item_text
+
+        if weapon_list:
+            embed.add_field(name="🎮 Weapons", value=weapon_list, inline=False)
+        if sticker_list:
+            embed.add_field(name="⭐ Stickers", value=sticker_list, inline=False)
+
+        embed.add_field(name="💰 Total Inventory Value", value=f"${total_value:,.2f}", inline=False)
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | 💖 Support: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+        return embed
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except:
+                pass
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("❌ This inventory belongs to someone else!", ephemeral=True)
+            return
+
+        self.current_page = (self.current_page - 1) % self.total_pages
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("❌ This inventory belongs to someone else!", ephemeral=True)
+            return
+
+        self.current_page = (self.current_page + 1) % self.total_pages
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+# ============================================
+# ECONOMY COMMANDS
+# ============================================
+
+@bot.tree.command(name="balance", description="Check your balance")
+async def balance(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+    await interaction.response.defer()
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+        user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+        if not user:
+            await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
+            bal = 1000
+        else:
+            bal = user['balance']
+    embed = discord.Embed(title="💰 Balance", color=discord.Color.green())
+    embed.add_field(name=interaction.user.display_name, value=f"${bal:,.2f}", inline=False)
+    embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="daily", description="Claim your daily reward")
+async def daily(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+    await interaction.response.defer()
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+        
+        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", interaction.user.id)
+        if not user:
+            await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
+            await create_daily_quests(interaction.user.id, conn)
+            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", interaction.user.id)
+
+        now = datetime.now()
+        last_daily = user['last_daily']
+        streak = user['daily_streak'] or 0
+
+        if last_daily and last_daily.date() == now.date():
+            embed = discord.Embed(title="⏰ Already Claimed", description="You've already claimed today's daily reward!", color=discord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if last_daily and (now - last_daily).days == 1:
+            streak += 1
+        else:
+            streak = 1
+
+        reward = 500 + (streak * 100)
+        jackpot_hit = random.randint(1, 1000000) == 1
+
+        if jackpot_hit:
+            reward += 50000
+            embed2 = discord.Embed(title="🎰🎰🎰 JACKPOT! 🎰🎰🎰", description=f"You won an additional **$50,000**!", color=discord.Color.gold())
+            await interaction.followup.send(embed2)
+
+        await conn.execute("UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4", reward, streak, now, interaction.user.id)
+
+        updated_user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+        new_balance = updated_user['balance'] if updated_user else reward
+
+        embed = discord.Embed(title="🎁 Daily Reward Claimed!", color=discord.Color.green())
+        embed.add_field(name="Reward", value=f"${reward:,.2f}", inline=True)
+        embed.add_field(name="Streak", value=f"{streak} days", inline=True)
+        embed.add_field(name="New Balance", value=f"${new_balance:,.2f}", inline=True)
+
+        if streak in [10, 25, 50, 100]:
+            bonus = {10:25, 25:75, 50:250, 100:1000}[streak]
+            embed.add_field(name="🏆 Streak Bonus", value=f"${bonus} added!", inline=True)
+            await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", bonus, interaction.user.id)
+
+        await update_quest_progress(interaction.user.id, "daily_streak", 1, conn)
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="transfer", description="Transfer money to another user")
+async def transfer(interaction: discord.Interaction, user: discord.User, amount: float):
+    if not await is_bot_channel(interaction):
+        return
+    await interaction.response.defer()
+    if amount <= 0:
+        await interaction.followup.send("Amount must be positive!", ephemeral=True)
+        return
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+        await ensure_user_exists(user.id, user.display_name, conn)
+        
+        sender = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+        if not sender or sender['balance'] < amount:
+            await interaction.followup.send("Insufficient balance!", ephemeral=True)
+            return
+        await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", amount, interaction.user.id)
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user.id)
+        new_balance = await get_balance(interaction.user.id, conn)
+        embed = discord.Embed(title="💸 Transfer Complete", color=discord.Color.green())
+        embed.add_field(name="Sender", value=interaction.user.display_name, inline=True)
+        embed.add_field(name="Receiver", value=user.display_name, inline=True)
+        embed.add_field(name="Amount", value=f"${amount:,.2f}", inline=True)
+        embed.add_field(name="Your New Balance", value=f"${new_balance:,.2f}", inline=True)
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
+# ============================================
+# CASE COMMANDS
+# ============================================
+
+@bot.tree.command(name="cases", description="View available cases")
+async def list_cases(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    case_items = list(CASES.items())
+    chunks = [case_items[i:i+20] for i in range(0, len(case_items), 20)]
+    total_pages = len(chunks)
+    
+    class CaseView(discord.ui.View):
+        def __init__(self, chunks_data):
+            super().__init__(timeout=120)
+            self.chunks = chunks_data
+            self.current_page = 0
+            self.total_pages = len(chunks_data)
+            self.message = None
+        
+        def get_embed(self):
+            embed = discord.Embed(
+                title=f"📦 Available Cases ({len(CASES)}) - Page {self.current_page + 1}/{self.total_pages}",
+                color=discord.Color.blue()
+            )
+            for case_id, case_data in self.chunks[self.current_page]:
+                embed.add_field(
+                    name=f"{case_data['emoji']} {case_data['name']}",
+                    value=f"Price: ${case_data['price']:.2f}\nUse: `/open {case_id}`",
+                    inline=True
+                )
+            embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+            return embed
+        
+        @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+        async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.current_page = (self.current_page - 1) % self.total_pages
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        
+        @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+        async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.current_page = (self.current_page + 1) % self.total_pages
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        
+        async def on_timeout(self):
+            for item in self.children:
+                item.disabled = True
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except:
+                    pass
+
+    view = CaseView(chunks)
+    response = await interaction.followup.send(embed=view.get_embed(), view=view)
+    view.message = response
+
+@bot.tree.command(name="open", description="Open a case")
+async def open_case(interaction: discord.Interaction, case: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    case_id = case.lower()
+    if case_id not in CASES:
+        await interaction.followup.send("❌ Invalid case! Use `/cases` to see available cases.", ephemeral=True)
+        return
+
+    case_data = CASES[case_id]
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+
+                if not user:
+                    await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
+                    await create_daily_quests(interaction.user.id, conn)
+                    user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+
+                old_balance = user['balance']
+
+                if old_balance < case_data['price']:
+                    embed = discord.Embed(title="❌ Insufficient Balance", description=f"You need ${case_data['price']:.2f} to open this case!", color=discord.Color.red())
+                    embed.set_footer(text=f"💖 Support: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+
+                await conn.execute("UPDATE users SET balance = balance - $1, total_opens = total_opens + 1 WHERE user_id = $2", case_data['price'], interaction.user.id)
+
+                item = get_random_item(case_id)
+
+                if item is None:
+                    await interaction.followup.send("❌ Error opening case. Please try again.", ephemeral=True)
+                    return
+
+                price_value = float(item['price'])
+
+                await conn.execute("""INSERT INTO inventory 
+                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
+                    VALUES ($1, $2, 'weapon', $3, $4, $5, $6, $7)""",
+                    interaction.user.id, item['name'], item['rarity'], price_value, 
+                    item.get('condition', 'Field-Tested'), item['is_stattrak'], 
+                    item.get('float', 0.0000))
+
+                if item['rarity'] == "Gold":
+                    await conn.execute("UPDATE users SET total_golds = total_golds + 1 WHERE user_id = $1", interaction.user.id)
+                    await update_quest_progress(interaction.user.id, "get_golds", 1, conn)
+
+                await update_quest_progress(interaction.user.id, "open_cases", 1, conn)
+                await update_quest_progress(interaction.user.id, "earn_money", int(case_data['price']), conn)
+
+                new_balance = await get_balance(interaction.user.id, conn)
+
+                await add_xp(interaction.user.id, 25, conn)
+
+                color_map = {"Gold": 0xffd700, "Red": 0xff4444, "Pink": 0xff69b4, "Purple": 0xaa00ff, "Blue": 0x0066cc}
+                embed = discord.Embed(title=f"🔑 Opening {case_data['emoji']} {case_data['name']}...", color=color_map.get(item['rarity'], 0x808080))
+                embed.add_field(name="✨ You got:", value=f"**{item['display_name']}**", inline=False)
+                embed.add_field(name="Rarity", value=item['rarity'], inline=True)
+                embed.add_field(name="Condition", value=item.get('condition', 'N/A'), inline=True)
+                embed.add_field(name="🔢 Float", value=f"{item.get('float', 0.0000):.4f}", inline=True)
+                embed.add_field(name="Value", value=f"${item['price']:,.2f}", inline=True)
+                if item['is_stattrak']:
+                    embed.add_field(name="🔥 StatTrak™", value="Rare StatTrak™ variant!", inline=False)
+                embed.add_field(name="💰 Cost", value=f"${case_data['price']:.2f}", inline=True)
+                embed.add_field(name="💰 New Balance", value=f"${new_balance:,.2f}", inline=True)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Open case error: {e}")
+        await interaction.followup.send(f"❌ Error opening case: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# BULK OPEN COMMAND
+# ============================================
+
+@bot.tree.command(name="bulkopen", description="Open multiple cases at once with discount (5,10,15,20,25)")
+async def bulk_open(interaction: discord.Interaction, case: str, quantity: int):
+    if not await is_bot_channel(interaction):
+        return
+
+    valid_quantities = [5, 10, 15, 20, 25]
+    if quantity not in valid_quantities:
+        await interaction.response.send_message(f"❌ Invalid quantity! Choose from: {', '.join(str(q) for q in valid_quantities)}", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    case_id = case.lower()
+    if case_id not in CASES:
+        await interaction.followup.send("❌ Invalid case! Use `/cases` to see available cases.", ephemeral=True)
+        return
+
+    case_data = CASES[case_id]
+
+    discount_percent = {5: 5, 10: 10, 15: 15, 20: 20, 25: 25}[quantity]
+    discount_multiplier = {5: 0.95, 10: 0.90, 15: 0.85, 20: 0.80, 25: 0.75}[quantity]
+    total_cost = round(case_data['price'] * quantity * discount_multiplier, 2)
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+
+                if not user:
+                    await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
+                    await create_daily_quests(interaction.user.id, conn)
+                    user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+
+                old_balance = user['balance']
+
+                if old_balance < total_cost:
+                    embed = discord.Embed(title="❌ Insufficient Balance", description=f"You need ${total_cost:.2f} to open {quantity} {case_data['name']}s!", color=discord.Color.red())
+                    embed.set_footer(text=f"💖 Support: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+
+                await conn.execute("UPDATE users SET balance = balance - $1, total_opens = total_opens + $2 WHERE user_id = $3", total_cost, quantity, interaction.user.id)
+
+                items = []
+                for _ in range(quantity):
+                    item = get_random_item(case_id)
+                    if item:
+                        price_value = float(item['price'])
+                        await conn.execute("""INSERT INTO inventory 
+                            (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
+                            VALUES ($1, $2, 'weapon', $3, $4, $5, $6, $7)""",
+                            interaction.user.id, item['name'], item['rarity'], price_value, 
+                            item.get('condition', 'Field-Tested'), item['is_stattrak'],
+                            item.get('float', 0.0000))
+                        items.append(item)
+
+                        if item['rarity'] == "Gold":
+                            await conn.execute("UPDATE users SET total_golds = total_golds + 1 WHERE user_id = $1", interaction.user.id)
+                            await update_quest_progress(interaction.user.id, "get_golds", 1, conn)
+
+                await update_quest_progress(interaction.user.id, "open_cases", quantity, conn)
+                await update_quest_progress(interaction.user.id, "earn_money", int(total_cost), conn)
+
+                new_balance = await get_balance(interaction.user.id, conn)
+
+                await add_xp(interaction.user.id, quantity * 10, conn)
+
+                item_summary = ""
+                for i, item in enumerate(items[:10], 1):
+                    float_display = f" (Float: {item.get('float', 0.0000):.4f})" if item.get('float') is not None else ""
+                    item_summary += f"{i}. {item['display_name']} - ${item['price']:.2f}{float_display}\n"
+                if len(items) > 10:
+                    item_summary += f"... and {len(items) - 10} more items"
+
+                embed = discord.Embed(title=f"🔑 Bulk Opened {quantity} {case_data['name']}s!", color=discord.Color.purple())
+                embed.add_field(name="📦 Items Obtained", value=item_summary[:1024], inline=False)
+                embed.add_field(name="💰 Total Cost", value=f"${total_cost:.2f} ({discount_percent}% discount!)", inline=True)
+                embed.add_field(name="💰 Previous Balance", value=f"${old_balance:.2f}", inline=True)
+                embed.add_field(name="💰 New Balance", value=f"${new_balance:.2f}", inline=True)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Bulk open error: {e}")
+        await interaction.followup.send(f"❌ Error opening cases: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# STICKER CAPSULE COMMANDS
+# ============================================
+
+@bot.tree.command(name="capsules", description="View available sticker capsules")
+async def list_capsules(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    embed = discord.Embed(title="📦 Available Sticker Capsules (5)", color=discord.Color.purple())
+    for capsule_id, capsule_data in STICKER_CAPSULES.items():
+        embed.add_field(name=f"{capsule_data['emoji']} {capsule_data['name']}", value=f"Price: ${capsule_data['price']:.2f}\nUse: `/sticker {capsule_id}`", inline=True)
+    embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="sticker", description="Open a sticker capsule")
+async def open_sticker(interaction: discord.Interaction, capsule: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    capsule_id = capsule.lower()
+    if capsule_id not in STICKER_CAPSULES:
+        await interaction.followup.send("❌ Invalid capsule! Use `/capsules` to see available capsules.", ephemeral=True)
+        return
+
+    capsule_data = STICKER_CAPSULES[capsule_id]
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+
+                if not user:
+                    await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
+                    await create_daily_quests(interaction.user.id, conn)
+                    user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+
+                old_balance = user['balance']
+
+                if old_balance < capsule_data['price']:
+                    embed = discord.Embed(title="❌ Insufficient Balance", description=f"You need ${capsule_data['price']:.2f} to open this capsule!", color=discord.Color.red())
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+
+                await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", capsule_data['price'], interaction.user.id)
+
+                sticker = get_random_sticker(capsule_id)
+
+                if not sticker:
+                    await interaction.followup.send("❌ Error opening sticker capsule. Please try again.", ephemeral=True)
+                    return
+
+                await conn.execute("INSERT INTO inventory (user_id, item_name, item_type, rarity, price, is_stattrak) VALUES ($1, $2, 'sticker', $3, $4, $5)",
+                                  interaction.user.id, sticker['name'], sticker['rarity'], sticker['price'], sticker['is_stattrak'])
+
+                new_balance = await get_balance(interaction.user.id, conn)
+
+                color_map = {"👑 Legendary": 0xffd700, "👑 Epic": 0xaa00ff, "👑 Rare": 0x0066cc, "👑 Common": 0x00aa00, "🔥": 0xff4444, "💫": 0xff69b4, "✨": 0xaa00ff, "⭐": 0x0066cc}
+
+                embed = discord.Embed(title=f"⭐ Opening {capsule_data['emoji']} {capsule_data['name']}...", color=color_map.get(sticker['rarity'], 0x808080))
+                embed.add_field(name="✨ You got:", value=f"**{sticker['name']}**", inline=False)
+                embed.add_field(name="Rarity", value=sticker['rarity'], inline=True)
+                embed.add_field(name="Value", value=f"${sticker['price']:.2f}", inline=True)
+                if sticker['is_stattrak']:
+                    embed.add_field(name="🔥 StatTrak™", value="Rare StatTrak™ variant!", inline=False)
+                embed.add_field(name="💰 Cost", value=f"${capsule_data['price']:.2f}", inline=True)
+                embed.add_field(name="💰 New Balance", value=f"${new_balance:,.2f}", inline=True)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Open sticker error: {e}")
+        await interaction.followup.send(f"❌ Error opening sticker: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# INVENTORY COMMANDS
+# ============================================
+
+@bot.tree.command(name="inventory", description="View your inventory")
+async def view_inventory(interaction: discord.Interaction, filter_type: str = None, search: str = None):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+        
+        query = "SELECT id, item_name, item_type, rarity, price, is_stattrak, float_value, condition FROM inventory WHERE user_id = $1 AND status = 'kept'"
+        params = [interaction.user.id]
+
+        if filter_type:
+            filter_lower = filter_type.lower()
+            if filter_lower == 'weapon':
+                query += " AND item_type = 'weapon'"
+            elif filter_lower == 'sticker':
+                query += " AND item_type = 'sticker'"
+
+        if search:
+            query += " AND LOWER(item_name) LIKE $" + str(len(params) + 1)
+            params.append(f"%{search.lower()}%")
+
+        query += " ORDER BY created_at DESC"
+        items = await conn.fetch(query, *params)
+
+        if not items:
+            embed = discord.Embed(title="📦 Inventory", description="Your inventory is empty! Open some cases with `/open` or `/sticker`", color=discord.Color.blue())
+            embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+            await interaction.followup.send(embed=embed)
+            return
+
+        view = InventoryView(items, interaction.user)
+        response = await interaction.followup.send(embed=view.get_embed(), view=view)
+        view.message = response
+
+# ============================================
+# SELL COMMAND
+# ============================================
+
+@bot.tree.command(name="sell", description="Sell an item from your inventory")
+async def sell_item(interaction: discord.Interaction, item_id: int):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND status = 'kept'", item_id, interaction.user.id)
+
+                if not item:
+                    await interaction.followup.send(f"❌ Item ID {item_id} not found in your inventory! Use `/inventory` to see your items.", ephemeral=True)
+                    return
+
+                price_value = float(item['price']) if isinstance(item['price'], Decimal) else item['price']
+                sell_price = int(price_value * 0.7)
+
+                old_balance = await get_balance(interaction.user.id, conn)
+
+                await conn.execute("DELETE FROM inventory WHERE id = $1", item_id)
+                await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", sell_price, interaction.user.id)
+
+                await update_quest_progress(interaction.user.id, "sell_items", 1, conn)
+
+                new_balance = await get_balance(interaction.user.id, conn)
+
+                embed = discord.Embed(title="💰 Item Sold!", color=discord.Color.green())
+                embed.add_field(name="Sold", value=item['item_name'], inline=False)
+                embed.add_field(name="Received", value=f"${sell_price:,.2f}", inline=True)
+                embed.add_field(name="Original Value", value=f"${price_value:,.2f}", inline=True)
+                if item.get('float_value') is not None:
+                    embed.add_field(name="🔢 Float", value=f"{item['float_value']:.4f}", inline=True)
+                embed.add_field(name="Previous Balance", value=f"${old_balance:,.2f}", inline=True)
+                embed.add_field(name="New Balance", value=f"${new_balance:,.2f}", inline=True)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+                await interaction.followup.send(embed=embed)
+
+    except Exception as e:
+        logger.error(f"Sell error: {e}")
+        await interaction.followup.send(f"❌ Error selling item: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# QUESTS COMMANDS
+# ============================================
+
+@bot.tree.command(name="quests", description="View your daily quests")
+async def view_quests(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    user_id = interaction.user.id
+
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(user_id, interaction.user.display_name, conn)
+        
+        user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
+        if not user:
+            await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", user_id, 1000)
+        
+        quests = await conn.fetch("SELECT * FROM quests WHERE user_id = $1 AND claimed = false", user_id)
+        if not quests:
+            await create_daily_quests(user_id, conn)
+            quests = await conn.fetch("SELECT * FROM quests WHERE user_id = $1 AND claimed = false", user_id)
+
+        unique_quests = {}
+        for quest in quests:
+            if quest['quest_type'] not in unique_quests:
+                unique_quests[quest['quest_type']] = quest
+
+        embed = discord.Embed(title="📋 Daily Quests", color=discord.Color.purple(), timestamp=datetime.now())
+        quest_names = {"open_cases": "🔑 Open Cases", "get_golds": "✨ Find Gold Items", "earn_money": "💰 Earn Money", "trade_up": "🔄 Complete Trade-Ups", "sell_items": "💸 Sell Items", "jackpot_win": "🎲 Win Jackpot", "daily_streak": "📅 Maintain Daily Streak"}
+        completed_count = 0
+
+        for quest_type, quest in unique_quests.items():
+            name = quest_names.get(quest_type, quest_type)
+            status = "✅ COMPLETED" if quest['completed'] else f"Progress: {quest['progress']}/{quest['required']}"
+            embed.add_field(name=name, value=f"{status}\nReward: ${quest['reward']:,}", inline=False)
+            if quest['completed']:
+                completed_count += 1
+
+        if completed_count == len(unique_quests):
+            embed.set_footer(text="All quests completed! Use /claim to collect your rewards!")
+        else:
+            embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+        await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="claim", description="Claim completed quest rewards")
+async def claim_quests(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    user_id = interaction.user.id
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, interaction.user.display_name, conn)
+                
+                completed_quests = await conn.fetch("SELECT * FROM quests WHERE user_id = $1 AND completed = true AND claimed = false", user_id)
+                if not completed_quests:
+                    await interaction.followup.send("❌ No completed quests to claim!", ephemeral=True)
+                    return
+
+                total_reward = 0
+                for quest in completed_quests:
+                    total_reward += quest['reward']
+                    await conn.execute("UPDATE quests SET claimed = true WHERE id = $1", quest['id'])
+
+                await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", total_reward, user_id)
+
+                new_balance = await get_balance(user_id, conn)
+
+                embed = discord.Embed(title="🎉 Quests Claimed!", color=discord.Color.green(), timestamp=datetime.now())
+                embed.add_field(name="Total Reward", value=f"${total_reward:,.2f}", inline=False)
+                embed.add_field(name="New Balance", value=f"${new_balance:,.2f}", inline=True)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Claim quests error: {e}")
+        await interaction.followup.send(f"❌ Error claiming quests: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# LEADERBOARD COMMANDS
+# ============================================
+
+@bot.tree.command(name="leaderboard_money", description="View richest users")
+async def lb_money(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    async with db_pool.acquire() as conn:
+        top_users = await conn.fetch("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT 10")
+        embed = discord.Embed(title="💰 Richest Users", color=discord.Color.gold())
+
+        for idx, user in enumerate(top_users, 1):
+            try:
+                member = await bot.fetch_user(user['user_id'])
+                medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
+                embed.add_field(name=f"{medal} {member.display_name}", value=f"${user['balance']:,.2f}", inline=False)
+            except:
+                pass
+
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="leaderboard_opens", description="View most cases opened")
+async def lb_opens(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    async with db_pool.acquire() as conn:
+        top_users = await conn.fetch("SELECT user_id, total_opens FROM users ORDER BY total_opens DESC LIMIT 10")
+        embed = discord.Embed(title="🔑 Most Cases Opened", color=discord.Color.blue())
+
+        for idx, user in enumerate(top_users, 1):
+            if user['total_opens'] > 0:
+                try:
+                    member = await bot.fetch_user(user['user_id'])
+                    medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
+                    embed.add_field(name=f"{medal} {member.display_name}", value=f"{user['total_opens']} cases", inline=False)
+                except:
+                    pass
+
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="leaderboard_golds", description="View most gold items found")
+async def lb_golds(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    async with db_pool.acquire() as conn:
+        top_users = await conn.fetch("SELECT user_id, total_golds FROM users ORDER BY total_golds DESC LIMIT 10")
+        embed = discord.Embed(title="✨ Most Gold Items", color=discord.Color.gold())
+
+        for idx, user in enumerate(top_users, 1):
+            if user['total_golds'] > 0:
+                try:
+                    member = await bot.fetch_user(user['user_id'])
+                    medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
+                    embed.add_field(name=f"{medal} {member.display_name}", value=f"{user['total_golds']} golds", inline=False)
+                except:
+                    pass
+
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="leaderboard_trades", description="View most trade-ups completed")
+async def lb_trades(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    async with db_pool.acquire() as conn:
+        top_users = await conn.fetch("SELECT user_id, total_trades FROM users ORDER BY total_trades DESC LIMIT 10")
+        embed = discord.Embed(title="🔄 Most Trade-Ups", color=discord.Color.purple())
+
+        for idx, user in enumerate(top_users, 1):
+            if user['total_trades'] > 0:
+                try:
+                    member = await bot.fetch_user(user['user_id'])
+                    medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}."
+                    embed.add_field(name=f"{medal} {member.display_name}", value=f"{user['total_trades']} trades", inline=False)
+                except:
+                    pass
+
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
+# ============================================
+# JACKPOT COMMANDS
+# ============================================
+
+@bot.tree.command(name="jackpot", description="Join the jackpot (minimum $100)")
+async def jackpot(interaction: discord.Interaction, amount: float):
+    if not await is_bot_channel(interaction):
+        return
+
+    global jackpot_pot, jackpot_entries
+
+    async with jackpot_lock:
+        if amount < 100:
+            await interaction.response.send_message("❌ Minimum bet is $100!", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+                if not user or user['balance'] < amount:
+                    await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
+                    return
+
+                await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", amount, interaction.user.id)
+
+        jackpot_pot += amount
+        jackpot_entries.append({"user_id": interaction.user.id, "amount": amount, "username": interaction.user.display_name})
+
+        embed = discord.Embed(title="🎲 Joined Jackpot!", color=discord.Color.green())
+        embed.add_field(name="Your Bet", value=f"${amount:,.2f}", inline=True)
+        embed.add_field(name="Total Pot", value=f"${jackpot_pot:,.2f}", inline=True)
+        embed.add_field(name="Total Players", value=len(jackpot_entries), inline=True)
+
+        if len(jackpot_entries) >= 3 or jackpot_pot >= 5000:
+            winner = random.choice(jackpot_entries)
+            win_amount = int(jackpot_pot * 0.95)
+
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    await ensure_user_exists(winner['user_id'], winner['username'], conn)
+                    await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", win_amount, winner['user_id'])
+                    await update_quest_progress(winner['user_id'], "jackpot_win", 1, conn)
+
+            winner_embed = discord.Embed(title="🏆 JACKPOT WINNER!", color=discord.Color.gold())
+            winner_embed.add_field(name="Winner", value=winner['username'], inline=False)
+            winner_embed.add_field(name="Won", value=f"${win_amount:,.2f}", inline=True)
+            winner_embed.add_field(name="Total Pot", value=f"${jackpot_pot:,.2f}", inline=True)
+            winner_embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+            jackpot_pot = 0
+            jackpot_entries = []
+            await interaction.followup.send(embed=winner_embed)
+        else:
+            embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+            await interaction.followup.send(embed=embed)
+
+# ============================================
+# TRADE-UP COMMANDS
+# ============================================
+
+@bot.tree.command(name="tradeup", description="Trade 10 Blue weapons for 1 Purple weapon")
+async def tradeup_weapons(interaction: discord.Interaction, item_ids: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    try:
+        ids = [int(x.strip()) for x in item_ids.split(',')]
+    except:
+        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/tradeup 1,2,3,4,5,6,7,8,9,10`", ephemeral=True)
+        return
+
+    if len(ids) != 10:
+        await interaction.followup.send("❌ You need exactly 10 items to trade up!", ephemeral=True)
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                items = []
+                for item_id in ids:
+                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Blue' AND item_type = 'weapon' AND status = 'kept'", item_id, interaction.user.id)
+                    if not item:
+                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Blue weapon!", ephemeral=True)
+                        return
+                    items.append(item)
+
+                for item in items:
+                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
+
+                is_stattrak = random.random() < 0.1
+                possible_items = []
+                for case in CASES.values():
+                    for item in case['items']:
+                        if item['rarity'] == 'Purple':
+                            possible_items.append(item)
+
+                if not possible_items:
+                    possible_items = [{"name": "Mystery Purple Item", "condition": "Field-Tested", "tier": None}]
+
+                new_item_template = random.choice(possible_items)
+                condition = new_item_template.get('condition', 'Field-Tested')
+                
+                float_value = generate_skin_float()
+                condition_from_float = get_skin_condition(float_value)
+                
+                new_value = calculate_item_value('Purple', condition, None, is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0,
+                    "Minimal Wear": 1.5,
+                    "Field-Tested": 1.0,
+                    "Well-Worn": 0.75,
+                    "Battle-Scarred": 0.5
+                }.get(condition_from_float, 1.0)
+                new_value = round(new_value * float_multiplier, 2)
+                
+                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
+
+                await conn.execute("""INSERT INTO inventory 
+                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
+                    VALUES ($1, $2, 'weapon', 'Purple', $3, $4, $5, $6)""",
+                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
+                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
+                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
+
+                rarity_emoji = RARITY_EMOJIS.get('Purple', "🟪")
+                embed = discord.Embed(title="🔄 Trade-Up Complete! (Blue → Purple)", color=discord.Color.purple())
+                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
+                embed.add_field(name="Received", value=f"{rarity_emoji} **{name}**", inline=False)
+                embed.add_field(name="Rarity", value=f"{rarity_emoji} Purple", inline=True)
+                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
+                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
+                if is_stattrak:
+                    embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Tradeup error: {e}")
+        await interaction.followup.send(f"❌ Error during trade-up: {str(e)[:100]}", ephemeral=True)
+
+@bot.tree.command(name="tradeup_purple", description="Trade 10 Purple weapons for 1 Pink weapon")
+async def tradeup_purple(interaction: discord.Interaction, item_ids: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    try:
+        ids = [int(x.strip()) for x in item_ids.split(',')]
+    except:
+        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/tradeup_purple 1,2,3,4,5,6,7,8,9,10`", ephemeral=True)
+        return
+
+    if len(ids) != 10:
+        await interaction.followup.send("❌ You need exactly 10 Purple items to trade up!", ephemeral=True)
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                items = []
+                for item_id in ids:
+                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Purple' AND item_type = 'weapon' AND status = 'kept'", item_id, interaction.user.id)
+                    if not item:
+                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Purple weapon!", ephemeral=True)
+                        return
+                    items.append(item)
+
+                for item in items:
+                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
+
+                is_stattrak = random.random() < 0.1
+                possible_items = []
+                for case in CASES.values():
+                    for item in case['items']:
+                        if item['rarity'] == 'Pink':
+                            possible_items.append(item)
+
+                if not possible_items:
+                    possible_items = [{"name": "Mystery Pink Item", "condition": "Field-Tested", "tier": None}]
+
+                new_item_template = random.choice(possible_items)
+                condition = new_item_template.get('condition', 'Field-Tested')
+                
+                float_value = generate_skin_float()
+                condition_from_float = get_skin_condition(float_value)
+                
+                new_value = calculate_item_value('Pink', condition, None, is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0,
+                    "Minimal Wear": 1.5,
+                    "Field-Tested": 1.0,
+                    "Well-Worn": 0.75,
+                    "Battle-Scarred": 0.5
+                }.get(condition_from_float, 1.0)
+                new_value = round(new_value * float_multiplier, 2)
+                
+                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
+
+                await conn.execute("""INSERT INTO inventory 
+                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
+                    VALUES ($1, $2, 'weapon', 'Pink', $3, $4, $5, $6)""",
+                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
+                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
+                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
+
+                rarity_emoji = RARITY_EMOJIS.get('Pink', "💗")
+                embed = discord.Embed(title="🔄 Trade-Up Complete! (Purple → Pink)", color=discord.Color.purple())
+                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
+                embed.add_field(name="Received", value=f"{rarity_emoji} **{name}**", inline=False)
+                embed.add_field(name="Rarity", value=f"{rarity_emoji} Pink", inline=True)
+                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
+                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
+                if is_stattrak:
+                    embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Tradeup purple error: {e}")
+        await interaction.followup.send(f"❌ Error during trade-up: {str(e)[:100]}", ephemeral=True)
+
+@bot.tree.command(name="tradeup_pink", description="Trade 10 Pink weapons for 1 Red weapon")
+async def tradeup_pink(interaction: discord.Interaction, item_ids: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    try:
+        ids = [int(x.strip()) for x in item_ids.split(',')]
+    except:
+        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/tradeup_pink 1,2,3,4,5,6,7,8,9,10`", ephemeral=True)
+        return
+
+    if len(ids) != 10:
+        await interaction.followup.send("❌ You need exactly 10 Pink items to trade up!", ephemeral=True)
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                items = []
+                for item_id in ids:
+                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Pink' AND item_type = 'weapon' AND status = 'kept'", item_id, interaction.user.id)
+                    if not item:
+                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Pink weapon!", ephemeral=True)
+                        return
+                    items.append(item)
+
+                for item in items:
+                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
+
+                is_stattrak = random.random() < 0.1
+                possible_items = []
+                for case in CASES.values():
+                    for item in case['items']:
+                        if item['rarity'] == 'Red':
+                            possible_items.append(item)
+
+                if not possible_items:
+                    possible_items = [{"name": "Mystery Red Item", "condition": "Field-Tested", "tier": None}]
+
+                new_item_template = random.choice(possible_items)
+                condition = new_item_template.get('condition', 'Field-Tested')
+                
+                float_value = generate_skin_float()
+                condition_from_float = get_skin_condition(float_value)
+                
+                new_value = calculate_item_value('Red', condition, None, is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0,
+                    "Minimal Wear": 1.5,
+                    "Field-Tested": 1.0,
+                    "Well-Worn": 0.75,
+                    "Battle-Scarred": 0.5
+                }.get(condition_from_float, 1.0)
+                new_value = round(new_value * float_multiplier, 2)
+                
+                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
+
+                await conn.execute("""INSERT INTO inventory 
+                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
+                    VALUES ($1, $2, 'weapon', 'Red', $3, $4, $5, $6)""",
+                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
+                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
+                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
+
+                rarity_emoji = RARITY_EMOJIS.get('Red', "🔴")
+                embed = discord.Embed(title="🔄 Trade-Up Complete! (Pink → Red)", color=discord.Color.purple())
+                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
+                embed.add_field(name="Received", value=f"{rarity_emoji} **{name}**", inline=False)
+                embed.add_field(name="Rarity", value=f"{rarity_emoji} Red", inline=True)
+                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
+                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
+                if is_stattrak:
+                    embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Tradeup pink error: {e}")
+        await interaction.followup.send(f"❌ Error during trade-up: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# GOLD TRADE COMMAND
+# ============================================
+
+@bot.tree.command(name="goldtrade", description="Trade gold items for higher tier (5 items)")
+async def gold_tradeup(interaction: discord.Interaction, item_ids: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    try:
+        ids = [int(x.strip()) for x in item_ids.split(',')]
+    except:
+        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/goldtrade 1,2,3,4,5`", ephemeral=True)
+        return
+
+    if len(ids) != 5:
+        await interaction.followup.send("❌ You need exactly 5 gold items to trade up!", ephemeral=True)
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                items = []
+                tiers = []
+                for item_id in ids:
+                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Gold' AND status = 'kept'", item_id, interaction.user.id)
+                    if not item:
+                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Gold item!", ephemeral=True)
+                        return
+                    items.append(item)
+                    tiers.append(item.get('tier', 'Common'))
+
+                tier_index = 0
+                for t in tiers:
+                    if t in GOLD_TIER_PROGRESSION:
+                        idx = GOLD_TIER_PROGRESSION.index(t)
+                        if idx > tier_index:
+                            tier_index = idx
+
+                if tier_index >= len(GOLD_TIER_PROGRESSION) - 1:
+                    await interaction.followup.send("❌ Cannot trade up - already at maximum tier!", ephemeral=True)
+                    return
+
+                next_tier = GOLD_TIER_PROGRESSION[tier_index + 1]
+
+                for item in items:
+                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
+
+                is_stattrak = random.random() < 0.1
+                
+                float_value = generate_skin_float()
+                condition_from_float = get_skin_condition(float_value)
+                
+                new_value = calculate_item_value("Gold", "Factory New", next_tier, is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0,
+                    "Minimal Wear": 1.5,
+                    "Field-Tested": 1.0,
+                    "Well-Worn": 0.75,
+                    "Battle-Scarred": 0.5
+                }.get(condition_from_float, 1.0)
+                new_value = round(new_value * float_multiplier, 2)
+                
+                name = f"{'StatTrak™ ' if is_stattrak else ''}{next_tier} Gold Item"
+
+                await conn.execute("""INSERT INTO inventory 
+                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
+                    VALUES ($1, $2, 'weapon', 'Gold', $3, $4, $5, $6)""",
+                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
+                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
+                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
+
+                embed = discord.Embed(title="🔄 Gold Trade-Up Complete!", color=discord.Color.gold())
+                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
+                embed.add_field(name="Received", value=f"⭐ **{name}**", inline=False)
+                embed.add_field(name="Tier", value=next_tier, inline=True)
+                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
+                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Gold trade error: {e}")
+        await interaction.followup.send(f"❌ Error during gold trade: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# STICKER TRADE COMMAND
+# ============================================
+
+@bot.tree.command(name="stickertrade", description="Trade stickers for higher rarity (5 items)")
+async def sticker_tradeup(interaction: discord.Interaction, item_ids: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    try:
+        ids = [int(x.strip()) for x in item_ids.split(',')]
+    except:
+        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/stickertrade 1,2,3,4,5`", ephemeral=True)
+        return
+
+    if len(ids) != 5:
+        await interaction.followup.send("❌ You need exactly 5 stickers to trade up!", ephemeral=True)
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                items = []
+                rarities = []
+                for item_id in ids:
+                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND item_type = 'sticker' AND status = 'kept'", item_id, interaction.user.id)
+                    if not item:
+                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a sticker!", ephemeral=True)
+                        return
+                    items.append(item)
+                    rarities.append(item['rarity'])
+
+                rarity_order = list(STICKER_TRADE_PROGRESSION.keys())
+                current_rarity = None
+                for r in rarities:
+                    if r in rarity_order:
+                        if current_rarity is None or rarity_order.index(r) < rarity_order.index(current_rarity):
+                            current_rarity = r
+
+                if current_rarity is None or current_rarity not in STICKER_TRADE_PROGRESSION:
+                    await interaction.followup.send(f"❌ Cannot trade up these stickers!", ephemeral=True)
+                    return
+
+                next_rarity = STICKER_TRADE_PROGRESSION[current_rarity]
+
+                for item in items:
+                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
+
+                is_stattrak = random.random() < 0.1
+                new_value = calculate_item_value(next_rarity, None, None, is_stattrak)
+                name = f"{'StatTrak™ ' if is_stattrak else ''}Mystery {next_rarity} Sticker"
+
+                await conn.execute("INSERT INTO inventory (user_id, item_name, item_type, rarity, price, is_stattrak) VALUES ($1, $2, 'sticker', $3, $4, $5)",
+                                  interaction.user.id, name, next_rarity, new_value, is_stattrak)
+                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
+                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
+
+                embed = discord.Embed(title="🔄 Sticker Trade-Up Complete!", color=discord.Color.purple())
+                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
+                embed.add_field(name="Received", value=f"**{name}**", inline=False)
+                embed.add_field(name="Rarity", value=next_rarity, inline=True)
+                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Sticker trade error: {e}")
+        await interaction.followup.send(f"❌ Error during sticker trade: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# QUICK TRADE COMMAND
+# ============================================
+
+@bot.tree.command(name="quicktrade", description="Quick trade-up - randomly selects items from your inventory")
+async def quick_tradeup(interaction: discord.Interaction, rarity: str):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    rarity_map = {
+        'blue': {'rarity': 'Blue', 'next': 'Purple', 'count': 10, 'emoji': '🟦'},
+        'purple': {'rarity': 'Purple', 'next': 'Pink', 'count': 10, 'emoji': '🟪'},
+        'pink': {'rarity': 'Pink', 'next': 'Red', 'count': 10, 'emoji': '💗'}
+    }
+
+    if rarity.lower() not in rarity_map:
+        await interaction.followup.send("❌ Invalid rarity! Use: `blue`, `purple`, or `pink`", ephemeral=True)
+        return
+
+    config = rarity_map[rarity.lower()]
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+                
+                items = await conn.fetch("SELECT id, item_name FROM inventory WHERE user_id = $1 AND rarity = $2 AND item_type = 'weapon' AND status = 'kept'", interaction.user.id, config['rarity'])
+
+                if len(items) < config['count']:
+                    await interaction.followup.send(f"❌ You need {config['count']} {config['rarity']} items for trade-up! You have {len(items)}.", ephemeral=True)
+                    return
+
+                selected_items = random.sample(items, config['count'])
+                selected_ids = [item['id'] for item in selected_items]
+
+                for item_id in selected_ids:
+                    await conn.execute("DELETE FROM inventory WHERE id = $1", item_id)
+
+                is_stattrak = random.random() < 0.1
+                possible_items = []
+                for case in CASES.values():
+                    for item in case['items']:
+                        if item['rarity'] == config['next']:
+                            possible_items.append(item)
+
+                if not possible_items:
+                    possible_items = [{"name": f"Mystery {config['next']} Item", "condition": "Field-Tested"}]
+
+                new_item_template = random.choice(possible_items)
+                condition = new_item_template.get('condition', 'Field-Tested')
+                
+                float_value = generate_skin_float()
+                condition_from_float = get_skin_condition(float_value)
+                
+                new_value = calculate_item_value(config['next'], condition, None, is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0,
+                    "Minimal Wear": 1.5,
+                    "Field-Tested": 1.0,
+                    "Well-Worn": 0.75,
+                    "Battle-Scarred": 0.5
+                }.get(condition_from_float, 1.0)
+                new_value = round(new_value * float_multiplier, 2)
+                
+                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
+
+                await conn.execute("""INSERT INTO inventory 
+                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
+                    VALUES ($1, $2, 'weapon', $3, $4, $5, $6, $7)""",
+                    interaction.user.id, name, config['next'], new_value, condition_from_float, is_stattrak, float_value)
+                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
+                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
+
+                rarity_emoji = RARITY_EMOJIS.get(config['next'], config['emoji'])
+
+                embed = discord.Embed(title=f"🔄 Quick Trade-Up Complete! ({config['rarity']} → {config['next']})", color=discord.Color.purple())
+                embed.add_field(name="Traded Items", value=f"{config['count']} random {config['rarity']} items", inline=False)
+                embed.add_field(name="Traded IDs", value=", ".join(str(id) for id in selected_ids), inline=False)
+                embed.add_field(name="Received", value=f"{rarity_emoji} **{name}**", inline=False)
+                embed.add_field(name="Rarity", value=f"{rarity_emoji} {config['next']}", inline=True)
+                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
+                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
+                if is_stattrak:
+                    embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
+                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+                await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Quick trade error: {e}")
+        await interaction.followup.send(f"❌ Error during trade-up: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# ADMIN STATS COMMAND
+# ============================================
+
+@bot.tree.command(name="stats", description="View bot statistics (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def bot_stats(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    try:
+        async with db_pool.acquire() as conn:
+            total_users = await conn.fetchval("SELECT COUNT(*) FROM users")
+            total_balance = await conn.fetchval("SELECT COALESCE(SUM(balance), 0) FROM users")
+            total_opens = await conn.fetchval("SELECT COALESCE(SUM(total_opens), 0) FROM users")
+            total_golds = await conn.fetchval("SELECT COALESCE(SUM(total_golds), 0) FROM users")
+            total_trades = await conn.fetchval("SELECT COALESCE(SUM(total_trades), 0) FROM users")
+
+            most_valuable = await conn.fetchrow("SELECT item_name, price FROM inventory WHERE price IS NOT NULL ORDER BY price DESC LIMIT 1")
+            total_inv_value = await conn.fetchval("SELECT COALESCE(SUM(price), 0) FROM inventory WHERE status = 'kept'")
+
+            embed = discord.Embed(title="📊 Bot Statistics", color=discord.Color.blue(), timestamp=datetime.now())
+            embed.add_field(name="👥 Total Users", value=f"{total_users:,}", inline=True)
+            embed.add_field(name="💰 Total Economy Balance", value=f"${float(total_balance):,.2f}", inline=True)
+            embed.add_field(name="📦 Total Cases Opened", value=f"{total_opens:,}", inline=True)
+            embed.add_field(name="✨ Total Golds Found", value=f"{total_golds:,}", inline=True)
+            embed.add_field(name="🔄 Total Trade-Ups", value=f"{total_trades:,}", inline=True)
+            embed.add_field(name="💎 Total Inventory Value", value=f"${float(total_inv_value):,.2f}", inline=True)
+
+            if most_valuable and most_valuable['item_name']:
+                embed.add_field(name="🏆 Most Valuable Item", value=f"{most_valuable['item_name']} (${float(most_valuable['price']):,.2f})", inline=False)
+
+            embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+            await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        await interaction.followup.send(f"❌ Error fetching statistics: {str(e)[:100]}", ephemeral=True)
+
+# ============================================
+# GUILD SETTINGS COMMANDS
+# ============================================
+
+@bot.tree.command(name="setchannel", description="Set the channel for bot commands (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def set_bot_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need Administrator permissions to use this command!", ephemeral=True)
+        return
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO guild_settings (guild_id, name, bot_channel_id, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (guild_id) DO UPDATE SET
+            bot_channel_id = $3, updated_at = NOW()
+        """, interaction.guild_id, interaction.guild.name, channel.id)
+    
+    embed = discord.Embed(
+        title="✅ Bot Channel Set!",
+        description=f"Bot commands will now only work in {channel.mention}",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="removechannel", description="Remove channel restriction (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def remove_bot_channel(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need Administrator permissions to use this command!", ephemeral=True)
+        return
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE guild_settings SET bot_channel_id = NULL, updated_at = NOW() WHERE guild_id = $1
+        """, interaction.guild_id)
+    
+    embed = discord.Embed(
+        title="✅ Channel Restriction Removed!",
+        description="Bot commands can now be used in any channel",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+    await interaction.response.send_message(embed=embed)
+
+# ============================================
+# GIVEAWAY COMMANDS
+# ============================================
+
+@bot.tree.command(name="giveaway_create", description="Create a giveaway (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def create_giveaway(interaction: discord.Interaction, prize: str, duration_minutes: int, winners: int = 1):
+    if not await is_bot_channel(interaction):
+        return
+
+    if duration_minutes < 1 or duration_minutes > 10080:
+        await interaction.response.send_message("❌ Duration must be between 1 minute and 7 days!", ephemeral=True)
+        return
+    if winners < 1 or winners > 10:
+        await interaction.response.send_message("❌ Winners must be between 1 and 10!", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    end_time = datetime.now() + timedelta(minutes=duration_minutes)
+    embed = discord.Embed(title="🎉 GIVEAWAY! 🎉", color=discord.Color.gold(), timestamp=datetime.now())
+    embed.add_field(name="Prize", value=prize, inline=False)
+    embed.add_field(name="Winners", value=winners, inline=True)
+    embed.add_field(name="Ends", value=f"<t:{int(end_time.timestamp())}:R>", inline=True)
+    embed.add_field(name="How to Enter", value="Click the 🎉 button below!", inline=False)
+    embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            giveaway_id_result = await conn.fetchrow(
+                "INSERT INTO giveaways (message_id, channel_id, prize, winner_count, end_time) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                0, interaction.channel_id, prize, winners, end_time
+            )
+            giveaway_id = giveaway_id_result['id']
+
+    view = discord.ui.View(timeout=duration_minutes * 60)
+    button = discord.ui.Button(emoji="🎉", label="Enter Giveaway", style=discord.ButtonStyle.primary)
+
+    async def button_callback(button_interaction: discord.Interaction):
+        async with db_pool.acquire() as conn:
+            await ensure_user_exists(button_interaction.user.id, button_interaction.user.display_name, conn)
+            
+            existing = await conn.fetchrow("SELECT * FROM giveaway_entries WHERE giveaway_id = $1 AND user_id = $2", giveaway_id, button_interaction.user.id)
+            if existing:
+                await button_interaction.response.send_message("❌ You already entered this giveaway!", ephemeral=True)
+                return
+
+            await conn.execute("INSERT INTO giveaway_entries (giveaway_id, user_id) VALUES ($1, $2)", giveaway_id, button_interaction.user.id)
+            await button_interaction.response.send_message("✅ You entered the giveaway! Good luck!", ephemeral=True)
+
+    button.callback = button_callback
+    view.add_item(button)
+    await interaction.followup.send(embed=embed, view=view)
+    msg = await interaction.original_response()
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE giveaways SET message_id = $1 WHERE id = $2", msg.id, giveaway_id)
+
+    async def end_giveaway():
+        await asyncio.sleep(duration_minutes * 60)
+        async with db_pool.acquire() as conn:
+            entries = await conn.fetch("SELECT user_id FROM giveaway_entries WHERE giveaway_id = $1", giveaway_id)
+            if not entries:
+                await interaction.channel.send(f"🎉 Giveaway for **{prize}** ended with no entries!")
+                return
+
+            winners_list = random.sample([e['user_id'] for e in entries], min(winners, len(entries)))
+            winner_mentions = []
+            for winner_id in winners_list:
+                user = await bot.fetch_user(winner_id)
+                winner_mentions.append(user.mention)
+
+            winner_text = ", ".join(winner_mentions)
+            result_embed = discord.Embed(title="🏆 GIVEAWAY WINNERS! 🏆", color=discord.Color.gold())
+            result_embed.add_field(name="Prize", value=prize, inline=False)
+            result_embed.add_field(name="Winners", value=winner_text, inline=False)
+            result_embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+            await interaction.channel.send(embed=result_embed)
+            await conn.execute("UPDATE giveaways SET ended = true WHERE id = $1", giveaway_id)
+
+    asyncio.create_task(end_giveaway())
+
+@bot.tree.command(name="giveaway_reroll", description="Reroll a giveaway (Admin only)")
+@app_commands.default_permissions(administrator=True)
+async def reroll_giveaway(interaction: discord.Interaction, giveaway_id: int):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    async with db_pool.acquire() as conn:
+        giveaway = await conn.fetchrow("SELECT * FROM giveaways WHERE id = $1", giveaway_id)
+        if not giveaway:
+            await interaction.followup.send("❌ Giveaway not found!", ephemeral=True)
+            return
+
+        entries = await conn.fetch("SELECT user_id FROM giveaway_entries WHERE giveaway_id = $1", giveaway_id)
+        if not entries:
+            await interaction.followup.send("❌ No entries to reroll!", ephemeral=True)
+            return
+
+        new_winners = random.sample([e['user_id'] for e in entries], min(giveaway['winner_count'], len(entries)))
+        winner_mentions = []
+        for winner_id in new_winners:
+            user = await bot.fetch_user(winner_id)
+            winner_mentions.append(user.mention)
+
+        embed = discord.Embed(title="🔄 Giveaway Rerolled!", color=discord.Color.gold())
+        embed.add_field(name="Prize", value=giveaway['prize'], inline=False)
+        embed.add_field(name="New Winners", value=", ".join(winner_mentions), inline=False)
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
+# ============================================
+# DASHBOARD COMMAND
+# ============================================
+
+@bot.tree.command(name="dashboard", description="Get the link to the bot's web dashboard")
+async def dashboard(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🌐 CS2CaseBot Dashboard",
+        description="**Take your case opening experience to the next level!**",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="🎰 Live Slot Machine Animation",
+        value="Watch the reels spin with **realistic slot machine animations** as you open cases! Every pull feels like the real thing with smooth spinning and dramatic reveals.",
+        inline=False
+    )
+    embed.add_field(
+        name="✨ Premium Features",
+        value="• **Live spinning reels** with authentic slot feel\n"
+              "• **Real-time item reveals** with glow effects\n"
+              "• **Confetti & particle bursts** on rare pulls\n"
+              "• **Float values & conditions** for every skin\n"
+              "• **Instant inventory management** with one click",
+        inline=False
+    )
+    embed.add_field(
+        name="🔗 Try It Now",
+        value="[**Click here to open the dashboard → cs2casebot.xyz**](https://cs2casebot.xyz/)",
+        inline=False
+    )
+    embed.set_footer(text="💖 Support us on Ko-fi")
+    await interaction.response.send_message(embed=embed)
+
+# ============================================
+# HELP COMMAND
+# ============================================
+
+@bot.tree.command(name="help_bot", description="Show all bot commands")
+async def help_command(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+
+    await interaction.response.defer()
+
+    embed = discord.Embed(title="🎮 CS2CaseBot Commands", color=discord.Color.blue())
+    embed.add_field(name="💰 Economy", value="`/balance` `/daily` `/transfer`", inline=False)
+    embed.add_field(name="📦 Cases (37)", value="`/cases` `/open <case>` `/bulkopen <case> 5/10/15/20/25`", inline=False)
+    embed.add_field(name="⭐ Stickers (5)", value="`/capsules` `/sticker <capsule>`", inline=False)
+    embed.add_field(name="🔄 Trade-Up", value="`/tradeup <ids>` (10 Blue→Purple)\n`/tradeup_purple <ids>` (10 Purple→Pink)\n`/tradeup_pink <ids>` (10 Pink→Red)\n`/quicktrade blue/purple/pink` (Random)\n`/goldtrade <ids>` (5 Golds)\n`/stickertrade <ids>` (5 stickers)", inline=False)
+    embed.add_field(name="📋 Quests", value="`/quests` `/claim`", inline=False)
+    embed.add_field(name="🎁 Giveaways", value="`/giveaway_create` `/giveaway_reroll` (Admin)", inline=False)
+    embed.add_field(name="🎮 Inventory", value="`/inventory` `/sell <id>`", inline=False)
+    embed.add_field(name="🏆 Leaderboards", value="`/leaderboard_money` `/leaderboard_opens` `/leaderboard_golds` `/leaderboard_trades`", inline=False)
+    embed.add_field(name="🎲 Jackpot", value="`/jackpot <amount>`", inline=False)
+    embed.add_field(name="🌐 Dashboard", value="`/dashboard`", inline=False)
+    embed.add_field(name="📊 Admin", value="`/stats` `/setchannel` `/removechannel`", inline=False)
+    embed.add_field(name="💎 Bulk Discounts", value="5:5%, 10:10%, 15:15%, 20:20%, 25:25%", inline=False)
+    embed.add_field(name="💬 Join Our Community", value=f"[Click here to join our Discord!]({DISCORD_INVITE_URL})", inline=False)
+    embed.set_footer(text=f"💖 Support us on Ko-fi: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# GAME HELPER FUNCTIONS
+# ============================================
+
+async def get_username(user_id: int) -> str:
+    """Get username from database or fetch from Discord"""
+    try:
+        async with db_pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT username FROM users WHERE user_id = $1", user_id)
+            if user and user['username']:
+                return user['username']
+    except:
+        pass
+    
+    try:
+        discord_user = await bot.fetch_user(user_id)
+        if discord_user:
+            return discord_user.display_name
+    except:
+        pass
+    
+    return f"User_{user_id}"
+
+async def create_coinflip_game(user_id: int, amount: float) -> dict:
+    """Create a new coinflip game"""
+    if amount < 100:
+        return {'success': False, 'error': 'Minimum bet is $100'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            result = await conn.fetchrow(
+                """INSERT INTO coinflip_games (creator_id, amount, status) 
+                   VALUES ($1, $2, 'waiting') RETURNING id""",
+                user_id, amount
+            )
+            game_id = result['id']
+            
+            return {'success': True, 'game_id': game_id, 'amount': amount}
+
+async def join_coinflip_game(game_id: int, user_id: int) -> dict:
+    """Join an existing coinflip game"""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            game = await conn.fetchrow(
+                "SELECT * FROM coinflip_games WHERE id = $1 AND status = 'waiting'",
+                game_id
+            )
+            if not game:
+                return {'success': False, 'error': 'Game not found or already active'}
+            
+            if game['creator_id'] == user_id:
+                return {'success': False, 'error': "You can't join your own game!"}
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < game['amount']:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                game['amount'], user_id
+            )
+            
+            await conn.execute(
+                """UPDATE coinflip_games SET opponent_id = $1, status = 'active' WHERE id = $2""",
+                user_id, game_id
+            )
+            
+            winner_id = random.choice([game['creator_id'], user_id])
+            win_amount = int(game['amount'] * 1.95)
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                win_amount, winner_id
+            )
+            await conn.execute(
+                "UPDATE coinflip_games SET winner_id = $1, completed_at = NOW(), status = 'complete' WHERE id = $2",
+                winner_id, game_id
+            )
+            
+            await update_quest_progress(winner_id, "jackpot_win", 1)
+            
+            return {
+                'success': True,
+                'winner_id': winner_id,
+                'amount': game['amount'],
+                'win_amount': win_amount
+            }
+
+async def play_dice(user_id: int, amount: float, bet_type: str, bet_number: int) -> dict:
+    """Play a dice game"""
+    if amount < 100:
+        return {'success': False, 'error': 'Minimum bet is $100'}
+    if bet_type not in ['over', 'under']:
+        return {'success': False, 'error': 'Bet type must be "over" or "under"'}
+    if bet_number < 2 or bet_number > 99:
+        return {'success': False, 'error': 'Bet number must be between 2 and 99'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            roll = random.randint(1, 100)
+            win = (roll > bet_number) if bet_type == 'over' else (roll < bet_number)
+            
+            if bet_type == 'over':
+                multiplier = round(95 / (100 - bet_number), 2)
+            else:
+                multiplier = round(95 / (bet_number - 1), 2)
+            
+            win_amount = int(amount * multiplier) if win else 0
+            
+            if win:
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                await update_quest_progress(user_id, "earn_money", int(win_amount))
+            
+            await conn.execute(
+                """INSERT INTO dice_games 
+                   (user_id, amount, bet_type, bet_number, roll_number, result, multiplier) 
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                user_id, amount, bet_type, bet_number, roll, 'win' if win else 'lose', multiplier
+            )
+            
+            return {
+                'success': True,
+                'roll': roll,
+                'bet_type': bet_type,
+                'bet_number': bet_number,
+                'win': win,
+                'multiplier': multiplier,
+                'amount': amount,
+                'win_amount': win_amount
+            }
+
+async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine_count: int = 3) -> dict:
+    """Start a mines game"""
+    if amount < 100:
+        return {'success': False, 'error': 'Minimum bet is $100'}
+    if grid_size not in [3, 4, 5, 6]:
+        return {'success': False, 'error': 'Grid size must be 3, 4, 5, or 6'}
+    
+    max_mines = grid_size * grid_size - 2
+    if mine_count < 1 or mine_count > max_mines:
+        return {'success': False, 'error': f'Invalid mine count for {grid_size}x{grid_size} grid'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            total_tiles = grid_size * grid_size
+            mine_positions = random.sample(range(total_tiles), mine_count)
+            
+            result = await conn.fetchrow(
+                """INSERT INTO mines_games 
+                   (user_id, bet_amount, grid_size, mine_count, status, mine_positions) 
+                   VALUES ($1, $2, $3, $4, 'active', $5) RETURNING id""",
+                user_id, amount, grid_size, mine_count, mine_positions
+            )
+            game_id = result['id']
+            
+            return {
+                'success': True,
+                'game_id': game_id,
+                'grid_size': grid_size,
+                'mine_count': mine_count,
+                'bet_amount': amount
+            }
+
+async def reveal_mines_tile(game_id: int, user_id: int, tile_index: int) -> dict:
+    """Reveal a tile in a mines game"""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            game = await conn.fetchrow(
+                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
+                game_id, user_id
+            )
+            if not game:
+                return {'success': False, 'error': 'Game not found or already ended'}
+            
+            revealed = game['revealed_tiles'] or []
+            if tile_index in revealed:
+                return {'success': False, 'error': 'Tile already revealed'}
+            
+            mine_positions = game.get('mine_positions', [])
+            if not mine_positions:
+                total_tiles = game['grid_size'] * game['grid_size']
+                mine_positions = random.sample(range(total_tiles), game['mine_count'])
+                await conn.execute(
+                    "UPDATE mines_games SET mine_positions = $1 WHERE id = $2",
+                    mine_positions, game_id
+                )
+            
+            if tile_index in mine_positions:
+                await conn.execute(
+                    "UPDATE mines_games SET exploded = true, status = 'lost' WHERE id = $1",
+                    game_id
+                )
+                return {'success': False, 'exploded': True, 'message': '💥 BOOM! You hit a mine!'}
+            
+            revealed.append(tile_index)
+            total_tiles = game['grid_size'] * game['grid_size']
+            safe_tiles = total_tiles - game['mine_count']
+            remaining = safe_tiles - len(revealed)
+            multiplier = round(1 + (len(revealed) / safe_tiles) * 10, 2)
+            
+            if remaining == 0:
+                win_amount = int(game['bet_amount'] * multiplier)
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                await conn.execute(
+                    "UPDATE mines_games SET status = 'won', multiplier = $1 WHERE id = $2",
+                    multiplier, game_id
+                )
+                await update_quest_progress(user_id, "earn_money", int(win_amount))
+                
+                return {
+                    'success': True,
+                    'game_won': True,
+                    'win_amount': win_amount,
+                    'multiplier': multiplier,
+                    'revealed': revealed,
+                    'remaining': remaining
+                }
+            
+            await conn.execute(
+                "UPDATE mines_games SET revealed_tiles = $1, multiplier = $2 WHERE id = $3",
+                revealed, multiplier, game_id
+            )
+            
+            return {
+                'success': True,
+                'game_won': False,
+                'multiplier': multiplier,
+                'revealed': revealed,
+                'remaining': remaining,
+                'cash_out_amount': int(game['bet_amount'] * multiplier)
+            }
+
+async def cashout_mines(game_id: int, user_id: int) -> dict:
+    """Cash out a mines game"""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            game = await conn.fetchrow(
+                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
+                game_id, user_id
+            )
+            if not game:
+                return {'success': False, 'error': 'Game not found or already ended'}
+            
+            multiplier = game['multiplier'] or 1.0
+            win_amount = int(game['bet_amount'] * multiplier)
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                win_amount, user_id
+            )
+            await conn.execute(
+                "UPDATE mines_games SET status = 'cashed_out', multiplier = $1 WHERE id = $2",
+                multiplier, game_id
+            )
+            
+            await update_quest_progress(user_id, "earn_money", int(win_amount))
+            
+            return {
+                'success': True,
+                'win_amount': win_amount,
+                'multiplier': multiplier
+            }
+
+# ============================================
+# SLOTS HELPERS
+# ============================================
+
+SLOT_SYMBOLS = [
+    {'emoji': '🍒', 'value': 1, 'name': 'Cherry'},
+    {'emoji': '🍋', 'value': 2, 'name': 'Lemon'},
+    {'emoji': '🍊', 'value': 3, 'name': 'Orange'},
+    {'emoji': '🍇', 'value': 4, 'name': 'Grape'},
+    {'emoji': '💎', 'value': 10, 'name': 'Diamond'},
+    {'emoji': '7️⃣', 'value': 20, 'name': 'Seven'},
+    {'emoji': '🎰', 'value': 50, 'name': 'Jackpot'},
+]
+
+SLOT_PAYOUTS = {
+    '🍒🍒🍒': 5, '🍋🍋🍋': 10, '🍊🍊🍊': 15,
+    '🍇🍇🍇': 20, '💎💎💎': 50, '7️⃣7️⃣7️⃣': 100, '🎰🎰🎰': 500
+}
+
+async def play_slots(user_id: int, amount: float) -> dict:
+    """Play the slot machine"""
+    if amount < 50:
+        return {'success': False, 'error': 'Minimum bet is $50'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            symbols = [random.choice(SLOT_SYMBOLS)['emoji'] for _ in range(3)]
+            result_str = ''.join(symbols)
+            multiplier = SLOT_PAYOUTS.get(result_str, 0)
+            win_amount = int(amount * multiplier) if multiplier > 0 else 0
+            
+            if multiplier == 0:
+                for sym in SLOT_SYMBOLS:
+                    if symbols.count(sym['emoji']) >= 2:
+                        multiplier = sym['value'] / 2
+                        win_amount = int(amount * multiplier)
+                        break
+            
+            if win_amount > 0:
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                await update_quest_progress(user_id, "earn_money", int(win_amount))
+            
+            await conn.execute(
+                """INSERT INTO slots_games 
+                   (user_id, bet_amount, spin_result, multiplier, win_amount) 
+                   VALUES ($1, $2, $3, $4, $5)""",
+                user_id, amount, symbols, multiplier, win_amount
+            )
+            
+            return {
+                'success': True,
+                'symbols': symbols,
+                'result_str': result_str,
+                'multiplier': multiplier,
+                'win_amount': win_amount,
+                'bet_amount': amount
+            }
+
+# ============================================
+# COINFLIP COMMANDS
+# ============================================
+
+@bot.tree.command(name="coinflip", description="Create or join a coinflip game")
+async def cmd_coinflip(interaction: discord.Interaction, game_id: Optional[int] = None, amount: Optional[float] = None):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    if game_id:
+        result = await join_coinflip_game(game_id, interaction.user.id)
+        if not result['success']:
+            await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="🪙 Coinflip Result!",
+            color=discord.Color.gold() if result['winner_id'] == interaction.user.id else discord.Color.red()
+        )
+        embed.add_field(name="Winner", value=f"<@{result['winner_id']}>", inline=False)
+        embed.add_field(name="Amount", value=f"${result['amount']:,.2f}", inline=True)
+        embed.add_field(name="Won", value=f"${result['win_amount']:,.2f}", inline=True)
+        embed.set_footer(text="💖 Support us on Ko-fi!")
+        await interaction.followup.send(embed=embed)
+        return
+    
+    if not amount or amount < 100:
+        await interaction.followup.send("❌ Minimum bet is $100!", ephemeral=True)
+        return
+    
+    result = await create_coinflip_game(interaction.user.id, amount)
+    
+    embed = discord.Embed(
+        title="🪙 Coinflip Game Created!",
+        description=f"Bet: ${amount:,.2f}\nWaiting for opponent...",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Game ID", value=f"`{result['game_id']}`", inline=False)
+    embed.add_field(name="How to Join", value=f"`/coinflip game_id:{result['game_id']}`", inline=False)
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="coinflip_list", description="View active coinflip games")
+async def cmd_coinflip_list(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    async with db_pool.acquire() as conn:
+        games = await conn.fetch(
+            "SELECT id, creator_id, amount FROM coinflip_games WHERE status = 'waiting' LIMIT 10"
+        )
+    
+    if not games:
+        await interaction.followup.send("No active coinflip games right now!", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="🪙 Active Coinflip Games",
+        color=discord.Color.blue()
+    )
+    
+    for game in games:
+        creator = await get_username(game['creator_id'])
+        embed.add_field(
+            name=f"Game #{game['id']}",
+            value=f"Host: {creator}\nAmount: ${game['amount']:,.2f}\nJoin: `/coinflip game_id:{game['id']}`",
+            inline=True
+        )
+    
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# DICE COMMANDS
+# ============================================
+
+@bot.tree.command(name="dice", description="Play dice - bet over or under a number")
+async def cmd_dice(interaction: discord.Interaction, amount: float, bet_type: str, bet_number: int):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    bet_type = bet_type.lower()
+    
+    result = await play_dice(interaction.user.id, amount, bet_type, bet_number)
+    
+    if not result['success']:
+        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="🎲 Dice Roll!",
+        color=discord.Color.green() if result['win'] else discord.Color.red()
+    )
+    embed.add_field(name="Bet Amount", value=f"${result['amount']:,.2f}", inline=True)
+    embed.add_field(name="Bet Type", value=result['bet_type'].upper(), inline=True)
+    embed.add_field(name="Bet Number", value=str(result['bet_number']), inline=True)
+    embed.add_field(name="Roll", value=str(result['roll']), inline=True)
+    embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
+    
+    if result['win']:
+        embed.add_field(name="💰 Won", value=f"${result['win_amount']:,.2f}", inline=True)
+    else:
+        embed.add_field(name="❌ Lost", value=f"${result['amount']:,.2f}", inline=True)
+    
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# MINES COMMANDS
+# ============================================
+
+@bot.tree.command(name="mines", description="Start a mines game")
+async def cmd_mines(interaction: discord.Interaction, amount: float, grid_size: int = 5, mine_count: int = 3):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    result = await start_mines_game(interaction.user.id, amount, grid_size, mine_count)
+    
+    if not result['success']:
+        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="💣 Mines Game Started!",
+        description=f"Bet: ${amount:,.2f}\nGrid: {grid_size}x{grid_size}\nMines: {mine_count}",
+        color=discord.Color.purple()
+    )
+    embed.add_field(name="Game ID", value=f"`{result['game_id']}`", inline=False)
+    embed.add_field(name="How to Play", value="Use `/mines_reveal game_id:tile` to reveal tiles!", inline=False)
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="mines_reveal", description="Reveal a tile in your mines game")
+async def cmd_mines_reveal(interaction: discord.Interaction, game_id: int, tile: int):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    result = await reveal_mines_tile(game_id, interaction.user.id, tile)
+    
+    if not result['success']:
+        if result.get('exploded'):
+            embed = discord.Embed(
+                title="💥 BOOM!",
+                description="You hit a mine! Game over!",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send(f"❌ {result.get('error', 'Something went wrong')}", ephemeral=True)
+        return
+    
+    if result.get('game_won'):
+        embed = discord.Embed(
+            title="🎉 MINES WON!",
+            description=f"You revealed all safe tiles!",
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="Win Amount", value=f"${result['win_amount']:,.2f}", inline=True)
+        embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
+        await interaction.followup.send(embed=embed)
+        return
+    
+    embed = discord.Embed(
+        title="✅ Tile Revealed!",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Safe Tiles Remaining", value=str(result['remaining']), inline=True)
+    embed.add_field(name="Current Multiplier", value=f"{result['multiplier']}x", inline=True)
+    embed.add_field(name="Cash Out Value", value=f"${result['cash_out_amount']:,.2f}", inline=True)
+    embed.add_field(name="Cash Out", value="Use `/mines_cashout` to cash out!", inline=False)
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="mines_cashout", description="Cash out your mines game")
+async def cmd_mines_cashout(interaction: discord.Interaction, game_id: int):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    result = await cashout_mines(game_id, interaction.user.id)
+    
+    if not result['success']:
+        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="💰 Mines Cashed Out!",
+        description=f"You cashed out for ${result['win_amount']:,.2f}!",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# SLOTS COMMANDS
+# ============================================
+
+@bot.tree.command(name="slots", description="Play the slot machine")
+async def cmd_slots(interaction: discord.Interaction, amount: float):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    result = await play_slots(interaction.user.id, amount)
+    
+    if not result['success']:
+        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+        return
+    
+    symbols = ' '.join(result['symbols'])
+    
+    embed = discord.Embed(
+        title="🎰 SLOTS!",
+        description=f"**[ {symbols} ]**",
+        color=discord.Color.green() if result['win_amount'] > 0 else discord.Color.red()
+    )
+    embed.add_field(name="Bet", value=f"${result['bet_amount']:,.2f}", inline=True)
+    
+    if result['win_amount'] > 0:
+        embed.add_field(name="💰 Won", value=f"${result['win_amount']:,.2f}", inline=True)
+        embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
+        embed.color = discord.Color.gold()
+    else:
+        embed.add_field(name="❌ Lost", value=f"${result['bet_amount']:,.2f}", inline=True)
+    
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# SKIN UPGRADE COMMANDS
+# ============================================
+
+@bot.tree.command(name="upgrade", description="Attempt to upgrade a skin to the next rarity")
+async def cmd_upgrade(interaction: discord.Interaction, item_id: int):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    result = await skin_upgrade(interaction.user.id, item_id)
+    
+    if not result['success']:
+        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+        return
+    
+    if result.get('upgraded'):
+        embed = discord.Embed(
+            title="⭐ UPGRADE SUCCESSFUL!",
+            description=f"{result['old_item_name']} → {result['new_item_name']}",
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="New Rarity", value=result['new_rarity'], inline=True)
+        embed.add_field(name="New Value", value=f"${result['new_price']:,.2f}", inline=True)
+    else:
+        embed = discord.Embed(
+            title="💔 Upgrade Failed!",
+            description=f"{result['old_item_name']} was lost in the upgrade attempt",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="Cost", value=f"${result['cost']:,.2f}", inline=True)
+    
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# HOURLY & WEEKLY COMMANDS
+# ============================================
+
+@bot.tree.command(name="hourly", description="Claim your hourly reward")
+async def cmd_hourly(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    result = await claim_hourly(interaction.user.id)
+    
+    if not result['success']:
+        await interaction.followup.send(f"⏰ {result['error']}", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="🕐 Hourly Claimed!",
+        description=f"You received ${result['reward']:,.2f}!",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Total Claims", value=str(result['total_claimed']), inline=True)
+    embed.set_footer(text="Come back in 1 hour for more!")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="weekly", description="Claim your weekly reward")
+async def cmd_weekly(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    result = await claim_weekly(interaction.user.id)
+    
+    if not result['success']:
+        await interaction.followup.send(f"📅 {result['error']}", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="📅 Weekly Claimed!",
+        description=f"You received ${result['reward']:,.2f}!",
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Total Claims", value=str(result['total_claimed']), inline=True)
+    embed.set_footer(text="Come back in 7 days for more!")
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# XP COMMANDS
+# ============================================
+
+@bot.tree.command(name="profile", description="View your profile and XP")
+async def cmd_profile(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+        user = await conn.fetchrow(
+            "SELECT xp, level, prestige, balance FROM users WHERE user_id = $1",
+            interaction.user.id
+        )
+        if not user:
+            await interaction.followup.send("❌ User not found!", ephemeral=True)
+            return
+    
+    xp = user['xp'] or 0
+    level = user['level'] or 1
+    prestige = user['prestige'] or 0
+    balance = user['balance'] or 0
+    
+    xp_needed = level * 50 + 100
+    
+    embed = discord.Embed(
+        title=f"👤 {interaction.user.display_name}'s Profile",
+        color=discord.Color.blue()
+    )
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed.add_field(name="Level", value=f"🎮 {level}", inline=True)
+    embed.add_field(name="Prestige", value=f"🌟 {prestige}", inline=True)
+    embed.add_field(name="XP", value=f"{xp:,} / {xp_needed:,}", inline=True)
+    embed.add_field(name="💰 Balance", value=f"${balance:,.2f}", inline=True)
+    
+    progress = min(100, int((xp / xp_needed) * 100))
+    bar_length = 20
+    filled = int(progress / (100 / bar_length))
+    bar = "█" * filled + "░" * (bar_length - filled)
+    embed.add_field(name="Progress", value=f"`{bar}` {progress}%", inline=False)
+    
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    await interaction.followup.send(embed=embed)
+
+# ============================================
+# HOURLY & WEEKLY CLAIMS
+# ============================================
+
+async def claim_hourly(user_id: int) -> dict:
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(user_id, conn=conn)
+        user = await conn.fetchrow(
+            "SELECT last_hourly, total_hourly_claimed FROM users WHERE user_id = $1",
+            user_id
+        )
+        if not user:
+            return {'success': False, 'error': 'User not found'}
+        
+        now = datetime.now()
+        last_hourly = user['last_hourly']
+        
+        if last_hourly and (now - last_hourly).total_seconds() < 3600:
+            remaining = 3600 - (now - last_hourly).total_seconds()
+            minutes = int(remaining // 60)
+            return {'success': False, 'error': f'Already claimed! Next claim in {minutes} minutes'}
+        
+        reward = 75
+        total_claimed = (user['total_hourly_claimed'] or 0) + 1
+        
+        if total_claimed % 10 == 0:
+            reward += 250
+        
+        await conn.execute(
+            """UPDATE users 
+               SET balance = balance + $1, last_hourly = $2, total_hourly_claimed = $3 
+               WHERE user_id = $4""",
+            reward, now, total_claimed, user_id
+        )
+        
+        return {'success': True, 'reward': reward, 'total_claimed': total_claimed}
+
+async def claim_weekly(user_id: int) -> dict:
+    async with db_pool.acquire() as conn:
+        await ensure_user_exists(user_id, conn=conn)
+        user = await conn.fetchrow(
+            "SELECT last_weekly, total_weekly_claimed FROM users WHERE user_id = $1",
+            user_id
+        )
+        if not user:
+            return {'success': False, 'error': 'User not found'}
+        
+        now = datetime.now()
+        last_weekly = user['last_weekly']
+        
+        if last_weekly and (now - last_weekly).total_seconds() < 604800:
+            remaining = 604800 - (now - last_weekly).total_seconds()
+            days = int(remaining // 86400)
+            hours = int((remaining % 86400) // 3600)
+            return {'success': False, 'error': f'Already claimed! Next claim in {days}d {hours}h'}
+        
+        reward = 5000
+        total_claimed = (user['total_weekly_claimed'] or 0) + 1
+        
+        await conn.execute(
+            """UPDATE users 
+               SET balance = balance + $1, last_weekly = $2, total_weekly_claimed = $3 
+               WHERE user_id = $4""",
+            reward, now, total_claimed, user_id
+        )
+        
+        return {'success': True, 'reward': reward, 'total_claimed': total_claimed}
+
+# ============================================
+# SKIN UPGRADE
+# ============================================
+
+async def skin_upgrade(user_id: int, item_id: int) -> dict:
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            item = await conn.fetchrow(
+                "SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND status = 'kept'",
+                item_id, user_id
+            )
+            if not item:
+                return {'success': False, 'error': 'Item not found in inventory'}
+            
+            rarity_order = ['Blue', 'Purple', 'Pink', 'Red', 'Gold']
+            if item['rarity'] == 'Gold':
+                return {'success': False, 'error': 'Gold items cannot be upgraded! Use gold trade instead.'}
+            
+            current_rarity = item['rarity']
+            current_index = rarity_order.index(current_rarity)
+            next_rarity = rarity_order[current_index + 1] if current_index < len(rarity_order) - 1 else None
+            
+            if not next_rarity:
+                return {'success': False, 'error': 'Item cannot be upgraded further'}
+            
+            chances = {'Blue': 0.8, 'Purple': 0.6, 'Pink': 0.4, 'Red': 0.25}
+            success_chance = chances.get(current_rarity, 0.5)
+            success = random.random() < success_chance
+            
+            upgrade_cost = {'Blue': 10, 'Purple': 50, 'Pink': 200, 'Red': 1000}.get(current_rarity, 10)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < upgrade_cost:
+                return {'success': False, 'error': f'Insufficient balance. Upgrade costs ${upgrade_cost}'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                upgrade_cost, user_id
+            )
+            await conn.execute("DELETE FROM inventory WHERE id = $1", item_id)
+            
+            if success:
+                possible_items = []
+                for case in CASES.values():
+                    for case_item in case['items']:
+                        if case_item['rarity'] == next_rarity:
+                            possible_items.append(case_item)
+                
+                new_item_template = random.choice(possible_items) if possible_items else {
+                    'name': f'Mystery {next_rarity} Item',
+                    'rarity': next_rarity,
+                    'condition': 'Field-Tested',
+                    'tier': None
+                }
+                
+                is_stattrak = random.random() < 0.1
+                float_value = generate_skin_float()
+                condition_from_float = get_skin_condition(float_value)
+                base_value = calculate_item_value(next_rarity, new_item_template.get('condition', 'Field-Tested'), 
+                                                  new_item_template.get('tier'), is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0, "Minimal Wear": 1.5, "Field-Tested": 1.0,
+                    "Well-Worn": 0.75, "Battle-Scarred": 0.5
+                }.get(condition_from_float, 1.0)
+                value = round(base_value * float_multiplier, 2)
+                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
+                
+                await conn.execute(
+                    """INSERT INTO inventory 
+                       (user_id, item_name, item_type, rarity, price, condition, is_stattrak, status, float_value) 
+                       VALUES ($1, $2, 'weapon', $3, $4, $5, $6, 'kept', $7)""",
+                    user_id, name, next_rarity, value, condition_from_float, is_stattrak, float_value
+                )
+                
+                await conn.execute(
+                    """INSERT INTO skin_upgrades 
+                       (user_id, item_id, input_rarity, output_rarity, success) 
+                       VALUES ($1, $2, $3, $4, true)""",
+                    user_id, item_id, current_rarity, next_rarity
+                )
+                
+                return {
+                    'success': True,
+                    'upgraded': True,
+                    'new_rarity': next_rarity,
+                    'new_item_name': name,
+                    'new_price': value,
+                    'old_rarity': current_rarity,
+                    'old_item_name': item['item_name']
+                }
+            else:
+                await conn.execute(
+                    """INSERT INTO skin_upgrades 
+                       (user_id, item_id, input_rarity, output_rarity, success) 
+                       VALUES ($1, $2, $3, $4, false)""",
+                    user_id, item_id, current_rarity, next_rarity
+                )
+                
+                return {
+                    'success': True,
+                    'upgraded': False,
+                    'old_item_name': item['item_name'],
+                    'old_rarity': current_rarity,
+                    'cost': upgrade_cost
+                }
+
+
+# ============================================
+# RUN BOT
+# ============================================
+
+if __name__ == "__main__":
+    if not TOKEN:
+        logger.error("❌ DISCORD_BOT_TOKEN not found!")
+        exit(1)
+    bot.run(TOKEN)

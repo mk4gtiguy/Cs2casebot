@@ -1,0 +1,722 @@
+✅ Fetched 478 cases!
+
+🔍 Filtering to selected cases...
+  ✅ CS:GO Weapon Case (11 items) - $2.00
+  ✅ eSports 2013 Case (11 items) - $2.00
+  ✅ Operation Phoenix Weapon Case (11 items) - $2.50
+  ✅ Huntsman Weapon Case (11 items) - $2.50
+  ✅ Operation Breakout Weapon Case (11 items) - $2.50
+  ✅ eSports 2014 Summer Case (11 items) - $2.00
+  ✅ Operation Vanguard Weapon Case (11 items) - $2.50
+  ✅ Chroma Case (11 items) - $2.00
+  ✅ Chroma 2 Case (11 items) - $2.00
+  ✅ Falchion Case (11 items) - $2.00
+  ✅ Shadow Case (11 items) - $2.00
+  ✅ Revolver Case (11 items) - $2.00
+  ✅ Operation Wildfire Case (11 items) - $3.00
+  ✅ Chroma 3 Case (11 items) - $2.00
+  ✅ Gamma Case (11 items) - $2.50
+  ✅ Gamma 2 Case (11 items) - $2.50
+  ✅ Glove Case (11 items) - $4.00
+  ✅ Spectrum Case (11 items) - $2.50
+  ✅ Operation Hydra Case (11 items) - $4.00
+  ✅ Spectrum 2 Case (11 items) - $3.00
+  ✅ Clutch Case (11 items) - $3.00
+  ✅ Horizon Case (11 items) - $2.50
+  ✅ Danger Zone Case (11 items) - $2.50
+  ✅ Prisma Case (11 items) - $2.50
+  ✅ Shattered Web Case (11 items) - $4.00
+  ✅ CS20 Case (11 items) - $2.50
+  ✅ Prisma 2 Case (11 items) - $2.00
+  ✅ Fracture Case (11 items) - $2.00
+  ✅ Operation Broken Fang Case (11 items) - $3.50
+  ✅ Snakebite Case (11 items) - $2.50
+  ✅ Operation Riptide Case (11 items) - $3.00
+  ✅ Dreams & Nightmares Case (11 items) - $2.50
+  ✅ Recoil Case (11 items) - $2.00
+  ✅ Revolution Case (11 items) - $2.50
+  ✅ Kilowatt Case (11 items) - $3.50
+  ✅ Gallery Case (11 items) - $3.00
+  ✅ Fever Case (11 items) - $4.00
+
+✅ Total: 37 cases!
+
+============================================================
+📋 COPY THIS INTO YOUR web_server.py AND main.py:
+============================================================
+
+CASES = {
+    "cs:go_weapon_case": {
+        "name": "CS:GO Weapon Case",
+        "emoji": "📦",
+        "price": 2.0,
+        "items": [
+            {"name": "MP7 | Skulls", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AUG | Wings", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Ultraviolet", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Dragon Tattoo", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "USP-S | Dark Water", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "M4A1-S | Dark Water", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "AK-47 | Case Hardened", "rarity": "Pink", "condition": "Well-Worn"},
+            {"name": "Desert Eagle | Hypnotic", "rarity": "Pink", "condition": "Minimal Wear"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "esports_2013_case": {
+        "name": "eSports 2013 Case",
+        "emoji": "🎯",
+        "price": 2.0,
+        "items": [
+            {"name": "M4A4 | Faded Zebra", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Memento", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Doomkitty", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Galil AR | Orange DDPAT", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "Sawed-Off | Orange DDPAT", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "P250 | Splash", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "AK-47 | Red Laminate", "rarity": "Pink", "condition": "Factory New"},
+            {"name": "AWP | BOOM", "rarity": "Pink", "condition": "Factory New"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_phoenix_weapon_case": {
+        "name": "Operation Phoenix Weapon Case",
+        "emoji": "⚡",
+        "price": 2.5,
+        "items": [
+            {"name": "UMP-45 | Corporal", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Negev | Terrain", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Tec-9 | Sandstorm", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Heaven Guard", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAC-10 | Heat", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Pulse", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Sergeant", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "USP-S | Guardian", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "huntsman_weapon_case": {
+        "name": "Huntsman Weapon Case",
+        "emoji": "🔥",
+        "price": 2.5,
+        "items": [
+            {"name": "Tec-9 | Isaac", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SSG 08 | Slashed", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Galil AR | Kami", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "CZ75-Auto | Twist", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P90 | Module", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P2000 | Pulse", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "AUG | Torque", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "PP-Bizon | Antique", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Huntsman Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Huntsman Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Huntsman Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_breakout_weapon_case": {
+        "name": "Operation Breakout Weapon Case",
+        "emoji": "💎",
+        "price": 2.5,
+        "items": [
+            {"name": "MP7 | Urban Hazard", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Negev | Desert-Strike", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P2000 | Ivory", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "SSG 08 | Abyss", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "UMP-45 | Labyrinth", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "PP-Bizon | Osiris", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "CZ75-Auto | Tigris", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "Nova | Koi", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Butterfly Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Butterfly Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Butterfly Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "esports_2014_summer_case": {
+        "name": "eSports 2014 Summer Case",
+        "emoji": "🌟",
+        "price": 2.0,
+        "items": [
+            {"name": "SSG 08 | Dark Water", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAC-10 | Ultraviolet", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "USP-S | Blood Tiger", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "CZ75-Auto | Hexane", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Negev | Bratatat", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "XM1014 | Red Python", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "PP-Bizon | Blue Streak", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "P90 | Virus", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_vanguard_weapon_case": {
+        "name": "Operation Vanguard Weapon Case",
+        "emoji": "🎨",
+        "price": 2.5,
+        "items": [
+            {"name": "G3SG1 | Murky", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Firestarter", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP9 | Dart", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Five-SeveN | Urban Hazard", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "UMP-45 | Delusion", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Glock-18 | Grinder", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "M4A1-S | Basilisk", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "M4A4 | Griffin", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "chroma_case": {
+        "name": "Chroma Case",
+        "emoji": "🌈",
+        "price": 2.0,
+        "items": [
+            {"name": "Glock-18 | Catacombs", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | System Lock", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP9 | Deadly Poison", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Grotto", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "XM1014 | Quicksilver", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Dual Berettas | Urban Shock", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "Desert Eagle | Naga", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "MAC-10 | Malachite", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bayonet | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "chroma_2_case": {
+        "name": "Chroma 2 Case",
+        "emoji": "💥",
+        "price": 2.0,
+        "items": [
+            {"name": "AK-47 | Elite Build", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP7 | Armor Core", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Bronze Deco", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P250 | Valence", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Negev | Man-o'-war", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Sawed-Off | Origami", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AWP | Worm God", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "MAG-7 | Heat", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "falchion_case": {
+        "name": "Falchion Case",
+        "emoji": "🌅",
+        "price": 2.0,
+        "items": [
+            {"name": "Galil AR | Rocket Pop", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Glock-18 | Bunsen Burner", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Nova | Ranger", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P90 | Elite Build", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "UMP-45 | Riot", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "USP-S | Torque", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "FAMAS | Neural Net", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "M4A4 | Evil Daimyo", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "★ Falchion Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Falchion Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Falchion Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "shadow_case": {
+        "name": "Shadow Case",
+        "emoji": "⚠️",
+        "price": 2.0,
+        "items": [
+            {"name": "Dual Berettas | Dualing Dragons", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "FAMAS | Survivor Z", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Glock-18 | Wraiths", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAC-10 | Rangeen", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAG-7 | Cobalt Core", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Green Marine", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "XM1014 | Scumbria", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Galil AR | Stone Cold", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Shadow Daggers", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Shadow Daggers | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Shadow Daggers | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "revolver_case": {
+        "name": "Revolver Case",
+        "emoji": "🤲",
+        "price": 2.0,
+        "items": [
+            {"name": "R8 Revolver | Crimson Web", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AUG | Ricochet", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Desert Eagle | Corinthian", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P2000 | Imperial", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Sawed-Off | Yorick", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SCAR-20 | Outbreak", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "PP-Bizon | Fuel Rod", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "Five-SeveN | Retrobution", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "★ Bayonet", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_wildfire_case": {
+        "name": "Operation Wildfire Case",
+        "emoji": "🎪",
+        "price": 3.0,
+        "items": [
+            {"name": "PP-Bizon | Photic Zone", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Dual Berettas | Cartel", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAC-10 | Lapis Gator", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SSG 08 | Necropos", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Tec-9 | Jambiya", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "USP-S | Lead Conduit", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "FAMAS | Valence", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "Five-SeveN | Triumvirate", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bowie Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "chroma_3_case": {
+        "name": "Chroma 3 Case",
+        "emoji": "🏹",
+        "price": 2.0,
+        "items": [
+            {"name": "Dual Berettas | Ventilators", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "G3SG1 | Orange Crash", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | Spectre", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MP9 | Bioleak", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P2000 | Oceanic", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Sawed-Off | Fubar", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SG 553 | Atlas", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "CZ75-Auto | Red Astor", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "gamma_case": {
+        "name": "Gamma Case",
+        "emoji": "🗡️",
+        "price": 2.5,
+        "items": [
+            {"name": "Five-SeveN | Violent Daimyo", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAC-10 | Carnivore", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Nova | Exo", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P250 | Iron Clad", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "PP-Bizon | Harvester", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SG 553 | Aerial", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Tec-9 | Ice Cap", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AUG | Aristocrat", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "gamma_2_case": {
+        "name": "Gamma 2 Case",
+        "emoji": "🛡️",
+        "price": 2.5,
+        "items": [
+            {"name": "CZ75-Auto | Imprint", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Five-SeveN | Scumbria", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "G3SG1 | Ventilator", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Negev | Dazzle", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P90 | Grim", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "UMP-45 | Briefing", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "XM1014 | Slipstream", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Directive", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bayonet | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "glove_case": {
+        "name": "Glove Case",
+        "emoji": "👑",
+        "price": 4.0,
+        "items": [
+            {"name": "CZ75-Auto | Polymer", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Glock-18 | Ironwork", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP7 | Cirrus", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Galil AR | Black Sand", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP9 | Sand Scale", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Sonar", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P2000 | Turf", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Dual Berettas | Royal Consorts", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Snakebite", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Bronzed", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Charred", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "spectrum_case": {
+        "name": "Spectrum Case",
+        "emoji": "🎰",
+        "price": 2.5,
+        "items": [
+            {"name": "PP-Bizon | Jungle Slipstream", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SCAR-20 | Blueprint", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Desert Eagle | Oxide Blaze", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Five-SeveN | Capillary", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP7 | Akoben", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P250 | Ripple", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Sawed-Off | Zander", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Galil AR | Crimson Tsunami", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Bowie Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_hydra_case": {
+        "name": "Operation Hydra Case",
+        "emoji": "🎲",
+        "price": 4.0,
+        "items": [
+            {"name": "USP-S | Blueprint", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Macabre", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M4A1-S | Briefing", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAC-10 | Aloha", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAG-7 | Hard Water", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Tec-9 | Cut Out", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "UMP-45 | Metal Flowers", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AK-47 | Orbit Mk01", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Bloodhound Gloves | Snakebite", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Bronzed", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bloodhound Gloves | Charred", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "spectrum_2_case": {
+        "name": "Spectrum 2 Case",
+        "emoji": "🎳",
+        "price": 3.0,
+        "items": [
+            {"name": "Sawed-Off | Morris", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "AUG | Triqua", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "G3SG1 | Hunter", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Off World", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "MAC-10 | Oceanic", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Tec-9 | Cracked Opal", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "SCAR-20 | Jungle Slipstream", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP9 | Goo", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "clutch_case": {
+        "name": "Clutch Case",
+        "emoji": "🎭",
+        "price": 3.0,
+        "items": [
+            {"name": "PP-Bizon | Night Riot", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Five-SeveN | Flame Test", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP9 | Black Sand", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P2000 | Urban Hazard", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "R8 Revolver | Grip", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "SG 553 | Aloha", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "XM1014 | Oxide Blaze", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Glock-18 | Moonrise", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Driver Gloves | Imperial Plaid", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | King Snake", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | Racing Green", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "horizon_case": {
+        "name": "Horizon Case",
+        "emoji": "🎪",
+        "price": 2.5,
+        "items": [
+            {"name": "AUG | Amber Slipstream", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Dual Berettas | Shred", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Glock-18 | Warhawk", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP9 | Capillary", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P90 | Traction", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "R8 Revolver | Survivalist", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Tec-9 | Snek-9", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "CZ75-Auto | Eco", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "danger_zone_case": {
+        "name": "Danger Zone Case",
+        "emoji": "🎯",
+        "price": 2.5,
+        "items": [
+            {"name": "MP9 | Modest Threat", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Glock-18 | Oxide Blaze", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Nova | Wood Fired", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "M4A4 | Magnesium", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Sawed-Off | Black Sand", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "SG 553 | Danger Close", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Tec-9 | Fubar", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "G3SG1 | Scavenger", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "prisma_case": {
+        "name": "Prisma Case",
+        "emoji": "🎱",
+        "price": 2.5,
+        "items": [
+            {"name": "FAMAS | Crypsis", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "AK-47 | Uncharted", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAC-10 | Whitefish", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Galil AR | Akoben", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP7 | Mischief", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P250 | Verdigris", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "P90 | Off World", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "AWP | Atheris", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "shattered_web_case": {
+        "name": "Shattered Web Case",
+        "emoji": "🔫",
+        "price": 4.0,
+        "items": [
+            {"name": "MP5-SD | Acid Wash", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Nova | Plume", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "G3SG1 | Black Sand", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "R8 Revolver | Memento", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Dual Berettas | Balance", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SCAR-20 | Torn", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "M249 | Warbird", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "PP-Bizon | Embargo", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Nomad Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "cs20_case": {
+        "name": "CS20 Case",
+        "emoji": "🌙",
+        "price": 2.5,
+        "items": [
+            {"name": "Dual Berettas | Elite 1.6", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Tec-9 | Flash Out", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MAC-10 | Classic Crate", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Popdog", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Assault", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "FAMAS | Decommissioned", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Sacrifice", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "M249 | Aztec", "rarity": "Purple", "condition": "Battle-Scarred"},
+            {"name": "★ Classic Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Classic Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Classic Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "prisma_2_case": {
+        "name": "Prisma 2 Case",
+        "emoji": "🎂",
+        "price": 2.0,
+        "items": [
+            {"name": "AUG | Tom Cat", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "AWP | Capillary", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "CZ75-Auto | Distressed", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Blue Ply", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP5-SD | Desert Strike", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Negev | Prototype", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "R8 Revolver | Bone Forged", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P2000 | Acid Etched", "rarity": "Purple", "condition": "Field-Tested"},
+            {"name": "★ Navaja Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Navaja Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "fracture_case": {
+        "name": "Fracture Case",
+        "emoji": "💎",
+        "price": 2.0,
+        "items": [
+            {"name": "Negev | Ultralight", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P2000 | Gnarled", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Ol' Rusty", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "SSG 08 | Mainframe 001", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P250 | Cassette", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "P90 | Freight", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "PP-Bizon | Runic", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Monster Call", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Nomad Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Nomad Knife | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_broken_fang_case": {
+        "name": "Operation Broken Fang Case",
+        "emoji": "⚡",
+        "price": 3.5,
+        "items": [
+            {"name": "CZ75-Auto | Vendetta", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P90 | Cocoa Rampage", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "G3SG1 | Digital Mesh", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Galil AR | Vandal", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P250 | Contaminant", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | Deep Relief", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP5-SD | Condition Zero", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "AWP | Exoskeleton", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Yellow-banded", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Unhinged", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Needle Point", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "snakebite_case": {
+        "name": "Snakebite Case",
+        "emoji": "🌊",
+        "price": 2.5,
+        "items": [
+            {"name": "SG 553 | Heavy Metal", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Glock-18 | Clear Polymer", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "M249 | O.S.I.P.R.", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "CZ75-Auto | Circaetus", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "UMP-45 | Oscillator", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "R8 Revolver | Junk Yard", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Nova | Windblown", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "P250 | Cyber Shell", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Broken Fang Gloves | Yellow-banded", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Unhinged", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Needle Point", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "operation_riptide_case": {
+        "name": "Operation Riptide Case",
+        "emoji": "🌪️",
+        "price": 3.0,
+        "items": [
+            {"name": "AUG | Plague", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Dual Berettas | Tread", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "G3SG1 | Keeping Tabs", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP7 | Guerrilla", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "PP-Bizon | Lumen", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "USP-S | Black Lotus", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "XM1014 | Watchdog", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | BI83 Spectrum", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "dreams_and_nightmares_case": {
+        "name": "Dreams & Nightmares Case",
+        "emoji": "🎇",
+        "price": 2.5,
+        "items": [
+            {"name": "Five-SeveN | Scrawl", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MAC-10 | Ensnared", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MAG-7 | Foresight", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MP5-SD | Necro Jr.", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P2000 | Lifted Spirits", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "SCAR-20 | Poultrygeist", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Sawed-Off | Spirit Board", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "PP-Bizon | Space Cat", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Bowie Knife | Gamma Doppler", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "recoil_case": {
+        "name": "Recoil Case",
+        "emoji": "📦",
+        "price": 2.0,
+        "items": [
+            {"name": "FAMAS | Meow 36", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Galil AR | Destroyer", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "M4A4 | Poly Mag", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MAC-10 | Monkeyflage", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Negev | Drop Me", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "UMP-45 | Roadblock", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "Glock-18 | Winterized", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "R8 Revolver | Crazy 8", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Broken Fang Gloves | Yellow-banded", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Unhinged", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Broken Fang Gloves | Needle Point", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "revolution_case": {
+        "name": "Revolution Case",
+        "emoji": "🎯",
+        "price": 2.5,
+        "items": [
+            {"name": "MAG-7 | Insomnia", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MP9 | Featherweight", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SCAR-20 | Fragments", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "P250 | Re.built", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MP5-SD | Liquidation", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SG 553 | Cyberforce", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "Tec-9 | Rebel", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "M4A1-S | Emphorosaur-S", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | Imperial Plaid", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | King Snake", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Driver Gloves | Racing Green", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "kilowatt_case": {
+        "name": "Kilowatt Case",
+        "emoji": "⚡",
+        "price": 3.5,
+        "items": [
+            {"name": "Dual Berettas | Hideout", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "MAC-10 | Light Box", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "Nova | Dark Sigil", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SSG 08 | Dezastre", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Tec-9 | Slag", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "UMP-45 | Motorized", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "XM1014 | Irezumi", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Glock-18 | Block-18", "rarity": "Purple", "condition": "Minimal Wear"},
+            {"name": "★ Kukri Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "gallery_case": {
+        "name": "Gallery Case",
+        "emoji": "🔥",
+        "price": 3.0,
+        "items": [
+            {"name": "USP-S | 27", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "Desert Eagle | Calligraffiti", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "MP5-SD | Statics", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "AUG | Luxe Trim", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "M249 | Hypnosis", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "R8 Revolver | Tango", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "SCAR-20 | Trail Blazer", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "M4A4 | Turbine", "rarity": "Purple", "condition": "Factory New"},
+            {"name": "★ Kukri Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Kukri Knife | Slaughter", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+    "fever_case": {
+        "name": "Fever Case",
+        "emoji": "💎",
+        "price": 4.0,
+        "items": [
+            {"name": "M4A4 | Choppa", "rarity": "Blue", "condition": "Well-Worn"},
+            {"name": "MAG-7 | Resupply", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "SSG 08 | Memorial", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "P2000 | Sure Grip", "rarity": "Blue", "condition": "Battle-Scarred"},
+            {"name": "USP-S | PC-GRN", "rarity": "Blue", "condition": "Field-Tested"},
+            {"name": "MP9 | Nexus", "rarity": "Blue", "condition": "Minimal Wear"},
+            {"name": "XM1014 | Mockingbird", "rarity": "Blue", "condition": "Factory New"},
+            {"name": "Desert Eagle | Serpent Strike", "rarity": "Purple", "condition": "Well-Worn"},
+            {"name": "★ Survival Knife", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Survival Knife | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
+            {"name": "★ Survival Knife | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"}
+        ]
+    },
+}
+
+============================================================
+📊 STATISTICS:
+============================================================
+  📦 Total Cases: 37
+  🎯 Total Items: 407
+============================================================
