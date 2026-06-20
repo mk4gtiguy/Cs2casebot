@@ -1346,16 +1346,29 @@ async def update_quest_progress(user_id, quest_type, increment=1, conn=None):
     
     await ensure_user_exists(user_id, conn=conn)
     
-    quest = await conn.fetchrow("""
-        SELECT id, progress, required FROM quests
-        WHERE user_id = $1 AND quest_type = $2 AND completed = false AND claimed = false
-    """, user_id, quest_type)
-    if quest:
-        new_progress = quest['progress'] + increment
-        if new_progress >= quest['required']:
-            await conn.execute("UPDATE quests SET progress = $1, completed = true WHERE id = $2", quest['required'], quest['id'])
-        else:
-            await conn.execute("UPDATE quests SET progress = $1 WHERE id = $2", new_progress, quest['id'])
+    try:
+        quest = await conn.fetchrow("""
+            SELECT id, progress, required FROM quests
+            WHERE user_id = $1 AND quest_type = $2 AND completed = false AND claimed = false
+        """, user_id, quest_type)
+        
+        if quest:
+            new_progress = quest['progress'] + increment
+            if new_progress >= quest['required']:
+                await conn.execute("""
+                    UPDATE quests SET progress = $1, completed = true WHERE id = $2
+                """, quest['required'], quest['id'])
+                logger.info(f"Quest {quest_type} completed for user {user_id}")
+                return True
+            else:
+                await conn.execute("""
+                    UPDATE quests SET progress = $1 WHERE id = $2
+                """, new_progress, quest['id'])
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"Quest update error: {e}")
+        return False
 
 @bot.event
 async def on_ready():
@@ -1801,23 +1814,32 @@ async def bulk_open(interaction: discord.Interaction, case: str, quantity: int):
                     item = get_random_item(case_id)
                     if item:
                         price_value = float(item['price'])
-                        await conn.execute("""INSERT INTO inventory 
-                            (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
-                            VALUES ($1, $2, 'weapon', $3, $4, $5, $6, $7)""",
+                        result = await conn.execute("""INSERT INTO inventory 
+                            (user_id, item_name, item_type, rarity, price, condition, is_stattrak, status, float_value) 
+                            VALUES ($1, $2, 'weapon', $3, $4, $5, $6, 'kept', $7) RETURNING id""",
                             interaction.user.id, item['name'], item['rarity'], price_value, 
                             item.get('condition', 'Field-Tested'), item['is_stattrak'],
                             item.get('float', 0.0000))
+                        try:
+                            item_id_result = await conn.fetchrow("SELECT lastval() as id")
+                            if item_id_result:
+                                item['id'] = item_id_result['id']
+                        except:
+                            pass
                         items.append(item)
 
                         if item['rarity'] == "Gold":
                             await conn.execute("UPDATE users SET total_golds = total_golds + 1 WHERE user_id = $1", interaction.user.id)
                             await update_quest_progress(interaction.user.id, "get_golds", 1, conn)
 
+                if not items:
+                    await interaction.followup.send("❌ Error: No items were generated. Please try again.", ephemeral=True)
+                    return
+
                 await update_quest_progress(interaction.user.id, "open_cases", quantity, conn)
                 await update_quest_progress(interaction.user.id, "earn_money", int(total_cost), conn)
 
                 new_balance = await get_balance(interaction.user.id, conn)
-
                 await add_xp(interaction.user.id, quantity * 10, conn)
 
                 item_summary = ""
@@ -3176,6 +3198,11 @@ async def play_dice(user_id: int, amount: float, bet_type: str, bet_number: int)
                 'win_amount': win_amount
             }
 
+# ============================================
+# MINES GAME - COMPLETE FIXED VERSION
+# ALL Decimal errors fixed!
+# ============================================
+
 async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine_count: int = 3) -> dict:
     """Start a mines game"""
     if amount < 100:
@@ -3205,11 +3232,14 @@ async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine
             
             result = await conn.fetchrow(
                 """INSERT INTO mines_games 
-                   (user_id, bet_amount, grid_size, mine_count, status, mine_positions) 
-                   VALUES ($1, $2, $3, $4, 'active', $5) RETURNING id""",
+                   (user_id, bet_amount, grid_size, mine_count, status, mine_positions, revealed_tiles, multiplier) 
+                   VALUES ($1, $2, $3, $4, 'active', $5, '{}', 1.0) 
+                   RETURNING id""",
                 user_id, amount, grid_size, mine_count, mine_positions
             )
             game_id = result['id']
+            
+            logger.info(f"🎮 Mines game created: ID={game_id}, User={user_id}, Amount=${amount}")
             
             return {
                 'success': True,
@@ -3219,112 +3249,266 @@ async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine
                 'bet_amount': amount
             }
 
+
 async def reveal_mines_tile(game_id: int, user_id: int, tile_index: int) -> dict:
-    """Reveal a tile in a mines game"""
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            game = await conn.fetchrow(
-                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
-                game_id, user_id
-            )
-            if not game:
-                return {'success': False, 'error': 'Game not found or already ended'}
-            
-            revealed = game['revealed_tiles'] or []
-            if tile_index in revealed:
-                return {'success': False, 'error': 'Tile already revealed'}
-            
-            mine_positions = game.get('mine_positions', [])
-            if not mine_positions:
+    """Reveal a tile in a mines game - FIXED Decimal error!"""
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                
+                # Check if game exists
+                game = await conn.fetchrow(
+                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2",
+                    game_id, user_id
+                )
+                
+                if not game:
+                    logger.warning(f"❌ Mines game {game_id} not found for user {user_id}")
+                    return {'success': False, 'error': 'Game not found. Please start a new game with /mines'}
+                
+                # Check if game is still active
+                if game['status'] != 'active':
+                    status_msg = {
+                        'won': 'You already won this game!',
+                        'lost': 'You already lost this game!',
+                        'cashed_out': 'You already cashed out!'
+                    }.get(game['status'], f'Game status is {game["status"]}')
+                    return {'success': False, 'error': status_msg}
+                
+                revealed = game['revealed_tiles'] or []
+                if tile_index in revealed:
+                    return {'success': False, 'error': 'Tile already revealed'}
+                
+                # Get mine positions
+                mine_positions = game.get('mine_positions', [])
+                if not mine_positions or len(mine_positions) == 0:
+                    total_tiles = game['grid_size'] * game['grid_size']
+                    mine_positions = random.sample(range(total_tiles), game['mine_count'])
+                    await conn.execute(
+                        "UPDATE mines_games SET mine_positions = $1 WHERE id = $2",
+                        mine_positions, game_id
+                    )
+                
+                # Check if hit a mine
+                if tile_index in mine_positions:
+                    await conn.execute(
+                        "UPDATE mines_games SET exploded = true, status = 'lost' WHERE id = $1",
+                        game_id
+                    )
+                    logger.info(f"💥 User {user_id} hit a mine in game {game_id}")
+                    return {'success': False, 'exploded': True, 'message': '💥 BOOM! You hit a mine!'}
+                
+                # Reveal the tile
+                revealed.append(tile_index)
                 total_tiles = game['grid_size'] * game['grid_size']
-                mine_positions = random.sample(range(total_tiles), game['mine_count'])
+                safe_tiles = total_tiles - game['mine_count']
+                remaining = safe_tiles - len(revealed)
+                multiplier = round(1 + (len(revealed) / safe_tiles) * 10, 2)
+                
+                # Check if all safe tiles are revealed (WIN!)
+                if remaining <= 0:
+                    # FIXED: Convert Decimal to float before multiplying
+                    bet_amount = float(game['bet_amount'])
+                    win_amount = int(bet_amount * multiplier)
+                    
+                    await conn.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                        win_amount, user_id
+                    )
+                    await conn.execute(
+                        "UPDATE mines_games SET status = 'won', multiplier = $1 WHERE id = $2",
+                        multiplier, game_id
+                    )
+                    await update_quest_progress(user_id, "earn_money", int(win_amount))
+                    logger.info(f"🎉 User {user_id} WON mines game {game_id}! Won ${win_amount}")
+                    
+                    return {
+                        'success': True,
+                        'game_won': True,
+                        'win_amount': win_amount,
+                        'multiplier': multiplier,
+                        'revealed': revealed,
+                        'remaining': 0
+                    }
+                
+                # Update game state
                 await conn.execute(
-                    "UPDATE mines_games SET mine_positions = $1 WHERE id = $2",
-                    mine_positions, game_id
+                    "UPDATE mines_games SET revealed_tiles = $1, multiplier = $2 WHERE id = $3",
+                    revealed, multiplier, game_id
                 )
-            
-            if tile_index in mine_positions:
-                await conn.execute(
-                    "UPDATE mines_games SET exploded = true, status = 'lost' WHERE id = $1",
-                    game_id
+                
+                # FIXED: Convert Decimal to float before multiplying
+                bet_amount = float(game['bet_amount'])
+                cash_out_amount = int(bet_amount * multiplier)
+                
+                return {
+                    'success': True,
+                    'game_won': False,
+                    'multiplier': multiplier,
+                    'revealed': revealed,
+                    'remaining': remaining,
+                    'cash_out_amount': cash_out_amount
+                }
+    except Exception as e:
+        logger.error(f"reveal_mines_tile error: {e}")
+        return {'success': False, 'error': f'Error: {str(e)}'}
+
+
+async def cashout_mines(game_id: int, user_id: int) -> dict:
+    """Cash out a mines game"""
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                
+                game = await conn.fetchrow(
+                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
+                    game_id, user_id
                 )
-                return {'success': False, 'exploded': True, 'message': '💥 BOOM! You hit a mine!'}
-            
-            revealed.append(tile_index)
-            total_tiles = game['grid_size'] * game['grid_size']
-            safe_tiles = total_tiles - game['mine_count']
-            remaining = safe_tiles - len(revealed)
-            multiplier = round(1 + (len(revealed) / safe_tiles) * 10, 2)
-            
-            if remaining == 0:
-                win_amount = int(game['bet_amount'] * multiplier)
+                if not game:
+                    return {'success': False, 'error': 'Game not found or already ended'}
+                
+                # FIXED: Convert Decimal to float
+                multiplier = float(game['multiplier'] or 1.0)
+                bet_amount = float(game['bet_amount'])
+                win_amount = int(bet_amount * multiplier)
+                
                 await conn.execute(
                     "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
                     win_amount, user_id
                 )
                 await conn.execute(
-                    "UPDATE mines_games SET status = 'won', multiplier = $1 WHERE id = $2",
+                    "UPDATE mines_games SET status = 'cashed_out', multiplier = $1 WHERE id = $2",
                     multiplier, game_id
                 )
+                
                 await update_quest_progress(user_id, "earn_money", int(win_amount))
+                
+                logger.info(f"💰 User {user_id} cashed out mines game {game_id} for ${win_amount}")
                 
                 return {
                     'success': True,
-                    'game_won': True,
                     'win_amount': win_amount,
-                    'multiplier': multiplier,
-                    'revealed': revealed,
-                    'remaining': remaining
+                    'multiplier': multiplier
                 }
-            
-            await conn.execute(
-                "UPDATE mines_games SET revealed_tiles = $1, multiplier = $2 WHERE id = $3",
-                revealed, multiplier, game_id
-            )
-            
-            return {
-                'success': True,
-                'game_won': False,
-                'multiplier': multiplier,
-                'revealed': revealed,
-                'remaining': remaining,
-                'cash_out_amount': int(game['bet_amount'] * multiplier)
-            }
+    except Exception as e:
+        logger.error(f"cashout_mines error: {e}")
+        return {'success': False, 'error': f'Error: {str(e)}'}
 
-async def cashout_mines(game_id: int, user_id: int) -> dict:
-    """Cash out a mines game"""
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            game = await conn.fetchrow(
-                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
-                game_id, user_id
+
+@bot.tree.command(name="mines", description="Start a mines game")
+async def cmd_mines(interaction: discord.Interaction, amount: float, grid_size: int = 5, mine_count: int = 3):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    logger.info(f"🎮 User {interaction.user.id} starting mines game with ${amount}")
+    
+    result = await start_mines_game(interaction.user.id, amount, grid_size, mine_count)
+    
+    if not result['success']:
+        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+        return
+    
+    total_tiles = grid_size * grid_size
+    
+    embed = discord.Embed(
+        title="💣 Mines Game Started!",
+        description=f"Bet: ${amount:,.2f}\nGrid: {grid_size}x{grid_size}\nMines: {mine_count}",
+        color=discord.Color.purple()
+    )
+    embed.add_field(name="🎮 Game ID", value=f"`{result['game_id']}`", inline=False)
+    embed.add_field(
+        name="📖 How to Play", 
+        value=f"Use `/mines_reveal game_id:{result['game_id']} tile:0` to reveal a tile!\nTile numbers go from 0 to {total_tiles - 1}",
+        inline=False
+    )
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="mines_reveal", description="Reveal a tile in your mines game")
+async def cmd_mines_reveal(interaction: discord.Interaction, game_id: int, tile: int):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    logger.info(f"🎮 User {interaction.user.id} revealing tile {tile} in game {game_id}")
+    
+    try:
+        result = await reveal_mines_tile(game_id, interaction.user.id, tile)
+        
+        if not result['success']:
+            if result.get('exploded'):
+                embed = discord.Embed(
+                    title="💥 BOOM!",
+                    description="You hit a mine! Game over! 😢",
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.followup.send(f"❌ {result.get('error', 'Something went wrong')}", ephemeral=True)
+            return
+        
+        if result.get('game_won'):
+            embed = discord.Embed(
+                title="🎉 MINES WON! 🎉",
+                description=f"You revealed all safe tiles and won **${result['win_amount']:,.2f}**!",
+                color=discord.Color.gold()
             )
-            if not game:
-                return {'success': False, 'error': 'Game not found or already ended'}
-            
-            multiplier = game['multiplier'] or 1.0
-            win_amount = int(game['bet_amount'] * multiplier)
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                win_amount, user_id
-            )
-            await conn.execute(
-                "UPDATE mines_games SET status = 'cashed_out', multiplier = $1 WHERE id = $2",
-                multiplier, game_id
-            )
-            
-            await update_quest_progress(user_id, "earn_money", int(win_amount))
-            
-            return {
-                'success': True,
-                'win_amount': win_amount,
-                'multiplier': multiplier
-            }
+            embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
+            embed.add_field(name="Tiles Revealed", value=str(len(result['revealed'])), inline=True)
+            await interaction.followup.send(embed=embed)
+            return
+        
+        embed = discord.Embed(
+            title="✅ Tile Revealed!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Safe Tiles Remaining", value=str(result['remaining']), inline=True)
+        embed.add_field(name="Current Multiplier", value=f"{result['multiplier']}x", inline=True)
+        embed.add_field(name="💰 Cash Out Value", value=f"${result['cash_out_amount']:,.2f}", inline=True)
+        embed.add_field(name="💡 Next Step", value="Use `/mines_cashout` to cash out or reveal another tile!", inline=False)
+        embed.set_footer(text="💖 Support us on Ko-fi!")
+        
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"cmd_mines_reveal error: {e}")
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+
+
+@bot.tree.command(name="mines_cashout", description="Cash out your mines game")
+async def cmd_mines_cashout(interaction: discord.Interaction, game_id: int):
+    if not await is_bot_channel(interaction):
+        return
+    
+    await interaction.response.defer()
+    
+    logger.info(f"💰 User {interaction.user.id} cashing out mines game {game_id}")
+    
+    try:
+        result = await cashout_mines(game_id, interaction.user.id)
+        
+        if not result['success']:
+            await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="💰 Mines Cashed Out!",
+            description=f"You cashed out for **${result['win_amount']:,.2f}**!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
+        embed.set_footer(text="💖 Support us on Ko-fi!")
+        
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"cmd_mines_cashout error: {e}")
+        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
 
 # ============================================
 # SLOTS HELPERS
@@ -3341,8 +3525,13 @@ SLOT_SYMBOLS = [
 ]
 
 SLOT_PAYOUTS = {
-    '🍒🍒🍒': 5, '🍋🍋🍋': 10, '🍊🍊🍊': 15,
-    '🍇🍇🍇': 20, '💎💎💎': 50, '7️⃣7️⃣7️⃣': 100, '🎰🎰🎰': 500
+    '🍒🍒🍒': 3,
+    '🍋🍋🍋': 5,
+    '🍊🍊🍊': 8,
+    '🍇🍇🍇': 12,
+    '💎💎💎': 30,
+    '7️⃣7️⃣7️⃣': 60,
+    '🎰🎰🎰': 200
 }
 
 async def play_slots(user_id: int, amount: float) -> dict:
@@ -3367,6 +3556,7 @@ async def play_slots(user_id: int, amount: float) -> dict:
             result_str = ''.join(symbols)
             multiplier = SLOT_PAYOUTS.get(result_str, 0)
             win_amount = int(amount * multiplier) if multiplier > 0 else 0
+            win_amount = int(win_amount * 0.98)  # 2% house edge
             
             if multiplier == 0:
                 for sym in SLOT_SYMBOLS:
@@ -3399,82 +3589,68 @@ async def play_slots(user_id: int, amount: float) -> dict:
             }
 
 # ============================================
-# COINFLIP COMMANDS
+# COINFLIP COMMANDS - VS COMPUTER
 # ============================================
 
-@bot.tree.command(name="coinflip", description="Create or join a coinflip game")
-async def cmd_coinflip(interaction: discord.Interaction, game_id: Optional[int] = None, amount: Optional[float] = None):
+@bot.tree.command(name="coinflip", description="Flip a coin against the computer!")
+async def cmd_coinflip(interaction: discord.Interaction, amount: float):
     if not await is_bot_channel(interaction):
         return
     
     await interaction.response.defer()
     
-    if game_id:
-        result = await join_coinflip_game(game_id, interaction.user.id)
-        if not result['success']:
-            await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-            return
-        
-        embed = discord.Embed(
-            title="🪙 Coinflip Result!",
-            color=discord.Color.gold() if result['winner_id'] == interaction.user.id else discord.Color.red()
-        )
-        embed.add_field(name="Winner", value=f"<@{result['winner_id']}>", inline=False)
-        embed.add_field(name="Amount", value=f"${result['amount']:,.2f}", inline=True)
-        embed.add_field(name="Won", value=f"${result['win_amount']:,.2f}", inline=True)
-        embed.set_footer(text="💖 Support us on Ko-fi!")
-        await interaction.followup.send(embed=embed)
-        return
-    
-    if not amount or amount < 100:
+    if amount < 100:
         await interaction.followup.send("❌ Minimum bet is $100!", ephemeral=True)
         return
     
-    result = await create_coinflip_game(interaction.user.id, amount)
-    
-    embed = discord.Embed(
-        title="🪙 Coinflip Game Created!",
-        description=f"Bet: ${amount:,.2f}\nWaiting for opponent...",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Game ID", value=f"`{result['game_id']}`", inline=False)
-    embed.add_field(name="How to Join", value=f"`/coinflip game_id:{result['game_id']}`", inline=False)
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="coinflip_list", description="View active coinflip games")
-async def cmd_coinflip_list(interaction: discord.Interaction):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
     async with db_pool.acquire() as conn:
-        games = await conn.fetch(
-            "SELECT id, creator_id, amount FROM coinflip_games WHERE status = 'waiting' LIMIT 10"
-        )
-    
-    if not games:
-        await interaction.followup.send("No active coinflip games right now!", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title="🪙 Active Coinflip Games",
-        color=discord.Color.blue()
-    )
-    
-    for game in games:
-        creator = await get_username(game['creator_id'])
-        embed.add_field(
-            name=f"Game #{game['id']}",
-            value=f"Host: {creator}\nAmount: ${game['amount']:,.2f}\nJoin: `/coinflip game_id:{game['id']}`",
-            inline=True
-        )
-    
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    await interaction.followup.send(embed=embed)
+        async with conn.transaction():
+            await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+            if not user or user['balance'] < amount:
+                await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
+                return
+            
+            # Take their money
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, interaction.user.id
+            )
+            
+            # Computer flips coin - 50/50 chance
+            user_wins = random.choice([True, False])
+            
+            if user_wins:
+                win_amount = int(amount * 1.95)  # 95% payout
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, interaction.user.id
+                )
+                result = "win"
+                await update_quest_progress(interaction.user.id, "jackpot_win", 1)
+            else:
+                win_amount = 0
+                result = "lose"
+            
+            # Save game record
+            await conn.execute(
+                """INSERT INTO coinflip_games 
+                   (creator_id, amount, status, completed_at, opponent_id) 
+                   VALUES ($1, $2, 'complete', NOW(), 999999999)""",
+                interaction.user.id, amount
+            )
+            
+            embed = discord.Embed(
+                title="🪙 Coinflip vs Computer!",
+                color=discord.Color.gold() if user_wins else discord.Color.red()
+            )
+            embed.add_field(name="Your Bet", value=f"${amount:,.2f}", inline=True)
+            embed.add_field(name="Result", value="🎉 YOU WON!" if user_wins else "😢 Computer Wins!", inline=True)
+            if user_wins:
+                embed.add_field(name="You Won", value=f"${win_amount:,.2f}", inline=True)
+            embed.set_footer(text="💖 Support us on Ko-fi!")
+            await interaction.followup.send(embed=embed)
 
 # ============================================
 # DICE COMMANDS
@@ -3511,103 +3687,6 @@ async def cmd_dice(interaction: discord.Interaction, amount: float, bet_type: st
         embed.add_field(name="❌ Lost", value=f"${result['amount']:,.2f}", inline=True)
     
     embed.set_footer(text="💖 Support us on Ko-fi!")
-    await interaction.followup.send(embed=embed)
-
-# ============================================
-# MINES COMMANDS
-# ============================================
-
-@bot.tree.command(name="mines", description="Start a mines game")
-async def cmd_mines(interaction: discord.Interaction, amount: float, grid_size: int = 5, mine_count: int = 3):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    result = await start_mines_game(interaction.user.id, amount, grid_size, mine_count)
-    
-    if not result['success']:
-        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title="💣 Mines Game Started!",
-        description=f"Bet: ${amount:,.2f}\nGrid: {grid_size}x{grid_size}\nMines: {mine_count}",
-        color=discord.Color.purple()
-    )
-    embed.add_field(name="Game ID", value=f"`{result['game_id']}`", inline=False)
-    embed.add_field(name="How to Play", value="Use `/mines_reveal game_id:tile` to reveal tiles!", inline=False)
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="mines_reveal", description="Reveal a tile in your mines game")
-async def cmd_mines_reveal(interaction: discord.Interaction, game_id: int, tile: int):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    result = await reveal_mines_tile(game_id, interaction.user.id, tile)
-    
-    if not result['success']:
-        if result.get('exploded'):
-            embed = discord.Embed(
-                title="💥 BOOM!",
-                description="You hit a mine! Game over!",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed)
-        else:
-            await interaction.followup.send(f"❌ {result.get('error', 'Something went wrong')}", ephemeral=True)
-        return
-    
-    if result.get('game_won'):
-        embed = discord.Embed(
-            title="🎉 MINES WON!",
-            description=f"You revealed all safe tiles!",
-            color=discord.Color.gold()
-        )
-        embed.add_field(name="Win Amount", value=f"${result['win_amount']:,.2f}", inline=True)
-        embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
-        await interaction.followup.send(embed=embed)
-        return
-    
-    embed = discord.Embed(
-        title="✅ Tile Revealed!",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="Safe Tiles Remaining", value=str(result['remaining']), inline=True)
-    embed.add_field(name="Current Multiplier", value=f"{result['multiplier']}x", inline=True)
-    embed.add_field(name="Cash Out Value", value=f"${result['cash_out_amount']:,.2f}", inline=True)
-    embed.add_field(name="Cash Out", value="Use `/mines_cashout` to cash out!", inline=False)
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="mines_cashout", description="Cash out your mines game")
-async def cmd_mines_cashout(interaction: discord.Interaction, game_id: int):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    result = await cashout_mines(game_id, interaction.user.id)
-    
-    if not result['success']:
-        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title="💰 Mines Cashed Out!",
-        description=f"You cashed out for ${result['win_amount']:,.2f}!",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    
     await interaction.followup.send(embed=embed)
 
 # ============================================
