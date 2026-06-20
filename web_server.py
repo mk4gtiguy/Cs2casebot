@@ -2811,11 +2811,419 @@ async def play_dice(request: Request, body: dict):
                 "win_amount": win_amount
             }
 
-# --- MINES ---
-# Mines functions are in main.py only (bot commands)
-# Web API version uses the same logic
+# ============================================
+# GAME API ROUTES - MINES (ADDED)
+# ============================================
 
-# --- SLOTS ---
+@app.post("/api/games/mines/start")
+async def start_mines_game(request: Request, body: dict):
+    user_id = await get_user_id_from_session(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    amount = body.get("amount")
+    grid_size = body.get("grid_size", 5)
+    mine_count = body.get("mine_count", 3)
+    
+    if not amount or amount < 100:
+        return {"success": False, "error": "Minimum bet is $100"}
+    
+    if grid_size < 3 or grid_size > 6:
+        return {"success": False, "error": "Grid size must be between 3 and 6"}
+    
+    max_mines = (grid_size * grid_size) - 2
+    if mine_count < 1 or mine_count > max_mines:
+        return {"success": False, "error": f"Invalid mine count. Max is {max_mines}"}
+    
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                user = await conn.fetchrow(
+                    "SELECT balance FROM users WHERE user_id = $1",
+                    user_id
+                )
+                if not user or user['balance'] < amount:
+                    return {"success": False, "error": "Insufficient balance"}
+                
+                # Deduct bet
+                await conn.execute(
+                    "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                    amount, user_id
+                )
+                
+                # Generate mine positions
+                total_tiles = grid_size * grid_size
+                mine_positions = random.sample(range(total_tiles), mine_count)
+                
+                result = await conn.fetch(
+                    """INSERT INTO mines_games 
+                       (user_id, bet_amount, grid_size, mine_count, mine_positions, status) 
+                       VALUES ($1, $2, $3, $4, $5, 'active') 
+                       RETURNING id""",
+                    user_id, amount, grid_size, mine_count, mine_positions
+                )
+                game_id = result[0]['id']
+                
+                return {
+                    "success": True,
+                    "game_id": game_id,
+                    "bet_amount": amount,
+                    "grid_size": grid_size,
+                    "mine_count": mine_count,
+                    "revealed_tiles": [],
+                    "remaining": total_tiles - mine_count
+                }
+    except Exception as e:
+        logger.error(f"Mines start error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/games/mines/reveal")
+async def reveal_mines_tile(request: Request, body: dict):
+    user_id = await get_user_id_from_session(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    game_id = body.get("game_id")
+    tile_index = body.get("tile_index")
+    
+    if not game_id or tile_index is None:
+        return {"success": False, "error": "Missing game_id or tile_index"}
+    
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                game = await conn.fetchrow(
+                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2",
+                    game_id, user_id
+                )
+                if not game:
+                    return {"success": False, "error": "Game not found"}
+                
+                if game['status'] != 'active':
+                    return {"success": False, "error": "Game already finished"}
+                
+                mine_positions = game['mine_positions']
+                revealed_tiles = game['revealed_tiles'] or []
+                
+                if tile_index in revealed_tiles:
+                    return {"success": False, "error": "Tile already revealed"}
+                
+                if tile_index in mine_positions:
+                    # Hit a mine!
+                    await conn.execute(
+                        "UPDATE mines_games SET status = 'lost', completed_at = NOW() WHERE id = $1",
+                        game_id
+                    )
+                    return {
+                        "success": False, 
+                        "exploded": True, 
+                        "mine_hit": tile_index
+                    }
+                
+                # Safe tile
+                revealed_tiles.append(tile_index)
+                
+                total_tiles = game['grid_size'] * game['grid_size']
+                remaining = total_tiles - len(revealed_tiles) - game['mine_count']
+                
+                # Calculate multiplier (increases as more tiles are revealed)
+                safe_tiles = total_tiles - game['mine_count']
+                progress = len(revealed_tiles) / safe_tiles if safe_tiles > 0 else 0
+                multiplier = 1.0 + (progress * 1.5)  # Max 2.5x
+                cash_out_amount = int(game['bet_amount'] * multiplier)
+                
+                # Check if all safe tiles revealed (win)
+                if len(revealed_tiles) >= safe_tiles:
+                    await conn.execute(
+                        """UPDATE mines_games 
+                           SET status = 'won', revealed_tiles = $1, multiplier = $2, 
+                               win_amount = $3, completed_at = NOW() 
+                           WHERE id = $4""",
+                        revealed_tiles, multiplier, cash_out_amount, game_id
+                    )
+                    await conn.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                        cash_out_amount, user_id
+                    )
+                    return {
+                        "success": True,
+                        "game_won": True,
+                        "win_amount": cash_out_amount,
+                        "multiplier": multiplier,
+                        "revealed": revealed_tiles,
+                        "remaining": 0
+                    }
+                
+                await conn.execute(
+                    "UPDATE mines_games SET revealed_tiles = $1, multiplier = $2 WHERE id = $3",
+                    revealed_tiles, multiplier, game_id
+                )
+                
+                return {
+                    "success": True,
+                    "game_won": False,
+                    "revealed": revealed_tiles,
+                    "remaining": remaining,
+                    "multiplier": round(multiplier, 2),
+                    "cash_out_amount": cash_out_amount
+                }
+    except Exception as e:
+        logger.error(f"Mines reveal error: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/games/mines/cashout")
+async def cashout_mines(request: Request, body: dict):
+    user_id = await get_user_id_from_session(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    game_id = body.get("game_id")
+    if not game_id:
+        return {"success": False, "error": "Missing game_id"}
+    
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                game = await conn.fetchrow(
+                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
+                    game_id, user_id
+                )
+                if not game:
+                    return {"success": False, "error": "Game not found or already finished"}
+                
+                revealed_tiles = game['revealed_tiles'] or []
+                if len(revealed_tiles) == 0:
+                    return {"success": False, "error": "No tiles revealed yet. Minimum 1 reveal to cash out."}
+                
+                total_tiles = game['grid_size'] * game['grid_size']
+                safe_tiles = total_tiles - game['mine_count']
+                progress = len(revealed_tiles) / safe_tiles if safe_tiles > 0 else 0
+                multiplier = 1.0 + (progress * 1.5)
+                win_amount = int(game['bet_amount'] * multiplier)
+                
+                await conn.execute(
+                    "UPDATE mines_games SET status = 'cashed_out', win_amount = $1, completed_at = NOW() WHERE id = $2",
+                    win_amount, game_id
+                )
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                
+                return {
+                    "success": True,
+                    "win_amount": win_amount,
+                    "multiplier": round(multiplier, 2)
+                }
+    except Exception as e:
+        logger.error(f"Mines cashout error: {e}")
+        return {"success": False, "error": str(e)}
+
+# ============================================
+# GAME API ROUTES - COINFLIP COMPATIBILITY
+# ============================================
+
+@app.get("/api/games/coinflip/my_games")
+async def get_my_coinflip_games(request: Request):
+    """Get user's coinflip games - for UI compatibility"""
+    user_id = await get_user_id_from_session(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        async with db_pool.acquire() as conn:
+            games = await conn.fetch(
+                "SELECT id, amount, status, completed_at FROM coinflip_games WHERE creator_id = $1 ORDER BY id DESC LIMIT 5",
+                user_id
+            )
+            return {"games": [dict(g) for g in games]}
+    except Exception as e:
+        logger.error(f"My games error: {e}")
+        return {"games": []}
+
+@app.get("/api/games/coinflip/list")
+async def list_coinflip_games(request: Request):
+    """List available coinflip games - for UI compatibility (VS Computer only)"""
+    # Since we're VS Computer only, return empty list
+    return {"games": []}
+
+@app.post("/api/games/coinflip/join")
+async def join_coinflip_game(request: Request, body: dict):
+    """Join a coinflip game - for UI compatibility (but we're VS Computer only)"""
+    return {
+        "success": False,
+        "error": "Coinflip is now VS Computer only! Use the Play button."
+    }
+
+# ============================================
+# GAME API ROUTES - PREMIUM CASE OPENING
+# ============================================
+
+@app.post("/api/open-premium-case")
+async def open_premium_case(request: Request, body: dict):
+    user_id = await get_user_id_from_session(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # Check if premium is enabled
+    if not PREMIUM_ENABLED:
+        return {
+            "success": False,
+            "locked": True,
+            "error": PREMIUM_ENABLED_MESSAGE
+        }
+    
+    case_id = body.get("case_id")
+    quantity = body.get("quantity", 1)
+    
+    if not case_id or case_id not in PREMIUM_CASES:
+        return {"success": False, "error": "Invalid premium case"}
+    
+    if quantity > 25:
+        return {"success": False, "error": "Maximum 25 cases at once"}
+    
+    case = PREMIUM_CASES[case_id]
+    ticket_cost = case['price_tickets'] * quantity
+    
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                user = await conn.fetchrow(
+                    "SELECT credits FROM users WHERE user_id = $1",
+                    user_id
+                )
+                if not user:
+                    return {"success": False, "error": "User not found"}
+                
+                if user['credits'] < ticket_cost:
+                    return {
+                        "success": False,
+                        "error": f"Insufficient tickets. Need {ticket_cost}, have {user['credits']}",
+                        "tickets_have": user['credits'],
+                        "tickets_needed": ticket_cost - user['credits']
+                    }
+                
+                # Deduct tickets
+                await conn.execute(
+                    "UPDATE users SET credits = credits - $1, total_premium_opens = total_premium_opens + $2 WHERE user_id = $3",
+                    ticket_cost, quantity, user_id
+                )
+                
+                items = []
+                for _ in range(quantity):
+                    item = get_random_premium_item(case)
+                    if item:
+                        result = await conn.fetch(
+                            """INSERT INTO inventory 
+                               (user_id, item_name, item_type, rarity, price, condition, is_stattrak, status, case_id, float_value) 
+                               VALUES ($1, $2, 'weapon', $3, $4, $5, $6, 'kept', $7, $8) 
+                               RETURNING id""",
+                            user_id, item['name'], item['rarity'], item['price'],
+                            item.get('condition', 'Field-Tested'), item.get('is_stattrak', False),
+                            f"premium_{case_id}", item.get('float', 0.0000)
+                        )
+                        item_id = result[0]['id'] if result else None
+                        
+                        if item['rarity'] == 'Gold':
+                            await conn.execute(
+                                "UPDATE users SET total_golds = total_golds + 1 WHERE user_id = $1",
+                                user_id
+                            )
+                        
+                        items.append({
+                            **item,
+                            'id': item_id
+                        })
+                
+                # Add to live feed for premium opens
+                if items:
+                    try:
+                        first_item = items[0]
+                        user_data = await get_user_data(user_id)
+                        username = user_data.get('username', f'User_{user_id}')
+                        await conn.execute(
+                            """INSERT INTO live_feed 
+                               (user_id, username, item_name, rarity, rarity_emoji, case_type, float_value) 
+                               VALUES ($1, $2, $3, $4, $5, 'premium', $6)""",
+                            user_id, username, first_item['name'], first_item['rarity'],
+                            first_item.get('rarity_emoji', '⭐'), first_item.get('float', 0.0000)
+                        )
+                    except Exception as e:
+                        logger.error(f"Premium live feed error: {e}")
+                
+                return {
+                    "success": True,
+                    "items": items,
+                    "case": case,
+                    "count": len(items)
+                }
+    except Exception as e:
+        logger.error(f"Open premium case error: {e}")
+        return {"success": False, "error": str(e)}
+
+def get_random_premium_item(case):
+    """Get random item from premium case drop rates"""
+    drop_rates = case.get('drop_rates', {})
+    items_pool = case.get('items', {})
+    
+    rand = random.random() * 100
+    cumulative = 0
+    
+    for rarity, chance in drop_rates.items():
+        cumulative += chance
+        if rand <= cumulative:
+            possible_items = items_pool.get(rarity, [])
+            if possible_items:
+                item = random.choice(possible_items)
+                is_stattrak = random.random() < 0.1
+                float_value = generate_skin_float()
+                condition = get_skin_condition(float_value)
+                
+                tier = item.get('tier', None)
+                base_value = calculate_item_value(rarity, condition, tier, is_stattrak)
+                float_multiplier = {
+                    "Factory New": 2.0, "Minimal Wear": 1.5, "Field-Tested": 1.0,
+                    "Well-Worn": 0.75, "Battle-Scarred": 0.5
+                }.get(condition, 1.0)
+                value = round(base_value * float_multiplier, 2)
+                
+                name = f"{'StatTrak™ ' if is_stattrak else ''}{item['name']}"
+                
+                return {
+                    'name': name,
+                    'display_name': f"{RARITY_EMOJIS.get(rarity, '')} {name}",
+                    'rarity': rarity,
+                    'rarity_emoji': RARITY_EMOJIS.get(rarity, ''),
+                    'tier': tier,
+                    'condition': condition,
+                    'float': float_value,
+                    'price': float(value),
+                    'is_stattrak': is_stattrak
+                }
+    
+    # Fallback
+    fallback_items = []
+    for items in items_pool.values():
+        fallback_items.extend(items)
+    if fallback_items:
+        item = random.choice(fallback_items)
+        return {
+            'name': item['name'],
+            'display_name': item['name'],
+            'rarity': 'Blue',
+            'rarity_emoji': '🟦',
+            'tier': None,
+            'condition': 'Field-Tested',
+            'float': 0.5,
+            'price': 0.25,
+            'is_stattrak': False
+        }
+    return None
+
+# ============================================
+# GAME API ROUTES - SLOTS
+# ============================================
+
 @app.post("/api/games/slots/play")
 async def play_slots(request: Request, body: dict):
     user_id = await get_user_id_from_session(request)
@@ -2891,7 +3299,10 @@ async def play_slots(request: Request, body: dict):
                 "bet_amount": amount
             }
 
-# --- SKIN UPGRADE ---
+# ============================================
+# GAME API ROUTES - SKIN UPGRADE
+# ============================================
+
 @app.post("/api/games/upgrade")
 async def upgrade_skin(request: Request, body: dict):
     user_id = await get_user_id_from_session(request)
@@ -2989,7 +3400,10 @@ async def upgrade_skin(request: Request, body: dict):
                     "cost": upgrade_cost
                 }
 
-# --- HOURLY & WEEKLY ---
+# ============================================
+# GAME API ROUTES - HOURLY & WEEKLY
+# ============================================
+
 @app.post("/api/games/hourly")
 async def claim_hourly(request: Request):
     user_id = await get_user_id_from_session(request)
@@ -3051,7 +3465,10 @@ async def claim_weekly(request: Request):
         
         return {"success": True, "reward": reward, "total_claimed": total_claimed}
 
-# --- PROFILE ---
+# ============================================
+# GAME API ROUTES - PROFILE
+# ============================================
+
 @app.get("/api/user/me/profile")
 async def get_user_profile(request: Request):
     user_id = await get_user_id_from_session(request)
@@ -3076,7 +3493,10 @@ async def get_user_profile(request: Request):
             "xp_progress": int((user['xp'] or 0) / xp_needed * 100) if xp_needed > 0 else 0
         }
 
-# --- GAME STATS ---
+# ============================================
+# GAME API ROUTES - GAME STATS
+# ============================================
+
 @app.get("/api/games/stats")
 async def get_user_game_stats(request: Request):
     user_id = await get_user_id_from_session(request)
@@ -3087,11 +3507,7 @@ async def get_user_game_stats(request: Request):
         stats = {}
         
         coinflip_wins = await conn.fetchval(
-            "SELECT COUNT(*) FROM coinflip_games WHERE winner_id = $1",
-            user_id
-        ) or 0
-        coinflip_losses = await conn.fetchval(
-            "SELECT COUNT(*) FROM coinflip_games WHERE (creator_id = $1 OR opponent_id = $1) AND winner_id IS NOT NULL AND winner_id != $1",
+            "SELECT COUNT(*) FROM coinflip_games WHERE creator_id = $1 AND status = 'complete'",
             user_id
         ) or 0
         
@@ -3123,7 +3539,7 @@ async def get_user_game_stats(request: Request):
         ) or 0
         
         return {
-            "coinflip": {"wins": coinflip_wins, "losses": coinflip_losses},
+            "coinflip": {"wins": coinflip_wins, "losses": 0},
             "dice": {"wins": dice_wins, "losses": dice_losses},
             "mines": {"wins": mines_wins, "losses": mines_losses},
             "slots": {"wins": slots_wins, "losses": slots_losses}
@@ -3216,23 +3632,31 @@ async def save_user_settings(request: Request, body: dict):
         return {"success": True, "message": "Settings saved!"}
 
 # ============================================
-# LIVE FEED
+# LIVE FEED ENDPOINTS (ADDED)
 # ============================================
 
 @app.get("/api/live-feed")
 async def get_live_feed(limit: int = 20):
-    async with db_pool.acquire() as conn:
-        feed = await conn.fetch(
-            """SELECT id, username, item_name, rarity, rarity_emoji, case_type, float_value, created_at 
-               FROM live_feed 
-               ORDER BY created_at DESC 
-               LIMIT $1""",
-            limit
-        )
-        return {"feed": [dict(f) for f in feed]}
+    """Get recent live feed entries from the database"""
+    try:
+        async with db_pool.acquire() as conn:
+            feed = await conn.fetch(
+                """SELECT id, user_id, username, item_name, rarity, rarity_emoji, 
+                          case_type, float_value, created_at 
+                   FROM live_feed 
+                   ORDER BY created_at DESC 
+                   LIMIT $1""",
+                limit
+            )
+            return {"feed": [dict(f) for f in feed]}
+    except Exception as e:
+        logger.error(f"Live feed error: {e}")
+        # If table doesn't exist, return empty feed
+        return {"feed": []}
 
 @app.post("/api/live-feed")
 async def add_to_live_feed(request: Request, body: dict):
+    """Add an entry to the live feed (when someone opens a case on the web)"""
     user_id = await get_user_id_from_session(request)
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -3243,50 +3667,32 @@ async def add_to_live_feed(request: Request, body: dict):
     case_type = body.get('case_type', 'regular')
     float_value = body.get('float_value')
     
+    # Get username
     user_data = await get_user_data(user_id)
     username = user_data.get('username', f'User_{user_id}')
     
-    async with db_pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO live_feed (user_id, username, item_name, rarity, rarity_emoji, case_type, float_value) 
-               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-            user_id, username, item_name, rarity, rarity_emoji, case_type, float_value
-        )
-        
-        await conn.execute(
-            "DELETE FROM live_feed WHERE created_at < NOW() - INTERVAL '7 days'"
-        )
-        
-        return {"success": True}
-
-# ============================================
-# USER STREAKS
-# ============================================
-
-@app.get("/api/user/streak")
-async def get_user_streak(request: Request):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    async with db_pool.acquire() as conn:
-        streak = await conn.fetchrow(
-            "SELECT * FROM user_streaks WHERE user_id = $1",
-            user_id
-        )
-        
-        if not streak:
+    try:
+        async with db_pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO user_streaks (user_id, current_streak, best_streak, golds_in_streak, total_session_opens) 
-                   VALUES ($1, 0, 0, 0, 0)""",
-                user_id
+                """INSERT INTO live_feed 
+                   (user_id, username, item_name, rarity, rarity_emoji, case_type, float_value) 
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                user_id, username, item_name, rarity, rarity_emoji, case_type, float_value
             )
-            streak = await conn.fetchrow(
-                "SELECT * FROM user_streaks WHERE user_id = $1",
-                user_id
+            
+            # Clean up old entries (keep last 7 days)
+            await conn.execute(
+                "DELETE FROM live_feed WHERE created_at < NOW() - INTERVAL '7 days'"
             )
-        
-        return dict(streak)
+            
+            return {"success": True}
+    except Exception as e:
+        logger.error(f"Add live feed error: {e}")
+        return {"success": False, "error": str(e)}
+
+# ============================================
+# USER STREAKS - UPDATE ENDPOINT (ADDED)
+# ============================================
 
 @app.post("/api/user/streak/update")
 async def update_user_streak(request: Request, body: dict):
@@ -3295,131 +3701,73 @@ async def update_user_streak(request: Request, body: dict):
         raise HTTPException(status_code=401, detail="Not authenticated")
     
     case_id = body.get('case_id')
-    item_rarity = body.get('rarity')
+    rarity = body.get('rarity')
     is_gold = body.get('is_gold', False)
     
-    async with db_pool.acquire() as conn:
-        streak = await conn.fetchrow(
-            "SELECT * FROM user_streaks WHERE user_id = $1",
-            user_id
-        )
-        
-        if not streak:
-            await conn.execute(
-                """INSERT INTO user_streaks (user_id, current_streak, best_streak, golds_in_streak, total_session_opens) 
-                   VALUES ($1, 0, 0, 0, 0)""",
-                user_id
-            )
+    try:
+        async with db_pool.acquire() as conn:
+            # Ensure user exists
+            await ensure_user_exists(user_id, conn=conn)
+            
+            # Get current streak
             streak = await conn.fetchrow(
                 "SELECT * FROM user_streaks WHERE user_id = $1",
                 user_id
             )
-        
-        current_streak = streak['current_streak'] or 0
-        best_streak = streak['best_streak'] or 0
-        golds_in_streak = streak['golds_in_streak'] or 0
-        total_session_opens = streak['total_session_opens'] or 0
-        
-        current_case = streak.get('current_case_id')
-        if current_case and current_case != case_id:
-            current_streak = 0
-            golds_in_streak = 0
-        
-        current_streak += 1
-        total_session_opens += 1
-        
-        if is_gold:
-            golds_in_streak += 1
-        
-        if current_streak > best_streak:
-            best_streak = current_streak
-        
-        bonus_earned = golds_in_streak > 0 and golds_in_streak % 5 == 0
-        
-        await conn.execute(
-            """UPDATE user_streaks 
-               SET current_streak = $1, best_streak = $2, golds_in_streak = $3, 
-                   total_session_opens = $4, current_case_id = $5, updated_at = NOW()
-               WHERE user_id = $6""",
-            current_streak, best_streak, golds_in_streak, total_session_opens, case_id, user_id
-        )
-        
-        return {
-            "success": True,
-            "current_streak": current_streak,
-            "best_streak": best_streak,
-            "golds_in_streak": golds_in_streak,
-            "total_opens": total_session_opens,
-            "bonus_earned": bonus_earned
-        }
-
-# ============================================
-# ACHIEVEMENTS
-# ============================================
-
-ACHIEVEMENTS = {
-    "first_open": {"name": "🎯 First Case", "description": "Open your first case!", "icon": "🎯"},
-    "first_gold": {"name": "⭐ First Gold", "description": "Pull your first Gold item!", "icon": "⭐"},
-    "streak_5": {"name": "🔥 Streak 5", "description": "Open 5 cases in a row!", "icon": "🔥"},
-    "streak_10": {"name": "💎 Streak 10", "description": "Open 10 cases in a row!", "icon": "💎"},
-    "streak_25": {"name": "👑 Streak 25", "description": "Open 25 cases in a row!", "icon": "👑"},
-    "gold_hunter": {"name": "🏆 Gold Hunter", "description": "Pull 10 Gold items!", "icon": "🏆"},
-    "millionaire": {"name": "💰 Millionaire", "description": "Reach $1,000,000 inventory value!", "icon": "💰"},
-    "case_master": {"name": "🎰 Case Master", "description": "Open 100 cases!", "icon": "🎰"},
-    "premium_player": {"name": "🎟️ Premium Player", "description": "Open your first premium case!", "icon": "🎟️"},
-}
-
-@app.get("/api/user/achievements")
-async def get_user_achievements(request: Request):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    async with db_pool.acquire() as conn:
-        unlocked = await conn.fetch(
-            "SELECT achievement_id FROM user_achievements WHERE user_id = $1",
-            user_id
-        )
-        unlocked_set = {row['achievement_id'] for row in unlocked}
-        
-        achievements = []
-        for key, data in ACHIEVEMENTS.items():
-            achievements.append({
-                "id": key,
-                "name": data["name"],
-                "description": data["description"],
-                "icon": data["icon"],
-                "unlocked": key in unlocked_set
-            })
-        
-        return {"achievements": achievements}
-
-@app.post("/api/user/achievements/unlock")
-async def unlock_achievement(request: Request, body: dict):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    achievement_id = body.get('achievement_id')
-    
-    if achievement_id not in ACHIEVEMENTS:
-        raise HTTPException(status_code=400, detail="Invalid achievement")
-    
-    async with db_pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            "SELECT 1 FROM user_achievements WHERE user_id = $1 AND achievement_id = $2",
-            user_id, achievement_id
-        )
-        
-        if existing:
-            return {"success": False, "message": "Already unlocked"}
-        
-        await conn.execute(
-            "INSERT INTO user_achievements (user_id, achievement_id) VALUES ($1, $2)",
-            user_id, achievement_id
-        )
-        
-        return {"success": True, "achievement": ACHIEVEMENTS[achievement_id]}
+            
+            if not streak:
+                await conn.execute(
+                    """INSERT INTO user_streaks (user_id, current_streak, best_streak, golds_in_streak, total_session_opens) 
+                       VALUES ($1, 0, 0, 0, 0)""",
+                    user_id
+                )
+                streak = await conn.fetchrow(
+                    "SELECT * FROM user_streaks WHERE user_id = $1",
+                    user_id
+                )
+            
+            current_streak = streak['current_streak'] or 0
+            best_streak = streak['best_streak'] or 0
+            golds_in_streak = streak['golds_in_streak'] or 0
+            total_session_opens = streak['total_session_opens'] or 0
+            
+            # Check if same case as before
+            current_case = streak.get('current_case_id')
+            if current_case and current_case != case_id:
+                current_streak = 0
+                golds_in_streak = 0
+            
+            # Increment streak
+            current_streak += 1
+            total_session_opens += 1
+            
+            if is_gold:
+                golds_in_streak += 1
+            
+            if current_streak > best_streak:
+                best_streak = current_streak
+            
+            bonus_earned = golds_in_streak > 0 and golds_in_streak % 5 == 0
+            
+            await conn.execute(
+                """UPDATE user_streaks 
+                   SET current_streak = $1, best_streak = $2, golds_in_streak = $3, 
+                       total_session_opens = $4, current_case_id = $5, updated_at = NOW()
+                   WHERE user_id = $6""",
+                current_streak, best_streak, golds_in_streak, total_session_opens, case_id, user_id
+            )
+            
+            return {
+                "success": True,
+                "current_streak": current_streak,
+                "best_streak": best_streak,
+                "golds_in_streak": golds_in_streak,
+                "total_opens": total_session_opens,
+                "bonus_earned": bonus_earned
+            }
+    except Exception as e:
+        logger.error(f"Update streak error: {e}")
+        return {"success": False, "error": str(e)}
 
 # ============================================
 # SERVE DASHBOARD
@@ -3454,8 +3802,38 @@ async def startup():
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
     logger.info("Database connected!")
     
-    # Create auth_methods table if it doesn't exist
     async with db_pool.acquire() as conn:
+        # ============================================
+        # USERS TABLE - Ensure user_id is primary key
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                email TEXT,
+                balance DECIMAL(10,2) DEFAULT 1000.0,
+                credits INT DEFAULT 0,
+                xp INT DEFAULT 0,
+                level INT DEFAULT 1,
+                prestige INT DEFAULT 0,
+                total_opens INT DEFAULT 0,
+                total_premium_opens INT DEFAULT 0,
+                total_golds INT DEFAULT 0,
+                total_trades INT DEFAULT 0,
+                daily_streak INT DEFAULT 0,
+                last_daily TIMESTAMP,
+                last_hourly TIMESTAMP,
+                last_weekly TIMESTAMP,
+                total_hourly_claimed INT DEFAULT 0,
+                total_weekly_claimed INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # ============================================
+        # AUTH METHODS TABLE
+        # ============================================
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS auth_methods (
                 id SERIAL PRIMARY KEY,
@@ -3471,16 +3849,259 @@ async def startup():
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_methods_user_id ON auth_methods(user_id)")
         
-        # Make sure users table has user_id as primary key
+        # ============================================
+        # INVENTORY TABLE
+        # ============================================
         await conn.execute("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints 
-                               WHERE constraint_name = 'users_pkey' AND table_name = 'users') THEN
-                    ALTER TABLE users ADD PRIMARY KEY (user_id);
-                END IF;
-            END $$;
+            CREATE TABLE IF NOT EXISTS inventory (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                item_name TEXT NOT NULL,
+                item_type TEXT DEFAULT 'weapon',
+                rarity TEXT,
+                price DECIMAL(10,2),
+                condition TEXT,
+                is_stattrak BOOLEAN DEFAULT FALSE,
+                status TEXT DEFAULT 'kept',
+                case_id TEXT,
+                float_value DECIMAL(10,4),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
         """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_inventory_user_id ON inventory(user_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_inventory_status ON inventory(status)")
+        
+        # ============================================
+        # QUESTS TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS quests (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                quest_type TEXT NOT NULL,
+                progress INT DEFAULT 0,
+                required INT NOT NULL,
+                reward INT NOT NULL,
+                completed BOOLEAN DEFAULT FALSE,
+                claimed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_quests_user_id ON quests(user_id)")
+        
+        # ============================================
+        # GUILD MEMBERSHIPS TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS guild_memberships (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                guild_id BIGINT NOT NULL,
+                guild_name TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(user_id, guild_id)
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_guild_memberships_user_id ON guild_memberships(user_id)")
+        
+        # ============================================
+        # GUILD SETTINGS TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                guild_id BIGINT PRIMARY KEY,
+                prefix TEXT DEFAULT '!',
+                welcome_channel BIGINT,
+                log_channel BIGINT,
+                auto_roles BIGINT[],
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # ============================================
+        # DONATIONS TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS donations (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                amount DECIMAL(10,2) NOT NULL,
+                donor_name TEXT,
+                donor_email TEXT,
+                status TEXT DEFAULT 'pending',
+                transaction_id TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_donations_user_id ON donations(user_id)")
+        
+        # ============================================
+        # TICKET PURCHASES TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_purchases (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                amount INT NOT NULL,
+                cost_usd DECIMAL(10,2) NOT NULL,
+                stripe_session_id TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_ticket_purchases_user_id ON ticket_purchases(user_id)")
+        
+        # ============================================
+        # USER SETTINGS TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE UNIQUE,
+                theme TEXT DEFAULT 'casino',
+                spin_speed TEXT DEFAULT 'normal',
+                sound_enabled BOOLEAN DEFAULT TRUE,
+                feed_enabled BOOLEAN DEFAULT TRUE,
+                confetti_mode TEXT DEFAULT 'always',
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # ============================================
+        # LIVE FEED TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS live_feed (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                username TEXT,
+                item_name TEXT NOT NULL,
+                rarity TEXT,
+                rarity_emoji TEXT,
+                case_type TEXT DEFAULT 'regular',
+                float_value DECIMAL(10,4),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_live_feed_created_at ON live_feed(created_at DESC)")
+        
+        # ============================================
+        # MINES GAMES TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS mines_games (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                bet_amount DECIMAL(10,2) NOT NULL,
+                grid_size INT NOT NULL,
+                mine_count INT NOT NULL,
+                mine_positions INT[] NOT NULL,
+                revealed_tiles INT[] DEFAULT '{}',
+                multiplier DECIMAL(10,2) DEFAULT 1.0,
+                win_amount DECIMAL(10,2),
+                status TEXT DEFAULT 'active',
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_mines_games_user_id ON mines_games(user_id)")
+        
+        # ============================================
+        # SLOTS GAMES TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS slots_games (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                bet_amount DECIMAL(10,2) NOT NULL,
+                spin_result TEXT[],
+                multiplier DECIMAL(10,2) DEFAULT 0,
+                win_amount DECIMAL(10,2) DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_slots_games_user_id ON slots_games(user_id)")
+        
+        # ============================================
+        # DICE GAMES TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dice_games (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                amount DECIMAL(10,2) NOT NULL,
+                bet_type TEXT NOT NULL,
+                bet_number INT NOT NULL,
+                roll_number INT NOT NULL,
+                result TEXT NOT NULL,
+                multiplier DECIMAL(10,2),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dice_games_user_id ON dice_games(user_id)")
+        
+        # ============================================
+        # COINFLIP GAMES TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS coinflip_games (
+                id SERIAL PRIMARY KEY,
+                creator_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                opponent_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                status TEXT DEFAULT 'pending',
+                winner_id BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_coinflip_games_creator_id ON coinflip_games(creator_id)")
+        
+        # ============================================
+        # USER STREAKS TABLE
+        # ============================================
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_streaks (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE UNIQUE,
+                current_streak INT DEFAULT 0,
+                best_streak INT DEFAULT 0,
+                golds_in_streak INT DEFAULT 0,
+                total_session_opens INT DEFAULT 0,
+                current_case_id TEXT,
+                updated_at TIMESTAMP DEFAULT NOW(),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # ============================================
+        # ADD MISSING COLUMNS TO EXISTING USERS TABLE
+        # ============================================
+        columns_to_add = [
+            ("xp", "INT DEFAULT 0"),
+            ("level", "INT DEFAULT 1"),
+            ("prestige", "INT DEFAULT 0"),
+            ("total_premium_opens", "INT DEFAULT 0"),
+            ("total_hourly_claimed", "INT DEFAULT 0"),
+            ("total_weekly_claimed", "INT DEFAULT 0"),
+            ("last_hourly", "TIMESTAMP"),
+            ("last_weekly", "TIMESTAMP"),
+        ]
+        
+        for col, col_type in columns_to_add:
+            await conn.execute(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='users' AND column_name='{col}') THEN
+                        ALTER TABLE users ADD COLUMN {col} {col_type};
+                    END IF;
+                END $$;
+            """)
+        
+        logger.info("✅ All tables created/verified successfully!")
 
 @app.on_event("shutdown")
 async def shutdown():

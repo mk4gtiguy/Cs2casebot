@@ -222,6 +222,64 @@ async def get_username_from_db(user_id: int, conn=None):
     return f"User_{user_id}"
 
 # ============================================
+# FIXED: ensure_user_exists function for web_server
+# ============================================
+
+async def ensure_user_exists(user_id: int, username: str = None, conn=None):
+    """CRITICAL FIX: Ensure user exists before any transaction"""
+    try:
+        if conn is None:
+            async with db_pool.acquire() as conn:
+                return await ensure_user_exists(user_id, username, conn)
+        
+        user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
+        if not user:
+            await conn.execute("""
+                INSERT INTO users (user_id, username, balance, created_at, updated_at)
+                VALUES ($1, $2, 1000, NOW(), NOW())
+            """, user_id, username or f"User_{user_id}")
+            logger.info(f"✅ Created user {user_id} ({username or f'User_{user_id}'})")
+            return True
+        return True
+    except Exception as e:
+        logger.error(f"ensure_user_exists error for {user_id}: {e}")
+        return False
+
+# ============================================
+# FIXED: update_quest_progress for web_server
+# ============================================
+
+async def update_quest_progress(user_id, quest_type, increment=1, conn=None):
+    if conn is None:
+        async with db_pool.acquire() as conn:
+            return await update_quest_progress(user_id, quest_type, increment, conn)
+    
+    await ensure_user_exists(user_id, conn=conn)
+    
+    try:
+        quest = await conn.fetchrow("""
+            SELECT id, progress, required FROM quests
+            WHERE user_id = $1 AND quest_type = $2 AND completed = false AND claimed = false
+        """, user_id, quest_type)
+        
+        if quest:
+            new_progress = quest['progress'] + increment
+            if new_progress >= quest['required']:
+                await conn.execute("""
+                    UPDATE quests SET progress = $1, completed = true WHERE id = $2
+                """, quest['required'], quest['id'])
+                return True
+            else:
+                await conn.execute("""
+                    UPDATE quests SET progress = $1 WHERE id = $2
+                """, new_progress, quest['id'])
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"Quest update error: {e}")
+        return False
+
+# ============================================
 # DISCORD OAUTH ROUTES
 # ============================================
 
@@ -1813,7 +1871,7 @@ async def get_my_inventory(request: Request, limit: int = 100, offset: int = 0, 
         }
 
 # ============================================
-# CASE OPENING
+# CASE OPENING - FIXED: status='kept' not 'pending'
 # ============================================
 
 @app.post("/api/open-case")
@@ -1861,10 +1919,11 @@ async def open_case_endpoint(request: Request, body: dict):
                 for _ in range(quantity):
                     item = get_random_item(case_id)
                     if item:
+                        # FIXED: status is 'kept' not 'pending' - prevents blank inventory pages!
                         result = await conn.fetch(
                             """INSERT INTO inventory 
                                (user_id, item_name, item_type, rarity, price, condition, is_stattrak, status, case_id, float_value) 
-                               VALUES ($1, $2, 'weapon', $3, $4, $5, $6, 'pending', $7, $8) 
+                               VALUES ($1, $2, 'weapon', $3, $4, $5, $6, 'kept', $7, $8) 
                                RETURNING id""",
                             user_id, item['name'], item['rarity'], item['price'], 
                             item.get('condition', 'Field-Tested'), item['is_stattrak'], 
@@ -1883,7 +1942,11 @@ async def open_case_endpoint(request: Request, body: dict):
                             'id': item_id
                         })
                 
-                return {"success": True, "items": items, "case": case}
+                # FIXED: Make sure we have items
+                if not items:
+                    return {"success": False, "error": "No items were generated. Please try again."}
+                
+                return {"success": True, "items": items, "case": case, "count": len(items)}
     except Exception as e:
         logger.error(f"Open case error: {e}")
         return {"success": False, "error": str(e)}
@@ -2165,7 +2228,7 @@ async def quick_trade(request: Request, body: dict):
         return {"success": False, "error": str(e)}
 
 # ============================================
-# LEADERBOARD
+# LEADERBOARD - FIXED: Shows data properly
 # ============================================
 
 @app.get("/api/leaderboard/{type}")
@@ -2175,69 +2238,41 @@ async def get_leaderboard(type: str, guild_id: int = None, limit: int = 10):
     
     async with db_pool.acquire() as conn:
         if type == "money":
-            if guild_id:
-                users = await conn.fetch(
-                    """SELECT u.user_id, u.username, u.balance 
-                       FROM users u 
-                       JOIN guild_memberships gm ON u.user_id = gm.user_id 
-                       WHERE gm.guild_id = $1 
-                       ORDER BY u.balance DESC LIMIT $2""",
-                    guild_id, limit
-                )
-            else:
-                users = await conn.fetch(
-                    "SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT $1",
-                    limit
-                )
-            return {"type": type, "users": [{"user_id": u['user_id'], "username": u['username'], "value": float(u['balance'])} for u in users]}
+            users = await conn.fetch(
+                "SELECT user_id, username, balance FROM users ORDER BY balance DESC LIMIT $1",
+                limit
+            )
+            return {"type": type, "users": [
+                {"user_id": u['user_id'], "username": u['username'] or f"User_{u['user_id']}", "value": float(u['balance'])} 
+                for u in users
+            ]}
         elif type == "opens":
-            if guild_id:
-                users = await conn.fetch(
-                    """SELECT u.user_id, u.username, u.total_opens 
-                       FROM users u 
-                       JOIN guild_memberships gm ON u.user_id = gm.user_id 
-                       WHERE gm.guild_id = $1 
-                       ORDER BY u.total_opens DESC LIMIT $2""",
-                    guild_id, limit
-                )
-            else:
-                users = await conn.fetch(
-                    "SELECT user_id, username, total_opens FROM users ORDER BY total_opens DESC LIMIT $1",
-                    limit
-                )
-            return {"type": type, "users": [{"user_id": u['user_id'], "username": u['username'], "value": u['total_opens']} for u in users]}
+            users = await conn.fetch(
+                "SELECT user_id, username, total_opens FROM users ORDER BY total_opens DESC LIMIT $1",
+                limit
+            )
+            return {"type": type, "users": [
+                {"user_id": u['user_id'], "username": u['username'] or f"User_{u['user_id']}", "value": u['total_opens']} 
+                for u in users
+            ]}
         elif type == "golds":
-            if guild_id:
-                users = await conn.fetch(
-                    """SELECT u.user_id, u.username, u.total_golds 
-                       FROM users u 
-                       JOIN guild_memberships gm ON u.user_id = gm.user_id 
-                       WHERE gm.guild_id = $1 
-                       ORDER BY u.total_golds DESC LIMIT $2""",
-                    guild_id, limit
-                )
-            else:
-                users = await conn.fetch(
-                    "SELECT user_id, username, total_golds FROM users ORDER BY total_golds DESC LIMIT $1",
-                    limit
-                )
-            return {"type": type, "users": [{"user_id": u['user_id'], "username": u['username'], "value": u['total_golds']} for u in users]}
+            users = await conn.fetch(
+                "SELECT user_id, username, total_golds FROM users ORDER BY total_golds DESC LIMIT $1",
+                limit
+            )
+            return {"type": type, "users": [
+                {"user_id": u['user_id'], "username": u['username'] or f"User_{u['user_id']}", "value": u['total_golds']} 
+                for u in users
+            ]}
         elif type == "trades":
-            if guild_id:
-                users = await conn.fetch(
-                    """SELECT u.user_id, u.username, u.total_trades 
-                       FROM users u 
-                       JOIN guild_memberships gm ON u.user_id = gm.user_id 
-                       WHERE gm.guild_id = $1 
-                       ORDER BY u.total_trades DESC LIMIT $2""",
-                    guild_id, limit
-                )
-            else:
-                users = await conn.fetch(
-                    "SELECT user_id, username, total_trades FROM users ORDER BY total_trades DESC LIMIT $1",
-                    limit
-                )
-            return {"type": type, "users": [{"user_id": u['user_id'], "username": u['username'], "value": u['total_trades']} for u in users]}
+            users = await conn.fetch(
+                "SELECT user_id, username, total_trades FROM users ORDER BY total_trades DESC LIMIT $1",
+                limit
+            )
+            return {"type": type, "users": [
+                {"user_id": u['user_id'], "username": u['username'] or f"User_{u['user_id']}", "value": u['total_trades']} 
+                for u in users
+            ]}
         else:
             return {"type": type, "users": []}
 
@@ -2659,28 +2694,7 @@ async def get_my_tickets(request: Request):
 # GAME API ROUTES
 # ============================================
 
-# --- COINFLIP ---
-@app.get("/api/games/coinflip/list")
-async def get_coinflip_games():
-    async with db_pool.acquire() as conn:
-        games = await conn.fetch(
-            "SELECT id, creator_id, amount, created_at FROM coinflip_games WHERE status = 'waiting' LIMIT 20"
-        )
-        return {"games": [dict(g) for g in games]}
-
-@app.get("/api/games/coinflip/my_games")
-async def get_my_coinflip_games(request: Request):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    async with db_pool.acquire() as conn:
-        games = await conn.fetch(
-            "SELECT id, amount, status, created_at FROM coinflip_games WHERE creator_id = $1 AND status = 'waiting'",
-            user_id
-        )
-        return {"games": [dict(g) for g in games]}
-
+# --- COINFLIP - VS COMPUTER ---
 @app.post("/api/games/coinflip/create")
 async def create_coinflip_game(request: Request, body: dict):
     user_id = await get_user_id_from_session(request)
@@ -2692,82 +2706,46 @@ async def create_coinflip_game(request: Request, body: dict):
         return {"success": False, "error": "Minimum bet is $100"}
     
     async with db_pool.acquire() as conn:
-        user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-        if not user or user['balance'] < amount:
-            return {"success": False, "error": "Insufficient balance"}
-        
-        result = await conn.fetchrow(
-            """INSERT INTO coinflip_games (creator_id, amount, status) 
-               VALUES ($1, $2, 'waiting') RETURNING id""",
-            user_id, amount
-        )
-        game_id = result['id']
-        
-        await conn.execute(
-            "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-            amount, user_id
-        )
-        
-        return {"success": True, "game_id": game_id, "amount": amount}
-
-@app.post("/api/games/coinflip/join")
-async def join_coinflip_game(request: Request, body: dict):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    game_id = body.get("game_id")
-    if not game_id:
-        return {"success": False, "error": "Missing game_id"}
-    
-    async with db_pool.acquire() as conn:
         async with conn.transaction():
-            game = await conn.fetchrow(
-                "SELECT * FROM coinflip_games WHERE id = $1 AND status = 'waiting'",
-                game_id
-            )
-            if not game:
-                return {"success": False, "error": "Game not found or already active"}
-            
-            if game['creator_id'] == user_id:
-                return {"success": False, "error": "You can't join your own game!"}
-            
             user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < game['amount']:
+            if not user or user['balance'] < amount:
                 return {"success": False, "error": "Insufficient balance"}
             
+            # Take their money
             await conn.execute(
                 "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                game['amount'], user_id
-            )
-            await conn.execute(
-                """UPDATE coinflip_games SET opponent_id = $1, status = 'active' WHERE id = $2""",
-                user_id, game_id
+                amount, user_id
             )
             
-            winner_id = random.choice([game['creator_id'], user_id])
-            win_amount = int(game['amount'] * 1.95)
+            # Computer flips coin - 50/50 chance
+            user_wins = random.choice([True, False])
             
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                win_amount, winner_id
-            )
-            await conn.execute(
-                "UPDATE coinflip_games SET winner_id = $1, completed_at = NOW(), status = 'complete' WHERE id = $2",
-                winner_id, game_id
-            )
+            if user_wins:
+                win_amount = int(amount * 1.95)  # 95% payout
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                result = "win"
+            else:
+                win_amount = 0
+                result = "lose"
             
-            creator = await conn.fetchrow("SELECT username FROM users WHERE user_id = $1", game['creator_id'])
-            opponent = await conn.fetchrow("SELECT username FROM users WHERE user_id = $1", user_id)
+            # Save game record
+            await conn.execute(
+                """INSERT INTO coinflip_games 
+                   (creator_id, amount, status, completed_at, opponent_id) 
+                   VALUES ($1, $2, 'complete', NOW(), 999999999)""",
+                user_id, amount
+            )
             
             return {
                 "success": True,
-                "winner_id": winner_id,
-                "winner_name": await get_username_from_db(winner_id, conn),
-                "amount": game['amount'],
+                "user_wins": user_wins,
+                "amount": amount,
                 "win_amount": win_amount,
-                "creator_name": creator['username'] if creator else 'Unknown',
-                "opponent_name": opponent['username'] if opponent else 'Unknown'
+                "result": result,
+                "message": "You won! 🎉" if user_wins else "Computer wins! Better luck next time! 😢"
             }
 
 # --- DICE ---
@@ -2834,82 +2812,26 @@ async def play_dice(request: Request, body: dict):
             }
 
 # --- MINES ---
-@app.post("/api/games/mines/start")
-async def start_mines(request: Request, body: dict):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    amount = body.get("amount")
-    grid_size = body.get("grid_size", 5)
-    mine_count = body.get("mine_count", 3)
-    
-    if not amount or amount < 100:
-        return {"success": False, "error": "Minimum bet is $100"}
-    if grid_size not in [3, 4, 5, 6]:
-        return {"success": False, "error": "Grid size must be 3, 4, 5, or 6"}
-    
-    max_mines = grid_size * grid_size - 2
-    if mine_count < 1 or mine_count > max_mines:
-        return {"success": False, "error": f"Invalid mine count for {grid_size}x{grid_size} grid"}
-    
+async def reveal_mines_tile(game_id: int, user_id: int, tile_index: int) -> dict:
+    """Reveal a tile in a mines game"""
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {"success": False, "error": "Insufficient balance"}
+            await ensure_user_exists(user_id, conn=conn)
             
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                amount, user_id
-            )
-            
-            total_tiles = grid_size * grid_size
-            mine_positions = random.sample(range(total_tiles), mine_count)
-            
-            result = await conn.fetchrow(
-                """INSERT INTO mines_games 
-                   (user_id, bet_amount, grid_size, mine_count, status, mine_positions) 
-                   VALUES ($1, $2, $3, $4, 'active', $5) RETURNING id""",
-                user_id, amount, grid_size, mine_count, mine_positions
-            )
-            game_id = result['id']
-            
-            return {
-                "success": True,
-                "game_id": game_id,
-                "grid_size": grid_size,
-                "mine_count": mine_count,
-                "bet_amount": amount
-            }
-
-@app.post("/api/games/mines/reveal")
-async def reveal_mines_tile(request: Request, body: dict):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    game_id = body.get("game_id")
-    tile_index = body.get("tile_index")
-    
-    if game_id is None or tile_index is None:
-        return {"success": False, "error": "Missing game_id or tile_index"}
-    
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
             game = await conn.fetchrow(
                 "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
                 game_id, user_id
             )
             if not game:
-                return {"success": False, "error": "Game not found or already ended"}
+                return {'success': False, 'error': 'Game not found or already ended'}
             
             revealed = game['revealed_tiles'] or []
             if tile_index in revealed:
-                return {"success": False, "error": "Tile already revealed"}
+                return {'success': False, 'error': 'Tile already revealed'}
             
+            # FIX: Generate mines if they don't exist
             mine_positions = game.get('mine_positions', [])
-            if not mine_positions:
+            if not mine_positions or len(mine_positions) == 0:
                 total_tiles = game['grid_size'] * game['grid_size']
                 mine_positions = random.sample(range(total_tiles), game['mine_count'])
                 await conn.execute(
@@ -2922,7 +2844,7 @@ async def reveal_mines_tile(request: Request, body: dict):
                     "UPDATE mines_games SET exploded = true, status = 'lost' WHERE id = $1",
                     game_id
                 )
-                return {"success": False, "exploded": True, "message": "💥 BOOM! You hit a mine!"}
+                return {'success': False, 'exploded': True, 'message': '💥 BOOM! You hit a mine!'}
             
             revealed.append(tile_index)
             total_tiles = game['grid_size'] * game['grid_size']
@@ -2930,7 +2852,8 @@ async def reveal_mines_tile(request: Request, body: dict):
             remaining = safe_tiles - len(revealed)
             multiplier = round(1 + (len(revealed) / safe_tiles) * 10, 2)
             
-            if remaining == 0:
+            # FIX: Win condition - when all safe tiles are revealed
+            if remaining <= 0:
                 win_amount = int(game['bet_amount'] * multiplier)
                 await conn.execute(
                     "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
@@ -2940,13 +2863,15 @@ async def reveal_mines_tile(request: Request, body: dict):
                     "UPDATE mines_games SET status = 'won', multiplier = $1 WHERE id = $2",
                     multiplier, game_id
                 )
+                await update_quest_progress(user_id, "earn_money", int(win_amount))
+                
                 return {
-                    "success": True,
-                    "game_won": True,
-                    "win_amount": win_amount,
-                    "multiplier": multiplier,
-                    "revealed": revealed,
-                    "remaining": remaining
+                    'success': True,
+                    'game_won': True,
+                    'win_amount': win_amount,
+                    'multiplier': multiplier,
+                    'revealed': revealed,
+                    'remaining': 0
                 }
             
             await conn.execute(
@@ -2955,49 +2880,12 @@ async def reveal_mines_tile(request: Request, body: dict):
             )
             
             return {
-                "success": True,
-                "game_won": False,
-                "multiplier": multiplier,
-                "revealed": revealed,
-                "remaining": remaining,
-                "cash_out_amount": int(game['bet_amount'] * multiplier)
-            }
-
-@app.post("/api/games/mines/cashout")
-async def cashout_mines(request: Request, body: dict):
-    user_id = await get_user_id_from_session(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    game_id = body.get("game_id")
-    if game_id is None:
-        return {"success": False, "error": "Missing game_id"}
-    
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            game = await conn.fetchrow(
-                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
-                game_id, user_id
-            )
-            if not game:
-                return {"success": False, "error": "Game not found or already ended"}
-            
-            multiplier = game['multiplier'] or 1.0
-            win_amount = int(game['bet_amount'] * multiplier)
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                win_amount, user_id
-            )
-            await conn.execute(
-                "UPDATE mines_games SET status = 'cashed_out', multiplier = $1 WHERE id = $2",
-                multiplier, game_id
-            )
-            
-            return {
-                "success": True,
-                "win_amount": win_amount,
-                "multiplier": multiplier
+                'success': True,
+                'game_won': False,
+                'multiplier': multiplier,
+                'revealed': revealed,
+                'remaining': remaining,
+                'cash_out_amount': int(game['bet_amount'] * multiplier)
             }
 
 # --- SLOTS ---
@@ -3021,9 +2909,14 @@ async def play_slots(request: Request, body: dict):
         {'emoji': '🎰', 'value': 50, 'name': 'Jackpot'},
     ]
     SLOT_PAYOUTS = {
-        '🍒🍒🍒': 5, '🍋🍋🍋': 10, '🍊🍊🍊': 15,
-        '🍇🍇🍇': 20, '💎💎💎': 50, '7️⃣7️⃣7️⃣': 100, '🎰🎰🎰': 500
-    }
+    '🍒🍒🍒': 3,
+    '🍋🍋🍋': 5,
+    '🍊🍊🍊': 8,
+    '🍇🍇🍇': 12,
+    '💎💎💎': 30,
+    '7️⃣7️⃣7️⃣': 60,
+    '🎰🎰🎰': 200
+}
     
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -3040,6 +2933,7 @@ async def play_slots(request: Request, body: dict):
             result_str = ''.join(symbols)
             multiplier = SLOT_PAYOUTS.get(result_str, 0)
             win_amount = int(amount * multiplier) if multiplier > 0 else 0
+            win_amount = int(win_amount * 0.98)  # 2% house edge
             
             if multiplier == 0:
                 for sym in SLOT_SYMBOLS:

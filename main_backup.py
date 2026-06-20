@@ -1346,16 +1346,29 @@ async def update_quest_progress(user_id, quest_type, increment=1, conn=None):
     
     await ensure_user_exists(user_id, conn=conn)
     
-    quest = await conn.fetchrow("""
-        SELECT id, progress, required FROM quests
-        WHERE user_id = $1 AND quest_type = $2 AND completed = false AND claimed = false
-    """, user_id, quest_type)
-    if quest:
-        new_progress = quest['progress'] + increment
-        if new_progress >= quest['required']:
-            await conn.execute("UPDATE quests SET progress = $1, completed = true WHERE id = $2", quest['required'], quest['id'])
-        else:
-            await conn.execute("UPDATE quests SET progress = $1 WHERE id = $2", new_progress, quest['id'])
+    try:
+        quest = await conn.fetchrow("""
+            SELECT id, progress, required FROM quests
+            WHERE user_id = $1 AND quest_type = $2 AND completed = false AND claimed = false
+        """, user_id, quest_type)
+        
+        if quest:
+            new_progress = quest['progress'] + increment
+            if new_progress >= quest['required']:
+                await conn.execute("""
+                    UPDATE quests SET progress = $1, completed = true WHERE id = $2
+                """, quest['required'], quest['id'])
+                logger.info(f"Quest {quest_type} completed for user {user_id}")
+                return True
+            else:
+                await conn.execute("""
+                    UPDATE quests SET progress = $1 WHERE id = $2
+                """, new_progress, quest['id'])
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"Quest update error: {e}")
+        return False
 
 @bot.event
 async def on_ready():
@@ -1800,24 +1813,36 @@ async def bulk_open(interaction: discord.Interaction, case: str, quantity: int):
                 for _ in range(quantity):
                     item = get_random_item(case_id)
                     if item:
+                        # FIX: Save EVERY item with status 'kept'
                         price_value = float(item['price'])
-                        await conn.execute("""INSERT INTO inventory 
-                            (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
-                            VALUES ($1, $2, 'weapon', $3, $4, $5, $6, $7)""",
+                        result = await conn.execute("""INSERT INTO inventory 
+                            (user_id, item_name, item_type, rarity, price, condition, is_stattrak, status, float_value) 
+                            VALUES ($1, $2, 'weapon', $3, $4, $5, $6, 'kept', $7) RETURNING id""",
                             interaction.user.id, item['name'], item['rarity'], price_value, 
                             item.get('condition', 'Field-Tested'), item['is_stattrak'],
                             item.get('float', 0.0000))
+                        # Get the ID if possible
+                        try:
+                            item_id_result = await conn.fetchrow("SELECT lastval() as id")
+                            if item_id_result:
+                                item['id'] = item_id_result['id']
+                        except:
+                            pass
                         items.append(item)
 
                         if item['rarity'] == "Gold":
                             await conn.execute("UPDATE users SET total_golds = total_golds + 1 WHERE user_id = $1", interaction.user.id)
                             await update_quest_progress(interaction.user.id, "get_golds", 1, conn)
 
+                # FIX: Make sure we have items
+                if not items:
+                    await interaction.followup.send("❌ Error: No items were generated. Please try again.", ephemeral=True)
+                    return
+
                 await update_quest_progress(interaction.user.id, "open_cases", quantity, conn)
                 await update_quest_progress(interaction.user.id, "earn_money", int(total_cost), conn)
 
                 new_balance = await get_balance(interaction.user.id, conn)
-
                 await add_xp(interaction.user.id, quantity * 10, conn)
 
                 item_summary = ""
@@ -2963,36 +2988,32 @@ async def reroll_giveaway(interaction: discord.Interaction, giveaway_id: int):
 
 @bot.tree.command(name="dashboard", description="Get the link to the bot's web dashboard")
 async def dashboard(interaction: discord.Interaction):
-    if not await is_bot_channel(interaction):
-        return
-
     embed = discord.Embed(
         title="🌐 CS2CaseBot Dashboard",
-        description="Access your inventory, stats, and more on the web!",
+        description="**Take your case opening experience to the next level!**",
         color=discord.Color.blue()
     )
     embed.add_field(
-        name="🔗 Dashboard Link",
-        value=f"[Click here to open the dashboard]({DASHBOARD_URL})",
+        name="🎰 Live Slot Machine Animation",
+        value="Watch the reels spin with **realistic slot machine animations** as you open cases! Every pull feels like the real thing with smooth spinning and dramatic reveals.",
         inline=False
     )
     embed.add_field(
-        name="📱 What you can do on the dashboard:",
-        value="""• View your full inventory with filters
-• Check your balance and stats
-• See your trade history
-• Track your quest progress
-• View leaderboards
-• Open cases on the web!""",
+        name="✨ Premium Features",
+        value="• **Live spinning reels** with authentic slot feel\n"
+              "• **Real-time item reveals** with glow effects\n"
+              "• **Confetti & particle bursts** on rare pulls\n"
+              "• **Float values & conditions** for every skin\n"
+              "• **Instant inventory management** with one click",
         inline=False
     )
     embed.add_field(
-        name="🔄 Sync with Discord",
-        value="Everything is automatically synced with the bot!",
+        name="🔗 Try It Now",
+        value="[**Click here to open the dashboard → cs2casebot.xyz**](https://cs2casebot.xyz/)",
         inline=False
     )
-    embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-    await interaction.followup.send(embed=embed)
+    embed.set_footer(text="💖 Support us on Ko-fi")
+    await interaction.response.send_message(embed=embed)
 
 # ============================================
 # HELP COMMAND
@@ -3023,82 +3044,456 @@ async def help_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 # ============================================
-# COINFLIP COMMANDS
+# GAME HELPER FUNCTIONS
 # ============================================
 
-@bot.tree.command(name="coinflip", description="Create or join a coinflip game")
-async def cmd_coinflip(interaction: discord.Interaction, game_id: Optional[int] = None, amount: Optional[float] = None):
+async def get_username(user_id: int) -> str:
+    """Get username from database or fetch from Discord"""
+    try:
+        async with db_pool.acquire() as conn:
+            user = await conn.fetchrow("SELECT username FROM users WHERE user_id = $1", user_id)
+            if user and user['username']:
+                return user['username']
+    except:
+        pass
+    
+    try:
+        discord_user = await bot.fetch_user(user_id)
+        if discord_user:
+            return discord_user.display_name
+    except:
+        pass
+    
+    return f"User_{user_id}"
+
+async def create_coinflip_game(user_id: int, amount: float) -> dict:
+    """Create a new coinflip game"""
+    if amount < 100:
+        return {'success': False, 'error': 'Minimum bet is $100'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            result = await conn.fetchrow(
+                """INSERT INTO coinflip_games (creator_id, amount, status) 
+                   VALUES ($1, $2, 'waiting') RETURNING id""",
+                user_id, amount
+            )
+            game_id = result['id']
+            
+            return {'success': True, 'game_id': game_id, 'amount': amount}
+
+async def join_coinflip_game(game_id: int, user_id: int) -> dict:
+    """Join an existing coinflip game"""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            game = await conn.fetchrow(
+                "SELECT * FROM coinflip_games WHERE id = $1 AND status = 'waiting'",
+                game_id
+            )
+            if not game:
+                return {'success': False, 'error': 'Game not found or already active'}
+            
+            if game['creator_id'] == user_id:
+                return {'success': False, 'error': "You can't join your own game!"}
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < game['amount']:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                game['amount'], user_id
+            )
+            
+            await conn.execute(
+                """UPDATE coinflip_games SET opponent_id = $1, status = 'active' WHERE id = $2""",
+                user_id, game_id
+            )
+            
+            winner_id = random.choice([game['creator_id'], user_id])
+            win_amount = int(game['amount'] * 1.95)
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                win_amount, winner_id
+            )
+            await conn.execute(
+                "UPDATE coinflip_games SET winner_id = $1, completed_at = NOW(), status = 'complete' WHERE id = $2",
+                winner_id, game_id
+            )
+            
+            await update_quest_progress(winner_id, "jackpot_win", 1)
+            
+            return {
+                'success': True,
+                'winner_id': winner_id,
+                'amount': game['amount'],
+                'win_amount': win_amount
+            }
+
+async def play_dice(user_id: int, amount: float, bet_type: str, bet_number: int) -> dict:
+    """Play a dice game"""
+    if amount < 100:
+        return {'success': False, 'error': 'Minimum bet is $100'}
+    if bet_type not in ['over', 'under']:
+        return {'success': False, 'error': 'Bet type must be "over" or "under"'}
+    if bet_number < 2 or bet_number > 99:
+        return {'success': False, 'error': 'Bet number must be between 2 and 99'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            roll = random.randint(1, 100)
+            win = (roll > bet_number) if bet_type == 'over' else (roll < bet_number)
+            
+            if bet_type == 'over':
+                multiplier = round(95 / (100 - bet_number), 2)
+            else:
+                multiplier = round(95 / (bet_number - 1), 2)
+            
+            win_amount = int(amount * multiplier) if win else 0
+            
+            if win:
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                await update_quest_progress(user_id, "earn_money", int(win_amount))
+            
+            await conn.execute(
+                """INSERT INTO dice_games 
+                   (user_id, amount, bet_type, bet_number, roll_number, result, multiplier) 
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                user_id, amount, bet_type, bet_number, roll, 'win' if win else 'lose', multiplier
+            )
+            
+            return {
+                'success': True,
+                'roll': roll,
+                'bet_type': bet_type,
+                'bet_number': bet_number,
+                'win': win,
+                'multiplier': multiplier,
+                'amount': amount,
+                'win_amount': win_amount
+            }
+
+async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine_count: int = 3) -> dict:
+    """Start a mines game"""
+    if amount < 100:
+        return {'success': False, 'error': 'Minimum bet is $100'}
+    if grid_size not in [3, 4, 5, 6]:
+        return {'success': False, 'error': 'Grid size must be 3, 4, 5, or 6'}
+    
+    max_mines = grid_size * grid_size - 2
+    if mine_count < 1 or mine_count > max_mines:
+        return {'success': False, 'error': f'Invalid mine count for {grid_size}x{grid_size} grid'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            total_tiles = grid_size * grid_size
+            mine_positions = random.sample(range(total_tiles), mine_count)
+            
+            result = await conn.fetchrow(
+                """INSERT INTO mines_games 
+                   (user_id, bet_amount, grid_size, mine_count, status, mine_positions) 
+                   VALUES ($1, $2, $3, $4, 'active', $5) RETURNING id""",
+                user_id, amount, grid_size, mine_count, mine_positions
+            )
+            game_id = result['id']
+            
+            return {
+                'success': True,
+                'game_id': game_id,
+                'grid_size': grid_size,
+                'mine_count': mine_count,
+                'bet_amount': amount
+            }
+
+async def reveal_mines_tile(game_id: int, user_id: int, tile_index: int) -> dict:
+    """Reveal a tile in a mines game"""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            game = await conn.fetchrow(
+                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
+                game_id, user_id
+            )
+            if not game:
+                return {'success': False, 'error': 'Game not found or already ended'}
+            
+            revealed = game['revealed_tiles'] or []
+            if tile_index in revealed:
+                return {'success': False, 'error': 'Tile already revealed'}
+            
+            # FIX: Generate mines if they don't exist
+            mine_positions = game.get('mine_positions', [])
+            if not mine_positions or len(mine_positions) == 0:
+                total_tiles = game['grid_size'] * game['grid_size']
+                mine_positions = random.sample(range(total_tiles), game['mine_count'])
+                await conn.execute(
+                    "UPDATE mines_games SET mine_positions = $1 WHERE id = $2",
+                    mine_positions, game_id
+                )
+            
+            if tile_index in mine_positions:
+                await conn.execute(
+                    "UPDATE mines_games SET exploded = true, status = 'lost' WHERE id = $1",
+                    game_id
+                )
+                return {'success': False, 'exploded': True, 'message': '💥 BOOM! You hit a mine!'}
+            
+            revealed.append(tile_index)
+            total_tiles = game['grid_size'] * game['grid_size']
+            safe_tiles = total_tiles - game['mine_count']
+            remaining = safe_tiles - len(revealed)
+            multiplier = round(1 + (len(revealed) / safe_tiles) * 10, 2)
+            
+            # FIX: Win condition - when all safe tiles are revealed
+            if remaining <= 0:
+                win_amount = int(game['bet_amount'] * multiplier)
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                await conn.execute(
+                    "UPDATE mines_games SET status = 'won', multiplier = $1 WHERE id = $2",
+                    multiplier, game_id
+                )
+                await update_quest_progress(user_id, "earn_money", int(win_amount))
+                
+                return {
+                    'success': True,
+                    'game_won': True,
+                    'win_amount': win_amount,
+                    'multiplier': multiplier,
+                    'revealed': revealed,
+                    'remaining': 0
+                }
+            
+            await conn.execute(
+                "UPDATE mines_games SET revealed_tiles = $1, multiplier = $2 WHERE id = $3",
+                revealed, multiplier, game_id
+            )
+            
+            return {
+                'success': True,
+                'game_won': False,
+                'multiplier': multiplier,
+                'revealed': revealed,
+                'remaining': remaining,
+                'cash_out_amount': int(game['bet_amount'] * multiplier)
+            }
+
+async def cashout_mines(game_id: int, user_id: int) -> dict:
+    """Cash out a mines game"""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            game = await conn.fetchrow(
+                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
+                game_id, user_id
+            )
+            if not game:
+                return {'success': False, 'error': 'Game not found or already ended'}
+            
+            multiplier = game['multiplier'] or 1.0
+            win_amount = int(game['bet_amount'] * multiplier)
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                win_amount, user_id
+            )
+            await conn.execute(
+                "UPDATE mines_games SET status = 'cashed_out', multiplier = $1 WHERE id = $2",
+                multiplier, game_id
+            )
+            
+            await update_quest_progress(user_id, "earn_money", int(win_amount))
+            
+            return {
+                'success': True,
+                'win_amount': win_amount,
+                'multiplier': multiplier
+            }
+
+# ============================================
+# SLOTS HELPERS
+# ============================================
+
+SLOT_SYMBOLS = [
+    {'emoji': '🍒', 'value': 1, 'name': 'Cherry'},
+    {'emoji': '🍋', 'value': 2, 'name': 'Lemon'},
+    {'emoji': '🍊', 'value': 3, 'name': 'Orange'},
+    {'emoji': '🍇', 'value': 4, 'name': 'Grape'},
+    {'emoji': '💎', 'value': 10, 'name': 'Diamond'},
+    {'emoji': '7️⃣', 'value': 20, 'name': 'Seven'},
+    {'emoji': '🎰', 'value': 50, 'name': 'Jackpot'},
+]
+
+SLOT_PAYOUTS = {
+    '🍒🍒🍒': 3,
+    '🍋🍋🍋': 5,
+    '🍊🍊🍊': 8,
+    '🍇🍇🍇': 12,
+    '💎💎💎': 30,
+    '7️⃣7️⃣7️⃣': 60,
+    '🎰🎰🎰': 200
+}
+
+async def play_slots(user_id: int, amount: float) -> dict:
+    """Play the slot machine"""
+    if amount < 50:
+        return {'success': False, 'error': 'Minimum bet is $50'}
+    
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
+            if not user or user['balance'] < amount:
+                return {'success': False, 'error': 'Insufficient balance'}
+            
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, user_id
+            )
+            
+            symbols = [random.choice(SLOT_SYMBOLS)['emoji'] for _ in range(3)]
+            result_str = ''.join(symbols)
+            multiplier = SLOT_PAYOUTS.get(result_str, 0)
+            win_amount = int(amount * multiplier) if multiplier > 0 else 0
+            win_amount = int(win_amount * 0.98)  # 2% house edge
+            
+            if multiplier == 0:
+                for sym in SLOT_SYMBOLS:
+                    if symbols.count(sym['emoji']) >= 2:
+                        multiplier = sym['value'] / 2
+                        win_amount = int(amount * multiplier)
+                        break
+            
+            if win_amount > 0:
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, user_id
+                )
+                await update_quest_progress(user_id, "earn_money", int(win_amount))
+            
+            await conn.execute(
+                """INSERT INTO slots_games 
+                   (user_id, bet_amount, spin_result, multiplier, win_amount) 
+                   VALUES ($1, $2, $3, $4, $5)""",
+                user_id, amount, symbols, multiplier, win_amount
+            )
+            
+            return {
+                'success': True,
+                'symbols': symbols,
+                'result_str': result_str,
+                'multiplier': multiplier,
+                'win_amount': win_amount,
+                'bet_amount': amount
+            }
+
+# ============================================
+# COINFLIP COMMANDS - VS COMPUTER
+# ============================================
+
+@bot.tree.command(name="coinflip", description="Flip a coin against the computer!")
+async def cmd_coinflip(interaction: discord.Interaction, amount: float):
     if not await is_bot_channel(interaction):
         return
     
     await interaction.response.defer()
     
-    if game_id:
-        result = await join_coinflip_game(game_id, interaction.user.id)
-        if not result['success']:
-            await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-            return
-        
-        embed = discord.Embed(
-            title="🪙 Coinflip Result!",
-            color=discord.Color.gold() if result['winner_id'] == interaction.user.id else discord.Color.red()
-        )
-        embed.add_field(name="Winner", value=f"<@{result['winner_id']}>", inline=False)
-        embed.add_field(name="Amount", value=f"${result['amount']:,.2f}", inline=True)
-        embed.add_field(name="Won", value=f"${result['win_amount']:,.2f}", inline=True)
-        embed.set_footer(text="💖 Support us on Ko-fi!")
-        await interaction.followup.send(embed=embed)
-        return
-    
-    if not amount or amount < 100:
+    if amount < 100:
         await interaction.followup.send("❌ Minimum bet is $100!", ephemeral=True)
         return
     
-    result = await create_coinflip_game(interaction.user.id, amount)
-    
-    embed = discord.Embed(
-        title="🪙 Coinflip Game Created!",
-        description=f"Bet: ${amount:,.2f}\nWaiting for opponent...",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Game ID", value=f"`{result['game_id']}`", inline=False)
-    embed.add_field(name="How to Join", value=f"`/coinflip game_id:{result['game_id']}`", inline=False)
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="coinflip_list", description="View active coinflip games")
-async def cmd_coinflip_list(interaction: discord.Interaction):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
     async with db_pool.acquire() as conn:
-        games = await conn.fetch(
-            "SELECT id, creator_id, amount FROM coinflip_games WHERE status = 'waiting' LIMIT 10"
-        )
-    
-    if not games:
-        await interaction.followup.send("No active coinflip games right now!", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title="🪙 Active Coinflip Games",
-        color=discord.Color.blue()
-    )
-    
-    for game in games:
-        creator = await get_username(game['creator_id'])
-        embed.add_field(
-            name=f"Game #{game['id']}",
-            value=f"Host: {creator}\nAmount: ${game['amount']:,.2f}\nJoin: `/coinflip game_id:{game['id']}`",
-            inline=True
-        )
-    
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    await interaction.followup.send(embed=embed)
+        async with conn.transaction():
+            await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+            
+            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+            if not user or user['balance'] < amount:
+                await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
+                return
+            
+            # Take their money
+            await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+                amount, interaction.user.id
+            )
+            
+            # Computer flips coin - 50/50 chance
+            user_wins = random.choice([True, False])
+            
+            if user_wins:
+                win_amount = int(amount * 1.95)  # 95% payout
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    win_amount, interaction.user.id
+                )
+                result = "win"
+                await update_quest_progress(interaction.user.id, "jackpot_win", 1)
+            else:
+                win_amount = 0
+                result = "lose"
+            
+            # Save game record
+            await conn.execute(
+                """INSERT INTO coinflip_games 
+                   (creator_id, amount, status, completed_at, opponent_id) 
+                   VALUES ($1, $2, 'complete', NOW(), 999999999)""",
+                interaction.user.id, amount
+            )
+            
+            embed = discord.Embed(
+                title="🪙 Coinflip vs Computer!",
+                color=discord.Color.gold() if user_wins else discord.Color.red()
+            )
+            embed.add_field(name="Your Bet", value=f"${amount:,.2f}", inline=True)
+            embed.add_field(name="Result", value="🎉 YOU WON!" if user_wins else "😢 Computer Wins!", inline=True)
+            if user_wins:
+                embed.add_field(name="You Won", value=f"${win_amount:,.2f}", inline=True)
+            embed.set_footer(text="💖 Support us on Ko-fi!")
+            await interaction.followup.send(embed=embed)
 
 # ============================================
 # DICE COMMANDS
@@ -3165,7 +3560,6 @@ async def cmd_mines(interaction: discord.Interaction, amount: float, grid_size: 
     
     await interaction.followup.send(embed=embed)
 
-
 @bot.tree.command(name="mines_reveal", description="Reveal a tile in your mines game")
 async def cmd_mines_reveal(interaction: discord.Interaction, game_id: int, tile: int):
     if not await is_bot_channel(interaction):
@@ -3209,7 +3603,6 @@ async def cmd_mines_reveal(interaction: discord.Interaction, game_id: int, tile:
     embed.set_footer(text="💖 Support us on Ko-fi!")
     
     await interaction.followup.send(embed=embed)
-
 
 @bot.tree.command(name="mines_cashout", description="Cash out your mines game")
 async def cmd_mines_cashout(interaction: discord.Interaction, game_id: int):
@@ -3578,385 +3971,6 @@ async def skin_upgrade(user_id: int, item_id: int) -> dict:
                     'cost': upgrade_cost
                 }
 
-# ============================================
-# GAME HELPER FUNCTIONS
-# ============================================
-
-async def get_username(user_id: int) -> str:
-    """Get username from database or fetch from Discord"""
-    try:
-        async with db_pool.acquire() as conn:
-            user = await conn.fetchrow("SELECT username FROM users WHERE user_id = $1", user_id)
-            if user and user['username']:
-                return user['username']
-    except:
-        pass
-    
-    try:
-        discord_user = await bot.fetch_user(user_id)
-        if discord_user:
-            return discord_user.display_name
-    except:
-        pass
-    
-    return f"User_{user_id}"
-
-async def create_coinflip_game(user_id: int, amount: float) -> dict:
-    """Create a new coinflip game"""
-    if amount < 100:
-        return {'success': False, 'error': 'Minimum bet is $100'}
-    
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                amount, user_id
-            )
-            
-            result = await conn.fetchrow(
-                """INSERT INTO coinflip_games (creator_id, amount, status) 
-                   VALUES ($1, $2, 'waiting') RETURNING id""",
-                user_id, amount
-            )
-            game_id = result['id']
-            
-            return {'success': True, 'game_id': game_id, 'amount': amount}
-
-async def join_coinflip_game(game_id: int, user_id: int) -> dict:
-    """Join an existing coinflip game"""
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            game = await conn.fetchrow(
-                "SELECT * FROM coinflip_games WHERE id = $1 AND status = 'waiting'",
-                game_id
-            )
-            if not game:
-                return {'success': False, 'error': 'Game not found or already active'}
-            
-            if game['creator_id'] == user_id:
-                return {'success': False, 'error': "You can't join your own game!"}
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < game['amount']:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                game['amount'], user_id
-            )
-            
-            await conn.execute(
-                """UPDATE coinflip_games SET opponent_id = $1, status = 'active' WHERE id = $2""",
-                user_id, game_id
-            )
-            
-            winner_id = random.choice([game['creator_id'], user_id])
-            win_amount = int(game['amount'] * 1.95)
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                win_amount, winner_id
-            )
-            await conn.execute(
-                "UPDATE coinflip_games SET winner_id = $1, completed_at = NOW(), status = 'complete' WHERE id = $2",
-                winner_id, game_id
-            )
-            
-            await update_quest_progress(winner_id, "jackpot_win", 1)
-            
-            return {
-                'success': True,
-                'winner_id': winner_id,
-                'amount': game['amount'],
-                'win_amount': win_amount
-            }
-
-async def play_dice(user_id: int, amount: float, bet_type: str, bet_number: int) -> dict:
-    """Play a dice game"""
-    if amount < 100:
-        return {'success': False, 'error': 'Minimum bet is $100'}
-    if bet_type not in ['over', 'under']:
-        return {'success': False, 'error': 'Bet type must be "over" or "under"'}
-    if bet_number < 2 or bet_number > 99:
-        return {'success': False, 'error': 'Bet number must be between 2 and 99'}
-    
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                amount, user_id
-            )
-            
-            roll = random.randint(1, 100)
-            win = (roll > bet_number) if bet_type == 'over' else (roll < bet_number)
-            
-            if bet_type == 'over':
-                multiplier = round(95 / (100 - bet_number), 2)
-            else:
-                multiplier = round(95 / (bet_number - 1), 2)
-            
-            win_amount = int(amount * multiplier) if win else 0
-            
-            if win:
-                await conn.execute(
-                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                    win_amount, user_id
-                )
-                await update_quest_progress(user_id, "earn_money", int(win_amount))
-            
-            await conn.execute(
-                """INSERT INTO dice_games 
-                   (user_id, amount, bet_type, bet_number, roll_number, result, multiplier) 
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                user_id, amount, bet_type, bet_number, roll, 'win' if win else 'lose', multiplier
-            )
-            
-            return {
-                'success': True,
-                'roll': roll,
-                'bet_type': bet_type,
-                'bet_number': bet_number,
-                'win': win,
-                'multiplier': multiplier,
-                'amount': amount,
-                'win_amount': win_amount
-            }
-
-async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine_count: int = 3) -> dict:
-    """Start a mines game"""
-    if amount < 100:
-        return {'success': False, 'error': 'Minimum bet is $100'}
-    if grid_size not in [3, 4, 5, 6]:
-        return {'success': False, 'error': 'Grid size must be 3, 4, 5, or 6'}
-    
-    max_mines = grid_size * grid_size - 2
-    if mine_count < 1 or mine_count > max_mines:
-        return {'success': False, 'error': f'Invalid mine count for {grid_size}x{grid_size} grid'}
-    
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                amount, user_id
-            )
-            
-            total_tiles = grid_size * grid_size
-            mine_positions = random.sample(range(total_tiles), mine_count)
-            
-            result = await conn.fetchrow(
-                """INSERT INTO mines_games 
-                   (user_id, bet_amount, grid_size, mine_count, status, mine_positions) 
-                   VALUES ($1, $2, $3, $4, 'active', $5) RETURNING id""",
-                user_id, amount, grid_size, mine_count, mine_positions
-            )
-            game_id = result['id']
-            
-            return {
-                'success': True,
-                'game_id': game_id,
-                'grid_size': grid_size,
-                'mine_count': mine_count,
-                'bet_amount': amount
-            }
-
-async def reveal_mines_tile(game_id: int, user_id: int, tile_index: int) -> dict:
-    """Reveal a tile in a mines game"""
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            game = await conn.fetchrow(
-                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
-                game_id, user_id
-            )
-            if not game:
-                return {'success': False, 'error': 'Game not found or already ended'}
-            
-            revealed = game['revealed_tiles'] or []
-            if tile_index in revealed:
-                return {'success': False, 'error': 'Tile already revealed'}
-            
-            mine_positions = game.get('mine_positions', [])
-            if not mine_positions:
-                total_tiles = game['grid_size'] * game['grid_size']
-                mine_positions = random.sample(range(total_tiles), game['mine_count'])
-                await conn.execute(
-                    "UPDATE mines_games SET mine_positions = $1 WHERE id = $2",
-                    mine_positions, game_id
-                )
-            
-            if tile_index in mine_positions:
-                await conn.execute(
-                    "UPDATE mines_games SET exploded = true, status = 'lost' WHERE id = $1",
-                    game_id
-                )
-                return {'success': False, 'exploded': True, 'message': '💥 BOOM! You hit a mine!'}
-            
-            revealed.append(tile_index)
-            total_tiles = game['grid_size'] * game['grid_size']
-            safe_tiles = total_tiles - game['mine_count']
-            remaining = safe_tiles - len(revealed)
-            multiplier = round(1 + (len(revealed) / safe_tiles) * 10, 2)
-            
-            if remaining == 0:
-                win_amount = int(game['bet_amount'] * multiplier)
-                await conn.execute(
-                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                    win_amount, user_id
-                )
-                await conn.execute(
-                    "UPDATE mines_games SET status = 'won', multiplier = $1 WHERE id = $2",
-                    multiplier, game_id
-                )
-                await update_quest_progress(user_id, "earn_money", int(win_amount))
-                
-                return {
-                    'success': True,
-                    'game_won': True,
-                    'win_amount': win_amount,
-                    'multiplier': multiplier,
-                    'revealed': revealed,
-                    'remaining': remaining
-                }
-            
-            await conn.execute(
-                "UPDATE mines_games SET revealed_tiles = $1, multiplier = $2 WHERE id = $3",
-                revealed, multiplier, game_id
-            )
-            
-            return {
-                'success': True,
-                'game_won': False,
-                'multiplier': multiplier,
-                'revealed': revealed,
-                'remaining': remaining,
-                'cash_out_amount': int(game['bet_amount'] * multiplier)
-            }
-
-async def cashout_mines(game_id: int, user_id: int) -> dict:
-    """Cash out a mines game"""
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            game = await conn.fetchrow(
-                "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
-                game_id, user_id
-            )
-            if not game:
-                return {'success': False, 'error': 'Game not found or already ended'}
-            
-            multiplier = game['multiplier'] or 1.0
-            win_amount = int(game['bet_amount'] * multiplier)
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                win_amount, user_id
-            )
-            await conn.execute(
-                "UPDATE mines_games SET status = 'cashed_out', multiplier = $1 WHERE id = $2",
-                multiplier, game_id
-            )
-            
-            await update_quest_progress(user_id, "earn_money", int(win_amount))
-            
-            return {
-                'success': True,
-                'win_amount': win_amount,
-                'multiplier': multiplier
-            }
-
-# ============================================
-# SLOTS HELPERS
-# ============================================
-
-SLOT_SYMBOLS = [
-    {'emoji': '🍒', 'value': 1, 'name': 'Cherry'},
-    {'emoji': '🍋', 'value': 2, 'name': 'Lemon'},
-    {'emoji': '🍊', 'value': 3, 'name': 'Orange'},
-    {'emoji': '🍇', 'value': 4, 'name': 'Grape'},
-    {'emoji': '💎', 'value': 10, 'name': 'Diamond'},
-    {'emoji': '7️⃣', 'value': 20, 'name': 'Seven'},
-    {'emoji': '🎰', 'value': 50, 'name': 'Jackpot'},
-]
-
-SLOT_PAYOUTS = {
-    '🍒🍒🍒': 5, '🍋🍋🍋': 10, '🍊🍊🍊': 15,
-    '🍇🍇🍇': 20, '💎💎💎': 50, '7️⃣7️⃣7️⃣': 100, '🎰🎰🎰': 500
-}
-
-async def play_slots(user_id: int, amount: float) -> dict:
-    """Play the slot machine"""
-    if amount < 50:
-        return {'success': False, 'error': 'Minimum bet is $50'}
-    
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                amount, user_id
-            )
-            
-            symbols = [random.choice(SLOT_SYMBOLS)['emoji'] for _ in range(3)]
-            result_str = ''.join(symbols)
-            multiplier = SLOT_PAYOUTS.get(result_str, 0)
-            win_amount = int(amount * multiplier) if multiplier > 0 else 0
-            
-            if multiplier == 0:
-                for sym in SLOT_SYMBOLS:
-                    if symbols.count(sym['emoji']) >= 2:
-                        multiplier = sym['value'] / 2
-                        win_amount = int(amount * multiplier)
-                        break
-            
-            if win_amount > 0:
-                await conn.execute(
-                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                    win_amount, user_id
-                )
-                await update_quest_progress(user_id, "earn_money", int(win_amount))
-            
-            await conn.execute(
-                """INSERT INTO slots_games 
-                   (user_id, bet_amount, spin_result, multiplier, win_amount) 
-                   VALUES ($1, $2, $3, $4, $5)""",
-                user_id, amount, symbols, multiplier, win_amount
-            )
-            
-            return {
-                'success': True,
-                'symbols': symbols,
-                'result_str': result_str,
-                'multiplier': multiplier,
-                'win_amount': win_amount,
-                'bet_amount': amount
-            }
 
 # ============================================
 # RUN BOT
