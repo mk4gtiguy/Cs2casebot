@@ -1,0 +1,1173 @@
+# ============================================================
+# routes/games_easy.py
+# CS2CaseBot | Easy Games Backend
+#
+# Games: Slots (Classic), CS2 Weapon Slots, Jackpot Slots,
+#        Bomb Defuse Slots, Coinflip, Dice, Limbo,
+#        Hi-Lo, Dragon Tiger, Keno, Crash
+# ============================================================
+
+import asyncio
+import random
+import math
+import hashlib
+import time
+from datetime import datetime
+from typing import Dict, Set, Optional, List, Any
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, HTTPException
+from pydantic import BaseModel
+
+import shared
+from shared import (
+    logger, get_db, get_user_id_from_session, require_auth,
+    ensure_user_exists, deduct_balance, add_balance,
+    convert_decimals, broadcast_to_set,
+    SLOT_SYMBOLS, SLOT_PAYOUTS,
+)
+
+router = APIRouter(prefix="/api/games/easy", tags=["games-easy"])
+
+# ============================================================
+# HOUSE EDGE & BET LIMITS
+# ============================================================
+
+HOUSE_EDGE   = 0.04   # 4% — applied to all games
+MIN_BET      = 50
+MAX_BET      = 500_000
+
+def clamp_bet(amount: float) -> float:
+    return max(MIN_BET, min(MAX_BET, float(amount)))
+
+def apply_house(raw_win: float) -> float:
+    return round(raw_win * (1 - HOUSE_EDGE), 2)
+
+# ============================================================
+# GAME LOG HELPER
+# ============================================================
+
+async def log_game(conn, user_id: int, game_type: str,
+                   bet: float, win: float, meta: dict = None):
+    import json
+    await conn.execute("""
+        INSERT INTO game_logs (user_id, game_type, bet_amount, win_amount,
+                               multiplier, result, meta)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+    """, user_id, game_type, bet, win,
+        round(win / bet, 4) if bet else 0,
+        'win' if win > bet else 'loss',
+        json.dumps(meta or {}))
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  SLOTS — CLASSIC (3-reel fruit machine)
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+# Weighted reel symbols: (symbol_index, weight)
+CLASSIC_REEL_WEIGHTS = [40, 30, 20, 15, 8, 4, 1]   # Cherry→Jackpot
+CLASSIC_PAYOUTS = {
+    # 3-of-a-kind
+    '🍒🍒🍒': 3,   '🍋🍋🍋': 5,   '🍊🍊🍊': 8,
+    '🍇🍇🍇': 12,  '💎💎💎': 30,  '7️⃣7️⃣7️⃣': 60,  '🎰🎰🎰': 200,
+    # 2-of-a-kind (partial)
+    '🍒🍒':   1.5, '🍋🍋':   2,   '💎💎':    8,
+}
+
+def spin_classic_reel() -> str:
+    total = sum(CLASSIC_REEL_WEIGHTS)
+    r = random.randint(1, total)
+    cum = 0
+    for i, w in enumerate(CLASSIC_REEL_WEIGHTS):
+        cum += w
+        if r <= cum:
+            return SLOT_SYMBOLS[i]['emoji']
+    return SLOT_SYMBOLS[0]['emoji']
+
+def evaluate_classic(symbols: List[str]) -> tuple[float, str]:
+    key3 = ''.join(symbols)
+    if key3 in CLASSIC_PAYOUTS:
+        return CLASSIC_PAYOUTS[key3], '3-of-a-kind'
+    # Check 2-of-a-kind with first two
+    key2 = ''.join(symbols[:2])
+    if key2 in CLASSIC_PAYOUTS:
+        return CLASSIC_PAYOUTS[key2], '2-of-a-kind'
+    return 0, 'loss'
+
+class SlotsRequest(BaseModel):
+    amount: float
+
+@router.post("/slots/spin")
+async def slots_spin(req: SlotsRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            symbols = [spin_classic_reel() for _ in range(3)]
+            mult, combo = evaluate_classic(symbols)
+            win = apply_house(bet * mult) if mult else 0
+
+            if win:
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'slots_classic', bet, win,
+                           {'symbols': symbols, 'combo': combo, 'mult': mult})
+
+    return {
+        "success":  True,
+        "symbols":  symbols,
+        "combo":    combo,
+        "mult":     mult,
+        "win":      win,
+        "bet":      bet,
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  CS2 WEAPON SLOTS — Rarity-based 3-reel
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+# Each reel pulls from CS2 rarity weights
+CS2_RARITY_REELS = [
+    # (rarity_name, emoji, weight, 3-match-mult)
+    ('Blue',   '🟦', 55, 3),
+    ('Purple', '🟪', 25, 8),
+    ('Pink',   '💗', 12, 20),
+    ('Red',    '🔴', 5,  60),
+    ('Gold',   '⭐', 3,  200),
+]
+# Special combos
+CS2_SPECIAL = {
+    '⭐⭐⭐': (500, 'LEGENDARY TRIPLE'),
+    '🔴🔴🔴': (100, 'RED TRIPLE'),
+    '💗💗💗': (40,  'PINK TRIPLE'),
+    '🟪🟪🟪': (15,  'PURPLE TRIPLE'),
+    '🟦🟦🟦': (5,   'BLUE TRIPLE'),
+}
+
+def spin_cs2_reel() -> tuple[str, str]:
+    total = sum(r[2] for r in CS2_RARITY_REELS)
+    r = random.randint(1, total)
+    cum = 0
+    for name, emoji, weight, _ in CS2_RARITY_REELS:
+        cum += weight
+        if r <= cum:
+            return name, emoji
+    return 'Blue', '🟦'
+
+class CS2SlotsRequest(BaseModel):
+    amount: float
+
+@router.post("/slots/cs2/spin")
+async def cs2_slots_spin(req: CS2SlotsRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            spins   = [spin_cs2_reel() for _ in range(3)]
+            names   = [s[0] for s in spins]
+            emojis  = [s[1] for s in spins]
+            key     = ''.join(emojis)
+
+            mult, label = CS2_SPECIAL.get(key, (0, 'miss'))
+
+            # Partial matches: 2 golds = 20x, 2 reds = 8x, etc
+            if mult == 0:
+                if emojis.count('⭐') == 2: mult, label = 20, 'DOUBLE GOLD'
+                elif emojis.count('🔴') == 2: mult, label = 8, 'DOUBLE RED'
+                elif emojis.count('💗') == 2: mult, label = 4, 'DOUBLE PINK'
+                elif emojis.count('🟪') == 2: mult, label = 2, 'DOUBLE PURPLE'
+
+            win = apply_house(bet * mult) if mult else 0
+            if win:
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'slots_cs2', bet, win,
+                           {'rarities': names, 'emojis': emojis, 'label': label})
+
+    return {
+        "success": True,
+        "rarities": names,
+        "emojis":   emojis,
+        "label":    label,
+        "mult":     mult,
+        "win":      win,
+        "bet":      bet,
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  JACKPOT SLOTS — 5-reel progressive
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+# In-memory progressive jackpot (resets to seed on win)
+_jackpot_pool:  float = 10_000.0
+_jackpot_seed:  float = 10_000.0
+_jackpot_lock          = asyncio.Lock()
+JACKPOT_FEED_RATE      = 0.02   # 2% of each bet feeds the pot
+
+JACKPOT_REEL = [
+    ('💀', 'Skull',   40),
+    ('🔫', 'Gun',     30),
+    ('💣', 'Bomb',    25),
+    ('🌟', 'Star',    15),
+    ('💎', 'Diamond', 8),
+    ('🔑', 'Key',     4),
+    ('🏆', 'Trophy',  1),
+]
+
+def spin_jackpot_reel() -> str:
+    total = sum(r[2] for r in JACKPOT_REEL)
+    r = random.randint(1, total)
+    cum = 0
+    for emoji, _, weight in JACKPOT_REEL:
+        cum += weight
+        if r <= cum:
+            return emoji
+    return '💀'
+
+def evaluate_jackpot_5reel(reels: List[str]) -> tuple[float, str, bool]:
+    """Returns (multiplier, label, is_jackpot)"""
+    counts = {}
+    for e in reels:
+        counts[e] = counts.get(e, 0) + 1
+
+    max_count = max(counts.values())
+    top_emoji  = max(counts, key=counts.get)
+
+    # 5-of-a-kind jackpot trigger
+    if max_count == 5:
+        if top_emoji == '🏆':
+            return 0, 'JACKPOT', True  # full jackpot pool
+        if top_emoji == '🔑': return 500, '5x KEY', False
+        if top_emoji == '💎': return 200, '5x DIAMOND', False
+        if top_emoji == '🌟': return 80,  '5x STAR', False
+        if top_emoji == '💣': return 30,  '5x BOMB', False
+        if top_emoji == '🔫': return 15,  '5x GUN', False
+        return 8, '5x SKULL', False
+
+    if max_count == 4:
+        mult_map = {'🏆':150,'🔑':60,'💎':30,'🌟':15,'💣':8,'🔫':4,'💀':2}
+        return mult_map.get(top_emoji, 2), f'4x {top_emoji}', False
+
+    if max_count == 3:
+        mult_map = {'🏆':30,'🔑':15,'💎':8,'🌟':5,'💣':3,'🔫':2,'💀':1.5}
+        return mult_map.get(top_emoji, 1.5), f'3x {top_emoji}', False
+
+    # Scatter: 2 trophies
+    if counts.get('🏆', 0) >= 2:
+        return 5, 'DOUBLE TROPHY', False
+
+    return 0, 'miss', False
+
+class JackpotSlotsRequest(BaseModel):
+    amount: float
+
+@router.post("/slots/jackpot/spin")
+async def jackpot_slots_spin(req: JackpotSlotsRequest, request: Request):
+    global _jackpot_pool
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+
+    async with _jackpot_lock:
+        _jackpot_pool = round(_jackpot_pool + bet * JACKPOT_FEED_RATE, 2)
+
+    reels = [spin_jackpot_reel() for _ in range(5)]
+    mult, label, is_jackpot = evaluate_jackpot_5reel(reels)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            win = 0.0
+            jackpot_won = 0.0
+            if is_jackpot:
+                async with _jackpot_lock:
+                    jackpot_won = _jackpot_pool
+                    _jackpot_pool = _jackpot_seed
+                win = apply_house(jackpot_won)
+            elif mult:
+                win = apply_house(bet * mult)
+
+            if win:
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'slots_jackpot', bet, win,
+                           {'reels': reels, 'label': label, 'jackpot': is_jackpot})
+
+    return {
+        "success":      True,
+        "reels":        reels,
+        "label":        label,
+        "mult":         mult,
+        "is_jackpot":   is_jackpot,
+        "jackpot_won":  jackpot_won,
+        "win":          win,
+        "bet":          bet,
+        "current_pool": round(_jackpot_pool, 2),
+    }
+
+@router.get("/slots/jackpot/pool")
+async def get_jackpot_pool():
+    return {"pool": round(_jackpot_pool, 2)}
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  BOMB DEFUSE SLOTS — 3-reel CT/T theme
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+BOMB_REEL = [
+    ('🔵', 'CT',      35),   # Counter-Terrorist
+    ('🔴', 'T',       35),   # Terrorist
+    ('🔫', 'Rifle',   20),   # Rifle
+    ('💣', 'Bomb',    6),    # Bomb  — 3x = BUST
+    ('🛡️', 'Defuse',  3),    # Defuse kit — 3x = JACKPOT
+    ('💎', 'Diamond', 1),    # Diamond — ultra rare
+]
+
+BOMB_PAYOUTS = {
+    '💎💎💎': (300, 'DIAMOND JACKPOT', False),
+    '🛡️🛡️🛡️': (100, '🛡️ DEFUSE JACKPOT', False),
+    '🔫🔫🔫': (20,  'TRIPLE RIFLE', False),
+    '🔵🔵🔵': (10,  'CT SWEEP', False),
+    '🔴🔴🔴': (8,   'T SWEEP', False),
+    # CT + Defuse combos
+    '🔵🔵🛡️': (6,   'CT DEFUSE', False),
+    '🛡️🔵🔵': (6,   'CT DEFUSE', False),
+    '🔵🛡️🔵': (6,   'CT DEFUSE', False),
+    # Bomb = bust (lose extra 50% of bet on top)
+    '💣💣💣': (0,   '💣 TRIPLE BOMB — BUST!', True),
+}
+
+def spin_bomb_reel() -> str:
+    total = sum(r[2] for r in BOMB_REEL)
+    r = random.randint(1, total)
+    cum = 0
+    for emoji, _, weight in BOMB_REEL:
+        cum += weight
+        if r <= cum:
+            return emoji
+    return '🔵'
+
+def evaluate_bomb(symbols: List[str]) -> tuple[float, str, bool]:
+    key = ''.join(symbols)
+    if key in BOMB_PAYOUTS:
+        return BOMB_PAYOUTS[key]
+    # 2-bomb partial: lose 25% extra
+    if symbols.count('💣') == 2:
+        return 0, '💣💣 DOUBLE BOMB — partial bust!', True
+    # 2-defuse
+    if symbols.count('🛡️') == 2:
+        return 5, 'DOUBLE DEFUSE', False
+    # 2-diamond
+    if symbols.count('💎') == 2:
+        return 30, 'DOUBLE DIAMOND', False
+    return 0, 'miss', False
+
+class BombSlotsRequest(BaseModel):
+    amount: float
+
+@router.post("/slots/bomb/spin")
+async def bomb_slots_spin(req: BombSlotsRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            symbols = [spin_bomb_reel() for _ in range(3)]
+            mult, label, is_bust = evaluate_bomb(symbols)
+
+            win = 0.0
+            extra_loss = 0.0
+            if is_bust:
+                # Double bomb: extra 25% penalty; triple: extra 50%
+                penalty_rate = 0.50 if symbols.count('💣') == 3 else 0.25
+                extra_loss = round(bet * penalty_rate, 2)
+                await deduct_balance(user_id, extra_loss, conn)
+            elif mult:
+                win = apply_house(bet * mult)
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'slots_bomb', bet, win,
+                           {'symbols': symbols, 'label': label, 'bust': is_bust,
+                            'extra_loss': extra_loss})
+
+    return {
+        "success":     True,
+        "symbols":     symbols,
+        "label":       label,
+        "mult":        mult,
+        "is_bust":     is_bust,
+        "extra_loss":  extra_loss,
+        "win":         win,
+        "bet":         bet,
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  COINFLIP — vs computer
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+class CoinflipRequest(BaseModel):
+    amount: float
+    call: str = "heads"   # "heads" | "tails"
+
+@router.post("/coinflip")
+async def coinflip(req: CoinflipRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+    call    = req.call.lower()
+    if call not in ('heads', 'tails'):
+        raise HTTPException(400, "Call must be 'heads' or 'tails'")
+
+    result   = random.choice(['heads', 'tails'])
+    user_wins = (result == call)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            win = apply_house(bet * 2) if user_wins else 0
+            if win:
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'coinflip', bet, win,
+                           {'call': call, 'result': result})
+
+    return {
+        "success":    True,
+        "call":       call,
+        "result":     result,
+        "user_wins":  user_wins,
+        "win":        win,
+        "bet":        bet,
+        "profit":     round(win - bet, 2) if user_wins else -bet,
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  DICE — over/under 1-100
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+class DiceRequest(BaseModel):
+    amount:     float
+    bet_type:   str    # "over" | "under"
+    target:     int    # 2–98
+
+@router.post("/dice/roll")
+async def dice_roll(req: DiceRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+    btype   = req.bet_type.lower()
+    target  = req.target
+
+    if btype not in ('over', 'under'):
+        raise HTTPException(400, "bet_type must be 'over' or 'under'")
+    if not 2 <= target <= 98:
+        raise HTTPException(400, "target must be 2–98")
+
+    roll = random.randint(1, 100)
+    win_condition = (roll > target) if btype == 'over' else (roll < target)
+
+    # Payout = (100 / winning_chance) × (1 - house_edge)
+    if btype == 'over':
+        winning_range = 100 - target
+    else:
+        winning_range = target - 1
+
+    if winning_range <= 0:
+        raise HTTPException(400, "Invalid target")
+
+    mult = round((100 / winning_range) * (1 - HOUSE_EDGE), 4)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            win = round(bet * mult, 2) if win_condition else 0
+            if win:
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'dice', bet, win,
+                           {'roll': roll, 'bet_type': btype, 'target': target,
+                            'mult': mult})
+
+    return {
+        "success":   True,
+        "roll":      roll,
+        "bet_type":  btype,
+        "target":    target,
+        "user_wins": win_condition,
+        "mult":      mult,
+        "win":       win,
+        "bet":       bet,
+        "chance":    round(winning_range, 2),
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  LIMBO — set a target multiplier, beat it
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+class LimboRequest(BaseModel):
+    amount: float
+    target: float   # minimum 1.01
+
+@router.post("/limbo")
+async def limbo(req: LimboRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+    target  = max(1.01, round(float(req.target), 2))
+    if target > 1_000_000:
+        raise HTTPException(400, "Target too high")
+
+    # Server generates a result multiplier using same crash formula
+    result = shared.generate_crash_point(house_edge=HOUSE_EDGE)
+    # Ensure result can reach very high values sometimes
+    if random.random() < 0.001:    # 0.1% — moon shot
+        result = round(random.uniform(100, 1000), 2)
+
+    user_wins = result >= target
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            win = round(bet * target, 2) if user_wins else 0
+            if win:
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'limbo', bet, win,
+                           {'target': target, 'result': result})
+
+    return {
+        "success":   True,
+        "target":    target,
+        "result":    result,
+        "user_wins": user_wins,
+        "win":       win,
+        "bet":       bet,
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  HI-LO — chain card guesses for multiplier
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+# Active Hi-Lo sessions: user_id → game state
+_hilo_sessions: Dict[int, Dict] = {}
+
+CARD_VALUES = list(range(1, 14))  # A=1, 2-10, J=11, Q=12, K=13
+CARD_NAMES  = {1:'A',2:'2',3:'3',4:'4',5:'5',6:'6',
+               7:'7',8:'8',9:'9',10:'10',11:'J',12:'Q',13:'K'}
+CARD_SUITS  = ['♠','♥','♦','♣']
+
+def new_card() -> dict:
+    val  = random.choice(CARD_VALUES)
+    suit = random.choice(CARD_SUITS)
+    return {'value': val, 'name': CARD_NAMES[val], 'suit': suit,
+            'display': CARD_NAMES[val] + suit}
+
+def hilo_mult_for_guess(current: int, guess: str) -> float:
+    """Calculate payout multiplier based on probability."""
+    if guess == 'higher':
+        cards_that_win = sum(1 for v in CARD_VALUES if v > current)
+    else:
+        cards_that_win = sum(1 for v in CARD_VALUES if v < current)
+    if cards_that_win == 0:
+        return 0
+    prob = cards_that_win / len(CARD_VALUES)
+    return round((1 / prob) * (1 - HOUSE_EDGE), 3)
+
+class HiLoStartRequest(BaseModel):
+    amount: float
+
+class HiLoGuessRequest(BaseModel):
+    guess: str   # "higher" | "lower"
+
+class HiloCashoutRequest(BaseModel):
+    pass
+
+@router.post("/hilo/start")
+async def hilo_start(req: HiLoStartRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+    card = new_card()
+    _hilo_sessions[user_id] = {
+        'bet':        bet,
+        'current':    card,
+        'multiplier': 1.0,
+        'chain':      0,
+        'history':    [card],
+        'active':     True,
+    }
+
+    return {
+        "success":    True,
+        "card":       card,
+        "multiplier": 1.0,
+        "chain":      0,
+        "higher_mult": hilo_mult_for_guess(card['value'], 'higher'),
+        "lower_mult":  hilo_mult_for_guess(card['value'], 'lower'),
+    }
+
+@router.post("/hilo/guess")
+async def hilo_guess(req: HiLoGuessRequest, request: Request):
+    user_id = await require_auth(request)
+    sess    = _hilo_sessions.get(user_id)
+    if not sess or not sess['active']:
+        raise HTTPException(400, "No active Hi-Lo game — start one first")
+
+    guess   = req.guess.lower()
+    if guess not in ('higher', 'lower'):
+        raise HTTPException(400, "guess must be 'higher' or 'lower'")
+
+    current = sess['current']['value']
+    mult    = hilo_mult_for_guess(current, guess)
+    if mult == 0:
+        sess['active'] = False
+        raise HTTPException(400, "That guess is impossible from this card")
+
+    new = new_card()
+    if guess == 'higher':
+        correct = new['value'] > current
+    else:
+        correct = new['value'] < current
+
+    sess['current'] = new
+    sess['history'].append(new)
+
+    if correct:
+        sess['multiplier'] = round(sess['multiplier'] * mult, 4)
+        sess['chain']     += 1
+        return {
+            "success":    True,
+            "correct":    True,
+            "new_card":   new,
+            "multiplier": sess['multiplier'],
+            "chain":      sess['chain'],
+            "higher_mult": hilo_mult_for_guess(new['value'], 'higher'),
+            "lower_mult":  hilo_mult_for_guess(new['value'], 'lower'),
+        }
+    else:
+        # Bust — lose bet (already deducted at start)
+        bet = sess['bet']
+        sess['active'] = False
+        _hilo_sessions.pop(user_id, None)
+        async with (await get_db()).acquire() as conn:
+            await log_game(conn, user_id, 'hilo', bet, 0,
+                           {'chain': sess['chain'], 'bust': True})
+        return {
+            "success":   True,
+            "correct":   False,
+            "new_card":  new,
+            "bust":      True,
+            "chain":     sess['chain'],
+        }
+
+@router.post("/hilo/cashout")
+async def hilo_cashout(request: Request):
+    user_id = await require_auth(request)
+    sess    = _hilo_sessions.get(user_id)
+    if not sess or not sess['active']:
+        raise HTTPException(400, "No active Hi-Lo game")
+
+    bet  = sess['bet']
+    mult = sess['multiplier']
+    win  = round(bet * mult, 2)
+    sess['active'] = False
+    _hilo_sessions.pop(user_id, None)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await add_balance(user_id, win, conn)
+            await log_game(conn, user_id, 'hilo', bet, win,
+                           {'chain': sess['chain'], 'multiplier': mult})
+
+    return {
+        "success":    True,
+        "win":        win,
+        "multiplier": mult,
+        "chain":      sess['chain'],
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  DRAGON TIGER — two cards, bet on Dragon / Tiger / Tie
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+class DragonTigerRequest(BaseModel):
+    amount: float
+    bet_on: str   # "dragon" | "tiger" | "tie"
+
+@router.post("/dragon-tiger")
+async def dragon_tiger(req: DragonTigerRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+    bet_on  = req.bet_on.lower()
+    if bet_on not in ('dragon', 'tiger', 'tie'):
+        raise HTTPException(400, "bet_on must be dragon, tiger, or tie")
+
+    dragon = new_card()
+    tiger  = new_card()
+
+    if dragon['value'] > tiger['value']:
+        outcome = 'dragon'
+    elif tiger['value'] > dragon['value']:
+        outcome = 'tiger'
+    else:
+        outcome = 'tie'
+
+    # Payout multipliers
+    if outcome == 'tie' and bet_on == 'tie':
+        mult = 8.0
+        user_wins = True
+    elif outcome == bet_on and outcome != 'tie':
+        mult = 2.0
+        user_wins = True
+    elif outcome == 'tie' and bet_on != 'tie':
+        # Tie returns half the bet
+        mult = 0.5
+        user_wins = False  # partial return
+    else:
+        mult = 0
+        user_wins = False
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            if mult == 0.5:
+                # Half return (tie pushback)
+                win = round(bet * 0.5, 2)
+                await add_balance(user_id, win, conn)
+            elif user_wins:
+                win = apply_house(bet * mult)
+                await add_balance(user_id, win, conn)
+            else:
+                win = 0
+
+            await log_game(conn, user_id, 'dragon_tiger', bet, win,
+                           {'dragon': dragon, 'tiger': tiger,
+                            'outcome': outcome, 'bet_on': bet_on})
+
+    return {
+        "success":   True,
+        "dragon":    dragon,
+        "tiger":     tiger,
+        "outcome":   outcome,
+        "bet_on":    bet_on,
+        "user_wins": user_wins,
+        "mult":      mult,
+        "win":       win,
+        "bet":       bet,
+        "tie_push":  (outcome == 'tie' and bet_on != 'tie'),
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  KENO — pick numbers, watch balls drop
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+# Keno payout table: (picks, hits) → multiplier
+KENO_PAYOUTS = {
+    1:  {1: 3.5},
+    2:  {1: 1.5, 2: 10},
+    3:  {2: 3,   3: 25},
+    4:  {2: 1.5, 3: 6,  4: 60},
+    5:  {3: 3,   4: 12, 5: 100},
+    6:  {3: 2,   4: 6,  5: 30, 6: 250},
+    7:  {4: 4,   5: 15, 6: 60, 7: 500},
+    8:  {4: 3,   5: 8,  6: 30, 7: 200, 8: 1000},
+    9:  {4: 2,   5: 5,  6: 15, 7: 80,  8: 500,  9: 2000},
+    10: {5: 4,   6: 10, 7: 40, 8: 200, 9: 1000, 10:5000},
+}
+
+class KenoRequest(BaseModel):
+    amount: float
+    picks:  List[int]   # 1-80, pick 1-10
+
+@router.post("/keno/play")
+async def keno_play(req: KenoRequest, request: Request):
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+    picks   = list(set(req.picks))   # deduplicate
+
+    if not 1 <= len(picks) <= 10:
+        raise HTTPException(400, "Pick 1–10 numbers")
+    if any(n < 1 or n > 80 for n in picks):
+        raise HTTPException(400, "Numbers must be 1–80")
+
+    # Draw 20 numbers
+    drawn = random.sample(range(1, 81), 20)
+    hits  = [n for n in picks if n in drawn]
+    n_hits = len(hits)
+    n_picks = len(picks)
+
+    payout_table = KENO_PAYOUTS.get(n_picks, {})
+    mult = payout_table.get(n_hits, 0)
+
+    async with (await get_db()).acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            if not await deduct_balance(user_id, bet, conn):
+                raise HTTPException(400, "Insufficient balance")
+
+            win = apply_house(bet * mult) if mult else 0
+            if win:
+                await add_balance(user_id, win, conn)
+
+            await log_game(conn, user_id, 'keno', bet, win,
+                           {'picks': picks, 'drawn': drawn,
+                            'hits': hits, 'mult': mult})
+
+    return {
+        "success": True,
+        "picks":   picks,
+        "drawn":   drawn,
+        "hits":    hits,
+        "n_hits":  n_hits,
+        "mult":    mult,
+        "win":     win,
+        "bet":     bet,
+    }
+
+# ============================================================
+# ══════════════════════════════════════════════════════════
+#  CRASH — multiplayer shared rounds via WebSocket
+# ══════════════════════════════════════════════════════════
+# ============================================================
+
+class CrashRoom:
+    """Manages a single Crash round for up to 4 real players + bots."""
+    MAX_PLAYERS   = 4
+    BETTING_SECS  = 10   # lobby countdown before round starts
+    BOT_NAMES     = ['🤖 CrashBot_X', '🤖 AceBot', '🤖 DareBot']
+
+    def __init__(self, room_id: str):
+        self.room_id     = room_id
+        self.players:    Dict[int, Dict] = {}   # user_id → {bet, cashed_out, cashout_at, username, is_bot}
+        self.ws_map:     Dict[int, WebSocket] = {}
+        self.ws_set:     Set[WebSocket] = set()
+        self.phase       = 'betting'    # betting | running | ended
+        self.crash_at    = 1.0
+        self.current_mult= 1.0
+        self.start_time  = 0.0
+        self.task:       Optional[asyncio.Task] = None
+        self.speed       = 0.06         # multiplier growth rate
+
+    async def broadcast(self, msg: dict):
+        dead = await broadcast_to_set(self.ws_set, msg)
+        self.ws_set -= dead
+
+    async def run(self):
+        """Full round lifecycle: betting → launch → crash → settle."""
+        self.crash_at = shared.generate_crash_point(house_edge=HOUSE_EDGE)
+
+        # Broadcast betting phase
+        await self.broadcast({
+            'type':        'betting_open',
+            'room_id':     self.room_id,
+            'betting_secs': self.BETTING_SECS,
+        })
+
+        # Betting countdown ticks
+        for sec in range(self.BETTING_SECS, 0, -1):
+            await asyncio.sleep(1)
+            await self.broadcast({'type': 'betting_tick', 'seconds': sec - 1})
+            if sec == 4:
+                self._fill_bots()
+
+        # Add bots if < 2 real players
+        if sum(1 for p in self.players.values() if not p['is_bot']) < 1:
+            self._fill_bots(force=True)
+
+        # Launch
+        self.phase      = 'running'
+        self.start_time = time.time()
+        await self.broadcast({'type': 'round_start', 'crash_at_hidden': True})
+
+        # Tick every 100ms
+        while True:
+            await asyncio.sleep(0.1)
+            elapsed          = time.time() - self.start_time
+            self.current_mult = round(math.e ** (self.speed * elapsed), 2)
+
+            # Auto cashout bots
+            for uid, p in self.players.items():
+                if p['is_bot'] and not p['cashed_out']:
+                    bot_target = p.get('bot_cashout', 2.0)
+                    if self.current_mult >= bot_target:
+                        await self._cashout_player(uid, self.current_mult)
+
+            await self.broadcast({
+                'type': 'tick',
+                'mult': self.current_mult,
+            })
+
+            if self.current_mult >= self.crash_at:
+                break
+
+        # Crash!
+        self.phase = 'ended'
+        await self.broadcast({
+            'type':     'crashed',
+            'crash_at': self.crash_at,
+        })
+
+        # Settle: everyone still in loses
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            for uid, p in self.players.items():
+                if not p['cashed_out'] and not p['is_bot']:
+                    await log_game(conn, uid, 'crash', p['bet'], 0,
+                                   {'room': self.room_id,
+                                    'crash_at': self.crash_at,
+                                    'cashed_out': False})
+
+        await asyncio.sleep(3)
+        self.phase = 'ended'
+
+    def _fill_bots(self, force=False):
+        """Add bot players with random strategies."""
+        n_real = sum(1 for p in self.players.values() if not p['is_bot'])
+        n_bots = min(self.MAX_PLAYERS - n_real, 3)
+        for i in range(n_bots):
+            bid = -(i + 1)
+            if bid in self.players:
+                continue
+            bot_cashout = round(random.uniform(1.2, 4.5), 2)
+            self.players[bid] = {
+                'bet':        random.choice([100, 250, 500, 1000]),
+                'cashed_out': False,
+                'cashout_at': None,
+                'username':   self.BOT_NAMES[i % len(self.BOT_NAMES)],
+                'is_bot':     True,
+                'bot_cashout': bot_cashout,
+            }
+
+    async def _cashout_player(self, user_id: int, at_mult: float):
+        p = self.players.get(user_id)
+        if not p or p['cashed_out']:
+            return
+        p['cashed_out'] = True
+        p['cashout_at'] = at_mult
+        win = 0.0
+
+        if not p['is_bot']:
+            win = apply_house(p['bet'] * at_mult)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await add_balance(user_id, win, conn)
+                    await log_game(conn, user_id, 'crash', p['bet'], win,
+                                   {'room': self.room_id,
+                                    'crash_at': self.crash_at,
+                                    'cashed_out_at': at_mult})
+
+        await self.broadcast({
+            'type':       'cashout',
+            'user_id':    user_id,
+            'username':   p['username'],
+            'at_mult':    at_mult,
+            'win':        win,
+            'is_bot':     p['is_bot'],
+        })
+        return win
+
+
+# Global crash room registry
+_crash_rooms:     Dict[str, CrashRoom] = {}
+_crash_room_lock  = asyncio.Lock()
+
+def _get_or_create_room() -> CrashRoom:
+    """Return an open room or create a new one."""
+    for room in _crash_rooms.values():
+        real_players = sum(1 for p in room.players.values() if not p['is_bot'])
+        if room.phase == 'betting' and real_players < CrashRoom.MAX_PLAYERS:
+            return room
+    room_id  = f"crash_{int(time.time() * 1000) % 999999}"
+    room     = CrashRoom(room_id)
+    _crash_rooms[room_id] = room
+    return room
+
+
+class CrashBetRequest(BaseModel):
+    amount: float
+
+@router.post("/crash/bet")
+async def crash_bet(req: CrashBetRequest, request: Request):
+    """Place a bet and get assigned to a room."""
+    user_id = await require_auth(request)
+    bet     = clamp_bet(req.amount)
+
+    async with _crash_room_lock:
+        room = _get_or_create_room()
+
+        if user_id in room.players:
+            raise HTTPException(400, "Already in this round")
+
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+                user_row = await conn.fetchrow(
+                    "SELECT username FROM users WHERE user_id=$1", user_id
+                )
+
+        username = user_row['username'] if user_row else f'Player {user_id}'
+        room.players[user_id] = {
+            'bet':        bet,
+            'cashed_out': False,
+            'cashout_at': None,
+            'username':   username,
+            'is_bot':     False,
+        }
+
+        # Start the room task if not running
+        if room.task is None or room.task.done():
+            room.task = asyncio.create_task(room.run())
+
+    return {
+        "success":      True,
+        "room_id":      room.room_id,
+        "bet":          bet,
+        "betting_secs": CrashRoom.BETTING_SECS,
+    }
+
+
+@router.post("/crash/cashout")
+async def crash_cashout(request: Request, body: dict):
+    """Cash out during an active round."""
+    user_id = await require_auth(request)
+    room_id = body.get('room_id', '')
+    room    = _crash_rooms.get(room_id)
+
+    if not room or room.phase != 'running':
+        raise HTTPException(400, "No active round to cash out from")
+
+    p = room.players.get(user_id)
+    if not p:
+        raise HTTPException(400, "Not in this round")
+    if p['cashed_out']:
+        raise HTTPException(400, "Already cashed out")
+
+    win = await room._cashout_player(user_id, room.current_mult)
+    return {"success": True, "cashed_out_at": room.current_mult, "win": win}
+
+
+@router.websocket("/crash/ws/{room_id}")
+async def crash_ws(websocket: WebSocket, room_id: str):
+    await websocket.accept()
+
+    token = websocket.cookies.get("session_token")
+    if not token or token not in shared.sessions:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
+    user_id = shared.sessions[token]["user_id"]
+    room    = _crash_rooms.get(room_id)
+    if not room:
+        # Spectator mode — create a read-only view
+        try:
+            # Send latest tick
+            await websocket.send_json({'type': 'no_room', 'room_id': room_id})
+        except Exception:
+            pass
+        await websocket.close()
+        return
+
+    room.ws_set.add(websocket)
+    room.ws_map[user_id] = websocket
+
+    # Send current state
+    try:
+        await websocket.send_json({
+            'type':         'room_state',
+            'room_id':      room_id,
+            'phase':        room.phase,
+            'current_mult': room.current_mult,
+            'players': [
+                {
+                    'username':    p['username'],
+                    'bet':         p['bet'],
+                    'cashed_out':  p['cashed_out'],
+                    'cashout_at':  p['cashout_at'],
+                    'is_bot':      p['is_bot'],
+                }
+                for p in room.players.values()
+            ],
+        })
+    except Exception:
+        pass
+
+    try:
+        while True:
+            data = await websocket.receive_json()
+            # Only 'ping' allowed — all actions via HTTP
+            if data.get('type') == 'ping':
+                await websocket.send_json({'type': 'pong'})
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        room.ws_set.discard(websocket)
+        room.ws_map.pop(user_id, None)
+
+
+@router.get("/crash/rooms")
+async def crash_rooms():
+    """List open rooms for the lobby."""
+    return [
+        {
+            'room_id':     rid,
+            'phase':       r.phase,
+            'current_mult': r.current_mult,
+            'player_count': len(r.players),
+        }
+        for rid, r in _crash_rooms.items()
+        if r.phase in ('betting', 'running')
+    ]
