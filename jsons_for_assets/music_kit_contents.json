@@ -1,0 +1,532 @@
+[
+  {
+    "containerId": "2117",
+    "items": [
+      {
+        "musicKitId": "973258375",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "973796104",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "984479732",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1000709437",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1020124659",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1025275940",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1032490082",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1050160811",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1052161809",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1063058078",
+        "hasRegular": true,
+        "hasStatTrak": false
+      }
+    ]
+  },
+  {
+    "containerId": "2124",
+    "items": [
+      {
+        "musicKitId": "976329060",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "996251847",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "999193725",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1017750097",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1050389227",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1061750258",
+        "hasRegular": true,
+        "hasStatTrak": false
+      }
+    ]
+  },
+  {
+    "containerId": "2133",
+    "items": [
+      {
+        "musicKitId": "970676397",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "976850143",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "990519625",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "998457578",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1001522256",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1019800188",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1052316358",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1054885947",
+        "hasRegular": true,
+        "hasStatTrak": false
+      }
+    ]
+  },
+  {
+    "containerId": "2134",
+    "items": [
+      {
+        "musicKitId": "977121784",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "985214830",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "988045417",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "993368645",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1007353574",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1018567891",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1059406591",
+        "hasRegular": true,
+        "hasStatTrak": false
+      }
+    ]
+  },
+  {
+    "containerId": "2135",
+    "items": [
+      {
+        "musicKitId": "971454122",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "999027984",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1010421769",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1047586438",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1048343219",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1059220517",
+        "hasRegular": true,
+        "hasStatTrak": false
+      }
+    ]
+  },
+  {
+    "containerId": "2163",
+    "items": [
+      {
+        "musicKitId": "973258375",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "973796104",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "984479732",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1000709437",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1020124659",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1025275940",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1032490082",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1050160811",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1052161809",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1063058078",
+        "hasRegular": false,
+        "hasStatTrak": true
+      }
+    ]
+  },
+  {
+    "containerId": "2164",
+    "items": [
+      {
+        "musicKitId": "976329060",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "996251847",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "999193725",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1017750097",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1050389227",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1061750258",
+        "hasRegular": false,
+        "hasStatTrak": true
+      }
+    ]
+  },
+  {
+    "containerId": "2165",
+    "items": [
+      {
+        "musicKitId": "970676397",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "976850143",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "990519625",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "998457578",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1001522256",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1019800188",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1052316358",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1054885947",
+        "hasRegular": false,
+        "hasStatTrak": true
+      }
+    ]
+  },
+  {
+    "containerId": "2166",
+    "items": [
+      {
+        "musicKitId": "977121784",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "985214830",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "988045417",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "993368645",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1007353574",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1018567891",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1059406591",
+        "hasRegular": false,
+        "hasStatTrak": true
+      }
+    ]
+  },
+  {
+    "containerId": "2167",
+    "items": [
+      {
+        "musicKitId": "971454122",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "999027984",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1010421769",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1047586438",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1048343219",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1059220517",
+        "hasRegular": false,
+        "hasStatTrak": true
+      }
+    ]
+  },
+  {
+    "containerId": "2168",
+    "items": [
+      {
+        "musicKitId": "992902795",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1009981235",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1013122391",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1036144690",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1036314880",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1036996197",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1047455470",
+        "hasRegular": false,
+        "hasStatTrak": true
+      }
+    ]
+  },
+  {
+    "containerId": "2169",
+    "items": [
+      {
+        "musicKitId": "971420563",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1011148448",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1016818422",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1027126827",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1038380485",
+        "hasRegular": false,
+        "hasStatTrak": true
+      },
+      {
+        "musicKitId": "1055101006",
+        "hasRegular": false,
+        "hasStatTrak": true
+      }
+    ]
+  },
+  {
+    "containerId": "2178",
+    "items": [
+      {
+        "musicKitId": "971420563",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1011148448",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1016818422",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1027126827",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1038380485",
+        "hasRegular": true,
+        "hasStatTrak": false
+      },
+      {
+        "musicKitId": "1055101006",
+        "hasRegular": true,
+        "hasStatTrak": false
+      }
+    ]
+  }
+]
