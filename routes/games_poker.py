@@ -729,21 +729,23 @@ class HoldemRoom:
                         if r[0] == top_rank and r[1] == top_tb
                     ]
 
-                    split = round(pot_amount * (1 - HOUSE_EDGE_POKER) / len(pot_winners), 2)
+                    base_split = round(pot_amount * (1 - HOUSE_EDGE_POKER) / len(pot_winners), 2)
                     for p, best_cards in pot_winners:
                         if not p.is_bot:
-                            p.chips += split
-                            split = await _add_win(p.user_id, split, conn)
+                            actual_split = await _add_win(p.user_id, base_split, conn)
+                            p.chips += actual_split
                             await log_game(conn, p.user_id, 'holdem',
-                                           p.total_bet, split, {
+                                           p.total_bet, actual_split, {
                                                'room': self.room_code,
                                                'round': self.round_num,
                                                'hand_rank': HAND_NAMES[top_rank],
                                            })
+                        else:
+                            actual_split = base_split
                         wr = p.to_dict(show_cards=True)
                         wr['best_hand']  = best_cards
                         wr['hand_name']  = HAND_NAMES[top_rank]
-                        wr['payout']     = split
+                        wr['payout']     = actual_split
                         winner_dicts.append(wr)
 
         all_player_cards = [p.to_dict(show_cards=True) for p in alive]
