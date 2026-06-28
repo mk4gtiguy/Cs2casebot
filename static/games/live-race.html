@@ -166,6 +166,7 @@ body{background-image:radial-gradient(ellipse 100% 30% at 50% 0%,rgba(255,215,0,
 </div>
 
 <script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const AGENTS=[
   {id:'sas',name:'SAS Op.',emoji:'🟢',color:'#4caf50',personality:'steady'},
   {id:'phoenix',name:'Phoenix',emoji:'🔴',color:'#f44336',personality:'aggressive'},
@@ -275,7 +276,7 @@ function renderLobbyPlayers(players){
     const agentData=AGENTS.find(a=>a.id===p.agent_id)||{emoji:'🏃',color:'#888',name:p.username};
     const lane=document.createElement('div');lane.className='racer-lane'+(p.agent_id===selectedAgent?' my-lane':'');
     lane.innerHTML=`<div class="lane-emoji">${agentData.emoji}</div>
-      <div class="lane-name" style="color:${agentData.color}">${p.username}</div>
+      <div class="lane-name" style="color:${agentData.color}">${esc(p.username)}</div>
       <div class="lane-track"><div class="lane-fill" style="width:0%;background:${agentData.color}40"></div></div>
       <div class="lane-pct">READY</div>`;
     lanes.appendChild(lane);
@@ -294,7 +295,7 @@ function renderTrack(racers){
     lane.className='racer-lane'+(p.agent_id===selectedAgent?' my-lane':'')+(p.finished?' winner-lane':'');
     const fill=Math.min(100,p.progress||0);
     lane.innerHTML=`<div class="lane-emoji">${agentData.emoji}</div>
-      <div class="lane-name" style="color:${agentData.color}">${p.username.replace('🤖 ','')}</div>
+      <div class="lane-name" style="color:${agentData.color}">${esc(p.username.replace('🤖 ',''))}</div>
       <div class="lane-track"><div class="lane-fill${p.bursting?' bursting':''}" style="width:${fill}%;background:${agentData.color}"></div></div>
       <div class="lane-pct">${fill.toFixed(0)}%</div>
       <div class="lane-place place-${place}">${PLACE_ICONS[place-1]||''}</div>`;

@@ -235,6 +235,7 @@ body{background:radial-gradient(ellipse 100% 60% at 50% 0%,rgba(7,16,10,0.9),var
 </div><!-- /page -->
 
 <script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const RED=['♥','♦'];
 let balance=0,mode='holdem',gameActive=false,acting=false;
 // Holdem state
@@ -356,7 +357,7 @@ function renderSeats(players,yourSeat){
     ).join('');
     seat.innerHTML=`
       ${p.is_dealer?'<div class="dealer-chip">D</div>':''}
-      <div class="seat-name" style="color:${isMe?'#22c55e':'#c0c0c0'}">${p.username||'?'}${p.is_sb?' 🔹':p.is_bb?' 🔸':''}</div>
+      <div class="seat-name" style="color:${isMe?'#22c55e':'#c0c0c0'}">${esc(p.username||'?')}${p.is_sb?' 🔹':p.is_bb?' 🔸':''}</div>
       <div class="seat-chips">$${parseFloat(p.chips||0).toLocaleString(undefined,{maximumFractionDigits:0})}</div>
       ${p.bet>0?`<div class="seat-bet">BET: $${parseFloat(p.bet).toLocaleString()}</div>`:''}
       ${cards.length?`<div class="seat-cards">${cardHTML}</div>`:''}`;
