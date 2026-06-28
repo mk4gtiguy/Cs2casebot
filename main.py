@@ -11,6 +11,9 @@ from decimal import Decimal
 from dotenv import load_dotenv
 from typing import Optional
 
+# Secure RNG helpers (Fix 1)
+from shared import secure_random, secure_randint, secure_choice, secure_shuffle
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,9 +59,59 @@ try:
 except ImportError:
     pass  # shared.py not present — web server not running alongside
 
-jackpot_pot = 0
-jackpot_entries = []
+# Fix 3: Jackpot state is now DB-backed — remove in-memory globals.
+# jackpot_pot = 0        ← REMOVED
+# jackpot_entries = []   ← REMOVED
+# jackpot_lock = asyncio.Lock()  ← keep for I/O serialisation only
 jackpot_lock = asyncio.Lock()
+
+# Fix 3: DB-backed jackpot helpers
+async def jackpot_enter(user_id: int, amount: float):
+    """Deduct balance and add to jackpot pot — all in one transaction."""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            result = await conn.execute(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1",
+                amount, user_id
+            )
+            if result == "UPDATE 0":
+                return False   # insufficient balance
+            await conn.execute(
+                "UPDATE jackpot_state SET pot = pot + $1, updated_at = NOW() WHERE id = 1",
+                amount
+            )
+            await conn.execute(
+                "INSERT INTO jackpot_entries (user_id, amount) VALUES ($1, $2)",
+                user_id, amount
+            )
+    return True
+
+async def jackpot_draw() -> tuple:
+    """Pick winner weighted by entry amount, clear state. Returns (winner_id, pot)."""
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            entries = await conn.fetch("SELECT user_id, amount FROM jackpot_entries")
+            pot = await conn.fetchval("SELECT pot FROM jackpot_state WHERE id = 1") or 0
+            if not entries:
+                return None, 0
+            # Weighted selection using secure RNG
+            total = sum(float(e['amount']) for e in entries)
+            pick = secure_random() * total
+            cumulative = 0.0
+            winner_id = entries[-1]['user_id']
+            for e in entries:
+                cumulative += float(e['amount'])
+                if pick <= cumulative:
+                    winner_id = e['user_id']
+                    break
+            win_amount = int(float(pot) * 0.95)
+            await conn.execute("UPDATE jackpot_state SET pot = 0 WHERE id = 1")
+            await conn.execute("DELETE FROM jackpot_entries")
+            await conn.execute(
+                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                win_amount, winner_id
+            )
+            return winner_id, win_amount, float(pot)
 
 # ============================================
 # CHANNEL PERMISSION CHECK
@@ -171,7 +224,7 @@ QUEST_TYPES = {
 # ============================================
 
 def generate_skin_float():
-    return round(random.uniform(0.00, 1.00), 4)
+    return round(secure_random(), 4)
 
 def get_skin_condition(float_value):
     if float_value <= 0.07:
@@ -928,7 +981,7 @@ def get_random_item(case_id):
         logger.error(f"Case {case_id} not found or has no items")
         return None
 
-    rand = random.random() * 100
+    rand = secure_random() * 100
     cumulative = 0
 
     for rarity, chance in DROP_RATES.items():
@@ -936,8 +989,8 @@ def get_random_item(case_id):
         if rand <= cumulative:
             possible_items = [item for item in case['items'] if item['rarity'] == rarity]
             if possible_items:
-                item = random.choice(possible_items)
-                is_stattrak = random.random() < 0.1
+                item = secure_choice(possible_items)
+                is_stattrak = secure_random() < 0.1
                 condition = item.get('condition', 'Field-Tested')
                 tier = item.get('tier', None)
                 
@@ -977,7 +1030,7 @@ def get_random_item(case_id):
 
     if case['items']:
         fallback_item = case['items'][0]
-        is_stattrak = random.random() < 0.1
+        is_stattrak = secure_random() < 0.1
         condition = fallback_item.get('condition', 'Field-Tested')
         tier = fallback_item.get('tier', None)
         rarity = fallback_item['rarity']
@@ -1022,8 +1075,8 @@ def get_random_sticker(capsule_id):
     if not capsule or not capsule.get('stickers'):
         return None
 
-    sticker = random.choice(capsule['stickers'])
-    is_stattrak = random.random() < 0.1
+    sticker = secure_choice(capsule["stickers"])
+    is_stattrak = secure_random() < 0.1
     value = calculate_item_value(sticker['rarity'], None, None, is_stattrak)
 
     if is_stattrak:
@@ -1608,7 +1661,7 @@ async def daily(interaction: discord.Interaction):
             streak = 1
 
         reward = 500 + (streak * 100)
-        jackpot_hit = random.randint(1, 1000000) == 1
+        jackpot_hit = secure_randint(1, 1000000) == 1
 
         if jackpot_hit:
             reward += 50000
@@ -2258,312 +2311,180 @@ async def jackpot(interaction: discord.Interaction, amount: float):
     if not await is_bot_channel(interaction):
         return
 
-    global jackpot_pot, jackpot_entries
+    if amount < 100:
+        await interaction.response.send_message("❌ Minimum bet is $100!", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    await ensure_user_exists(interaction.user.id, interaction.user.display_name)
+
+    # Fix 3 + Fix 7: DB-backed entry; determine winner inside lock but send outside
+    winner_id = None
+    win_amount = 0
+    pot_total = 0.0
 
     async with jackpot_lock:
-        if amount < 100:
-            await interaction.response.send_message("❌ Minimum bet is $100!", ephemeral=True)
+        success = await jackpot_enter(interaction.user.id, amount)
+        if not success:
+            await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
             return
 
-        await interaction.response.defer()
-
+        # Read current state to decide if jackpot should draw
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-                
-                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-                if not user or user['balance'] < amount:
-                    await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
-                    return
+            pot_row    = await conn.fetchrow("SELECT pot FROM jackpot_state WHERE id = 1")
+            entry_count = await conn.fetchval("SELECT COUNT(*) FROM jackpot_entries")
+            pot_total   = float(pot_row['pot']) if pot_row else 0.0
 
-                await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", amount, interaction.user.id)
+        should_draw = entry_count >= 3 or pot_total >= 5000
 
-        jackpot_pot += amount
-        jackpot_entries.append({"user_id": interaction.user.id, "amount": amount, "username": interaction.user.display_name})
+        if should_draw:
+            # Fix 7: draw winner inside lock (DB txn), then release before sending
+            winner_id, win_amount, pot_total = await jackpot_draw()
+            if winner_id:
+                async with db_pool.acquire() as conn:
+                    await update_quest_progress(winner_id, "jackpot_win", 1, conn)
+
+    # Network I/O is now OUTSIDE the lock (Fix 7)
+    if winner_id:
+        try:
+            winner_user = await bot.fetch_user(winner_id)
+            winner_name = winner_user.display_name
+        except Exception:
+            winner_name = str(winner_id)
+
+        winner_embed = discord.Embed(title="🏆 JACKPOT WINNER!", color=discord.Color.gold())
+        winner_embed.add_field(name="Winner", value=winner_name, inline=False)
+        winner_embed.add_field(name="Won",       value=f"${win_amount:,.2f}", inline=True)
+        winner_embed.add_field(name="Total Pot", value=f"${pot_total:,.2f}",  inline=True)
+        winner_embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=winner_embed)
+    else:
+        # Still gathering entries
+        async with db_pool.acquire() as conn:
+            pot_row    = await conn.fetchrow("SELECT pot FROM jackpot_state WHERE id = 1")
+            entry_count = await conn.fetchval("SELECT COUNT(*) FROM jackpot_entries")
+            pot_total   = float(pot_row['pot']) if pot_row else 0.0
 
         embed = discord.Embed(title="🎲 Joined Jackpot!", color=discord.Color.green())
-        embed.add_field(name="Your Bet", value=f"${amount:,.2f}", inline=True)
-        embed.add_field(name="Total Pot", value=f"${jackpot_pot:,.2f}", inline=True)
-        embed.add_field(name="Total Players", value=len(jackpot_entries), inline=True)
-
-        if len(jackpot_entries) >= 3 or jackpot_pot >= 5000:
-            winner = random.choice(jackpot_entries)
-            win_amount = int(jackpot_pot * 0.95)
-
-            async with db_pool.acquire() as conn:
-                async with conn.transaction():
-                    await ensure_user_exists(winner['user_id'], winner['username'], conn)
-                    await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", win_amount, winner['user_id'])
-                    await update_quest_progress(winner['user_id'], "jackpot_win", 1, conn)
-
-            winner_embed = discord.Embed(title="🏆 JACKPOT WINNER!", color=discord.Color.gold())
-            winner_embed.add_field(name="Winner", value=winner['username'], inline=False)
-            winner_embed.add_field(name="Won", value=f"${win_amount:,.2f}", inline=True)
-            winner_embed.add_field(name="Total Pot", value=f"${jackpot_pot:,.2f}", inline=True)
-            winner_embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-
-            jackpot_pot = 0
-            jackpot_entries = []
-            await interaction.followup.send(embed=winner_embed)
-        else:
-            embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-            await interaction.followup.send(embed=embed)
+        embed.add_field(name="Your Bet",       value=f"${amount:,.2f}",   inline=True)
+        embed.add_field(name="Total Pot",      value=f"${pot_total:,.2f}", inline=True)
+        embed.add_field(name="Total Players",  value=str(entry_count),    inline=True)
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
 
 # ============================================
 # TRADE-UP COMMANDS
 # ============================================
 
-@bot.tree.command(name="tradeup", description="Trade 10 Blue weapons for 1 Purple weapon")
-async def tradeup_weapons(interaction: discord.Interaction, item_ids: str):
-    if not await is_bot_channel(interaction):
+# ============================================
+# TRADE-UP COMMANDS  (Fix 15: unified helper)
+# ============================================
+
+async def _run_tradeup(
+    interaction: discord.Interaction,
+    input_rarity: str,
+    required_count: int = 10
+):
+    """
+    Fix 2 + Fix 15: Generic trade-up with FOR UPDATE SKIP LOCKED to prevent
+    race conditions, and a single code path for all rarity levels.
+    """
+    output_rarity = TRADE_UP_PROGRESSION.get(input_rarity)
+    if not output_rarity:
+        await interaction.response.send_message("❌ Invalid rarity for trade-up.", ephemeral=True)
         return
 
     await interaction.response.defer()
 
     try:
-        ids = [int(x.strip()) for x in item_ids.split(',')]
-    except:
-        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/tradeup 1,2,3,4,5,6,7,8,9,10`", ephemeral=True)
-        return
-
-    if len(ids) != 10:
-        await interaction.followup.send("❌ You need exactly 10 items to trade up!", ephemeral=True)
-        return
-
-    try:
         async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-                
-                items = []
-                for item_id in ids:
-                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Blue' AND item_type = 'weapon' AND status = 'kept'", item_id, interaction.user.id)
-                    if not item:
-                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Blue weapon!", ephemeral=True)
-                        return
-                    items.append(item)
 
-                for item in items:
-                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
+                # Fix 2: Lock rows before reading to prevent concurrent double-spend
+                items = await conn.fetch("""
+                    SELECT id, item_name, price FROM inventory
+                    WHERE user_id = $1 AND rarity = $2 AND status = 'kept'
+                    ORDER BY price ASC
+                    LIMIT $3
+                    FOR UPDATE SKIP LOCKED
+                """, interaction.user.id, input_rarity, required_count)
 
-                is_stattrak = random.random() < 0.1
-                possible_items = []
-                for case in CASES.values():
-                    for item in case['items']:
-                        if item['rarity'] == 'Purple':
-                            possible_items.append(item)
+                if len(items) < required_count:
+                    await interaction.followup.send(
+                        f"❌ You need {required_count} {input_rarity} items. You only have {len(items)} available.",
+                        ephemeral=True
+                    )
+                    return
 
+                item_ids_to_delete = [r['id'] for r in items]
+                await conn.execute("DELETE FROM inventory WHERE id = ANY($1::int[])", item_ids_to_delete)
+
+                # Generate result item using secure RNG (Fix 1)
+                possible_items = [
+                    i for case in CASES.values()
+                    for i in case['items'] if i['rarity'] == output_rarity
+                ]
                 if not possible_items:
-                    possible_items = [{"name": "Mystery Purple Item", "condition": "Field-Tested", "tier": None}]
+                    possible_items = [{"name": f"Mystery {output_rarity} Item", "condition": "Field-Tested", "tier": None}]
 
-                new_item_template = random.choice(possible_items)
-                condition = new_item_template.get('condition', 'Field-Tested')
-                
-                float_value = generate_skin_float()
-                condition_from_float = get_skin_condition(float_value)
-                
-                new_value = calculate_item_value('Purple', condition, None, is_stattrak)
-                float_multiplier = {
-                    "Factory New": 2.0,
-                    "Minimal Wear": 1.5,
-                    "Field-Tested": 1.0,
-                    "Well-Worn": 0.75,
-                    "Battle-Scarred": 0.5
-                }.get(condition_from_float, 1.0)
-                new_value = round(new_value * float_multiplier, 2)
-                
-                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
+                new_item_template = secure_choice(possible_items)
+                float_value       = generate_skin_float()
+                condition         = get_skin_condition(float_value)
+                is_stattrak       = secure_random() < 0.1
+                new_value         = calculate_item_value(output_rarity, condition, None, is_stattrak)
+                name              = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
 
-                await conn.execute("""INSERT INTO inventory 
-                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
-                    VALUES ($1, $2, 'weapon', 'Purple', $3, $4, $5, $6)""",
-                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
-                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
+                await conn.execute("""
+                    INSERT INTO inventory
+                        (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value)
+                    VALUES ($1, $2, 'weapon', $3, $4, $5, $6, $7)
+                """, interaction.user.id, name, output_rarity, new_value, condition, is_stattrak, float_value)
+                await conn.execute(
+                    "UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1",
+                    interaction.user.id
+                )
                 await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
 
-                rarity_emoji = RARITY_EMOJIS.get('Purple', "🟪")
-                embed = discord.Embed(title="🔄 Trade-Up Complete! (Blue → Purple)", color=discord.Color.purple())
-                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
-                embed.add_field(name="Received", value=f"{rarity_emoji} **{name}**", inline=False)
-                embed.add_field(name="Rarity", value=f"{rarity_emoji} Purple", inline=True)
-                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
-                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
-                if is_stattrak:
-                    embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
-                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-                await interaction.followup.send(embed=embed)
+        rarity_emoji = RARITY_EMOJIS.get(output_rarity, "")
+        embed = discord.Embed(
+            title=f"🔄 Trade-Up Complete! ({input_rarity} → {output_rarity})",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Received",    value=f"{rarity_emoji} **{name}**", inline=False)
+        embed.add_field(name="Rarity",      value=f"{rarity_emoji} {output_rarity}", inline=True)
+        embed.add_field(name="🔢 Float",    value=f"{float_value:.4f}",  inline=True)
+        embed.add_field(name="Value",       value=f"${new_value:,.2f}",  inline=True)
+        if is_stattrak:
+            embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
     except Exception as e:
-        logger.error(f"Tradeup error: {e}")
+        logger.error(f"Tradeup error ({input_rarity}→{output_rarity}): {e}")
         await interaction.followup.send(f"❌ Error during trade-up: {str(e)[:100]}", ephemeral=True)
+
+@bot.tree.command(name="tradeup", description="Trade 10 Blue weapons for 1 Purple weapon")
+async def tradeup_weapons(interaction: discord.Interaction, item_ids: str):
+    if not await is_bot_channel(interaction):
+        return
+    await _run_tradeup(interaction, "Blue")
 
 @bot.tree.command(name="tradeup_purple", description="Trade 10 Purple weapons for 1 Pink weapon")
 async def tradeup_purple(interaction: discord.Interaction, item_ids: str):
     if not await is_bot_channel(interaction):
         return
-
-    await interaction.response.defer()
-
-    try:
-        ids = [int(x.strip()) for x in item_ids.split(',')]
-    except:
-        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/tradeup_purple 1,2,3,4,5,6,7,8,9,10`", ephemeral=True)
-        return
-
-    if len(ids) != 10:
-        await interaction.followup.send("❌ You need exactly 10 Purple items to trade up!", ephemeral=True)
-        return
-
-    try:
-        async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-                
-                items = []
-                for item_id in ids:
-                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Purple' AND item_type = 'weapon' AND status = 'kept'", item_id, interaction.user.id)
-                    if not item:
-                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Purple weapon!", ephemeral=True)
-                        return
-                    items.append(item)
-
-                for item in items:
-                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
-
-                is_stattrak = random.random() < 0.1
-                possible_items = []
-                for case in CASES.values():
-                    for item in case['items']:
-                        if item['rarity'] == 'Pink':
-                            possible_items.append(item)
-
-                if not possible_items:
-                    possible_items = [{"name": "Mystery Pink Item", "condition": "Field-Tested", "tier": None}]
-
-                new_item_template = random.choice(possible_items)
-                condition = new_item_template.get('condition', 'Field-Tested')
-                
-                float_value = generate_skin_float()
-                condition_from_float = get_skin_condition(float_value)
-                
-                new_value = calculate_item_value('Pink', condition, None, is_stattrak)
-                float_multiplier = {
-                    "Factory New": 2.0,
-                    "Minimal Wear": 1.5,
-                    "Field-Tested": 1.0,
-                    "Well-Worn": 0.75,
-                    "Battle-Scarred": 0.5
-                }.get(condition_from_float, 1.0)
-                new_value = round(new_value * float_multiplier, 2)
-                
-                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
-
-                await conn.execute("""INSERT INTO inventory 
-                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
-                    VALUES ($1, $2, 'weapon', 'Pink', $3, $4, $5, $6)""",
-                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
-                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
-                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
-
-                rarity_emoji = RARITY_EMOJIS.get('Pink', "💗")
-                embed = discord.Embed(title="🔄 Trade-Up Complete! (Purple → Pink)", color=discord.Color.purple())
-                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
-                embed.add_field(name="Received", value=f"{rarity_emoji} **{name}**", inline=False)
-                embed.add_field(name="Rarity", value=f"{rarity_emoji} Pink", inline=True)
-                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
-                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
-                if is_stattrak:
-                    embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
-                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-                await interaction.followup.send(embed=embed)
-    except Exception as e:
-        logger.error(f"Tradeup purple error: {e}")
-        await interaction.followup.send(f"❌ Error during trade-up: {str(e)[:100]}", ephemeral=True)
+    await _run_tradeup(interaction, "Purple")
 
 @bot.tree.command(name="tradeup_pink", description="Trade 10 Pink weapons for 1 Red weapon")
 async def tradeup_pink(interaction: discord.Interaction, item_ids: str):
     if not await is_bot_channel(interaction):
         return
-
-    await interaction.response.defer()
-
-    try:
-        ids = [int(x.strip()) for x in item_ids.split(',')]
-    except:
-        await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/tradeup_pink 1,2,3,4,5,6,7,8,9,10`", ephemeral=True)
-        return
-
-    if len(ids) != 10:
-        await interaction.followup.send("❌ You need exactly 10 Pink items to trade up!", ephemeral=True)
-        return
-
-    try:
-        async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-                
-                items = []
-                for item_id in ids:
-                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Pink' AND item_type = 'weapon' AND status = 'kept'", item_id, interaction.user.id)
-                    if not item:
-                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Pink weapon!", ephemeral=True)
-                        return
-                    items.append(item)
-
-                for item in items:
-                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
-
-                is_stattrak = random.random() < 0.1
-                possible_items = []
-                for case in CASES.values():
-                    for item in case['items']:
-                        if item['rarity'] == 'Red':
-                            possible_items.append(item)
-
-                if not possible_items:
-                    possible_items = [{"name": "Mystery Red Item", "condition": "Field-Tested", "tier": None}]
-
-                new_item_template = random.choice(possible_items)
-                condition = new_item_template.get('condition', 'Field-Tested')
-                
-                float_value = generate_skin_float()
-                condition_from_float = get_skin_condition(float_value)
-                
-                new_value = calculate_item_value('Red', condition, None, is_stattrak)
-                float_multiplier = {
-                    "Factory New": 2.0,
-                    "Minimal Wear": 1.5,
-                    "Field-Tested": 1.0,
-                    "Well-Worn": 0.75,
-                    "Battle-Scarred": 0.5
-                }.get(condition_from_float, 1.0)
-                new_value = round(new_value * float_multiplier, 2)
-                
-                name = f"{'StatTrak™ ' if is_stattrak else ''}{new_item_template['name']}"
-
-                await conn.execute("""INSERT INTO inventory 
-                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
-                    VALUES ($1, $2, 'weapon', 'Red', $3, $4, $5, $6)""",
-                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
-                await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
-                await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
-
-                rarity_emoji = RARITY_EMOJIS.get('Red', "🔴")
-                embed = discord.Embed(title="🔄 Trade-Up Complete! (Pink → Red)", color=discord.Color.purple())
-                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
-                embed.add_field(name="Received", value=f"{rarity_emoji} **{name}**", inline=False)
-                embed.add_field(name="Rarity", value=f"{rarity_emoji} Red", inline=True)
-                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
-                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
-                if is_stattrak:
-                    embed.add_field(name="🔥 StatTrak™", value="Rare variant!", inline=False)
-                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-                await interaction.followup.send(embed=embed)
-    except Exception as e:
-        logger.error(f"Tradeup pink error: {e}")
-        await interaction.followup.send(f"❌ Error during trade-up: {str(e)[:100]}", ephemeral=True)
+    await _run_tradeup(interaction, "Pink")
 
 # ============================================
-# GOLD TRADE COMMAND
+# GOLD TRADE COMMAND  (Fix 2 + Fix 13)
 # ============================================
 
 @bot.tree.command(name="goldtrade", description="Trade gold items for higher tier (5 items)")
@@ -2575,7 +2496,7 @@ async def gold_tradeup(interaction: discord.Interaction, item_ids: str):
 
     try:
         ids = [int(x.strip()) for x in item_ids.split(',')]
-    except:
+    except Exception:
         await interaction.followup.send("❌ Please provide comma-separated item IDs! Example: `/goldtrade 1,2,3,4,5`", ephemeral=True)
         return
 
@@ -2587,65 +2508,62 @@ async def gold_tradeup(interaction: discord.Interaction, item_ids: str):
         async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-                
-                items = []
-                tiers = []
-                for item_id in ids:
-                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND rarity = 'Gold' AND status = 'kept'", item_id, interaction.user.id)
-                    if not item:
-                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a Gold item!", ephemeral=True)
-                        return
-                    items.append(item)
-                    tiers.append(item.get('tier', 'Common'))
 
-                tier_index = 0
-                for t in tiers:
-                    if t in GOLD_TIER_PROGRESSION:
-                        idx = GOLD_TIER_PROGRESSION.index(t)
-                        if idx > tier_index:
-                            tier_index = idx
+                # Fix 2: FOR UPDATE SKIP LOCKED prevents concurrent double-spend
+                items = await conn.fetch("""
+                    SELECT id, tier FROM inventory
+                    WHERE id = ANY($1::int[]) AND user_id = $2
+                      AND rarity = 'Gold' AND status = 'kept'
+                    FOR UPDATE SKIP LOCKED
+                """, ids, interaction.user.id)
 
-                if tier_index >= len(GOLD_TIER_PROGRESSION) - 1:
-                    await interaction.followup.send("❌ Cannot trade up - already at maximum tier!", ephemeral=True)
+                if len(items) < 5:
+                    await interaction.followup.send(
+                        f"❌ Only {len(items)} of those Gold items are available (concurrent conflict or wrong IDs).",
+                        ephemeral=True
+                    )
+                    return
+
+                # Fix 13: Infer next tier from input items (was always 'Rare' before)
+                input_tiers = [item.get('tier', 'Common') for item in items]
+                valid_tiers = [t for t in input_tiers if t in GOLD_TIER_PROGRESSION]
+                if not valid_tiers:
+                    await interaction.followup.send("❌ No valid gold tier found in input items.", ephemeral=True)
+                    return
+
+                tier_index = max(GOLD_TIER_PROGRESSION.index(t) for t in valid_tiers)
+                if tier_index + 1 >= len(GOLD_TIER_PROGRESSION):
+                    await interaction.followup.send("❌ Cannot trade up — already at maximum tier (Mythic)!", ephemeral=True)
                     return
 
                 next_tier = GOLD_TIER_PROGRESSION[tier_index + 1]
 
-                for item in items:
-                    await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
+                item_ids_to_delete = [r['id'] for r in items]
+                await conn.execute("DELETE FROM inventory WHERE id = ANY($1::int[])", item_ids_to_delete)
 
-                is_stattrak = random.random() < 0.1
-                
-                float_value = generate_skin_float()
+                # Fix 1: Use secure RNG
+                is_stattrak        = secure_random() < 0.1
+                float_value        = generate_skin_float()
                 condition_from_float = get_skin_condition(float_value)
-                
-                new_value = calculate_item_value("Gold", "Factory New", next_tier, is_stattrak)
-                float_multiplier = {
-                    "Factory New": 2.0,
-                    "Minimal Wear": 1.5,
-                    "Field-Tested": 1.0,
-                    "Well-Worn": 0.75,
-                    "Battle-Scarred": 0.5
-                }.get(condition_from_float, 1.0)
-                new_value = round(new_value * float_multiplier, 2)
-                
-                name = f"{'StatTrak™ ' if is_stattrak else ''}{next_tier} Gold Item"
+                new_value          = calculate_item_value("Gold", condition_from_float, next_tier, is_stattrak)
+                name               = f"{'StatTrak™ ' if is_stattrak else ''}{next_tier} Gold Item"
 
-                await conn.execute("""INSERT INTO inventory 
-                    (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value) 
-                    VALUES ($1, $2, 'weapon', 'Gold', $3, $4, $5, $6)""",
-                    interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
+                await conn.execute("""
+                    INSERT INTO inventory
+                        (user_id, item_name, item_type, rarity, price, condition, is_stattrak, float_value)
+                    VALUES ($1, $2, 'weapon', 'Gold', $3, $4, $5, $6)
+                """, interaction.user.id, name, new_value, condition_from_float, is_stattrak, float_value)
                 await conn.execute("UPDATE users SET total_trades = total_trades + 1 WHERE user_id = $1", interaction.user.id)
                 await update_quest_progress(interaction.user.id, "trade_up", 1, conn)
 
-                embed = discord.Embed(title="🔄 Gold Trade-Up Complete!", color=discord.Color.gold())
-                embed.add_field(name="Traded Items (IDs)", value=", ".join(str(id) for id in ids), inline=False)
-                embed.add_field(name="Received", value=f"⭐ **{name}**", inline=False)
-                embed.add_field(name="Tier", value=next_tier, inline=True)
-                embed.add_field(name="🔢 Float", value=f"{float_value:.4f}", inline=True)
-                embed.add_field(name="Value", value=f"${new_value:,.2f}", inline=True)
-                embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-                await interaction.followup.send(embed=embed)
+        embed = discord.Embed(title="🔄 Gold Trade-Up Complete!", color=discord.Color.gold())
+        embed.add_field(name="Received",  value=f"⭐ **{name}**",         inline=False)
+        embed.add_field(name="Tier",      value=next_tier,                 inline=True)
+        embed.add_field(name="🔢 Float",  value=f"{float_value:.4f}",     inline=True)
+        embed.add_field(name="Value",     value=f"${new_value:,.2f}",      inline=True)
+        embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+
     except Exception as e:
         logger.error(f"Gold trade error: {e}")
         await interaction.followup.send(f"❌ Error during gold trade: {str(e)[:100]}", ephemeral=True)
@@ -2702,7 +2620,7 @@ async def sticker_tradeup(interaction: discord.Interaction, item_ids: str):
                 for item in items:
                     await conn.execute("DELETE FROM inventory WHERE id = $1", item['id'])
 
-                is_stattrak = random.random() < 0.1
+                is_stattrak = secure_random() < 0.1
                 new_value = calculate_item_value(next_rarity, None, None, is_stattrak)
                 name = f"{'StatTrak™ ' if is_stattrak else ''}Mystery {next_rarity} Sticker"
 
@@ -2756,13 +2674,13 @@ async def quick_tradeup(interaction: discord.Interaction, rarity: str):
                     await interaction.followup.send(f"❌ You need {config['count']} {config['rarity']} items for trade-up! You have {len(items)}.", ephemeral=True)
                     return
 
-                selected_items = random.sample(items, config['count'])
+                selected_items = secure_shuffle(list(items))[:config["count"]]
                 selected_ids = [item['id'] for item in selected_items]
 
                 for item_id in selected_ids:
                     await conn.execute("DELETE FROM inventory WHERE id = $1", item_id)
 
-                is_stattrak = random.random() < 0.1
+                is_stattrak = secure_random() < 0.1
                 possible_items = []
                 for case in CASES.values():
                     for item in case['items']:
@@ -2772,7 +2690,7 @@ async def quick_tradeup(interaction: discord.Interaction, rarity: str):
                 if not possible_items:
                     possible_items = [{"name": f"Mystery {config['next']} Item", "condition": "Field-Tested"}]
 
-                new_item_template = random.choice(possible_items)
+                new_item_template = secure_choice(possible_items)
                 condition = new_item_template.get('condition', 'Field-Tested')
                 
                 float_value = generate_skin_float()
@@ -2969,7 +2887,7 @@ async def create_giveaway(interaction: discord.Interaction, prize: str, duration
                 await interaction.channel.send(f"🎉 Giveaway for **{prize}** ended with no entries!")
                 return
 
-            winners_list = random.sample([e['user_id'] for e in entries], min(winners, len(entries)))
+            winners_list = secure_shuffle([e['user_id'] for e in entries])[:min(winners, len(entries))]
             winner_mentions = []
             for winner_id in winners_list:
                 user = await bot.fetch_user(winner_id)
@@ -3004,7 +2922,7 @@ async def reroll_giveaway(interaction: discord.Interaction, giveaway_id: int):
             await interaction.followup.send("❌ No entries to reroll!", ephemeral=True)
             return
 
-        new_winners = random.sample([e['user_id'] for e in entries], min(giveaway['winner_count'], len(entries)))
+        new_winners = secure_shuffle([e['user_id'] for e in entries])[:min(giveaway['winner_count'], len(entries))]
         winner_mentions = []
         for winner_id in new_winners:
             user = await bot.fetch_user(winner_id)
@@ -3157,7 +3075,7 @@ async def join_coinflip_game(game_id: int, user_id: int) -> dict:
                 user_id, game_id
             )
             
-            winner_id = random.choice([game['creator_id'], user_id])
+            winner_id = secure_choice([game['creator_id'], user_id])
             win_amount = int(game['amount'] * 1.95)
             
             await conn.execute(
@@ -3200,7 +3118,7 @@ async def play_dice(user_id: int, amount: float, bet_type: str, bet_number: int)
                 amount, user_id
             )
             
-            roll = random.randint(1, 100)
+            roll = secure_randint(1, 100)
             win = (roll > bet_number) if bet_type == 'over' else (roll < bet_number)
             
             if bet_type == 'over':
@@ -3265,7 +3183,7 @@ async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine
             )
             
             total_tiles = grid_size * grid_size
-            mine_positions = random.sample(range(total_tiles), mine_count)
+            mine_positions = secure_shuffle(list(range(total_tiles)))[:mine_count]
             
             result = await conn.fetchrow(
                 """INSERT INTO mines_games 
@@ -3321,7 +3239,7 @@ async def reveal_mines_tile(game_id: int, user_id: int, tile_index: int) -> dict
                 mine_positions = game.get('mine_positions', [])
                 if not mine_positions or len(mine_positions) == 0:
                     total_tiles = game['grid_size'] * game['grid_size']
-                    mine_positions = random.sample(range(total_tiles), game['mine_count'])
+                    mine_positions = secure_shuffle(list(range(total_tiles)))[:game['mine_count']]
                     await conn.execute(
                         "UPDATE mines_games SET mine_positions = $1 WHERE id = $2",
                         mine_positions, game_id
@@ -3589,7 +3507,7 @@ async def play_slots(user_id: int, amount: float) -> dict:
                 amount, user_id
             )
             
-            symbols = [random.choice(SLOT_SYMBOLS)['emoji'] for _ in range(3)]
+            symbols = [secure_choice(SLOT_SYMBOLS)['emoji'] for _ in range(3)]
             result_str = ''.join(symbols)
             multiplier = SLOT_PAYOUTS.get(result_str, 0)
             win_amount = int(amount * multiplier) if multiplier > 0 else 0
@@ -3656,7 +3574,7 @@ async def cmd_coinflip(interaction: discord.Interaction, amount: float):
             )
             
             # Computer flips coin - 50/50 chance
-            user_wins = random.choice([True, False])
+            user_wins = secure_random() < 0.5
             
             if user_wins:
                 win_amount = int(amount * 1.95)  # 95% payout
@@ -3991,7 +3909,7 @@ async def skin_upgrade(user_id: int, item_id: int) -> dict:
             
             chances = {'Blue': 0.8, 'Purple': 0.6, 'Pink': 0.4, 'Red': 0.25}
             success_chance = chances.get(current_rarity, 0.5)
-            success = random.random() < success_chance
+            success = secure_random() < success_chance
             
             upgrade_cost = {'Blue': 10, 'Purple': 50, 'Pink': 200, 'Red': 1000}.get(current_rarity, 10)
             
@@ -4012,14 +3930,14 @@ async def skin_upgrade(user_id: int, item_id: int) -> dict:
                         if case_item['rarity'] == next_rarity:
                             possible_items.append(case_item)
                 
-                new_item_template = random.choice(possible_items) if possible_items else {
+                new_item_template = secure_choice(possible_items) if possible_items else {
                     'name': f'Mystery {next_rarity} Item',
                     'rarity': next_rarity,
                     'condition': 'Field-Tested',
                     'tier': None
                 }
                 
-                is_stattrak = random.random() < 0.1
+                is_stattrak = secure_random() < 0.1
                 float_value = generate_skin_float()
                 condition_from_float = get_skin_condition(float_value)
                 base_value = calculate_item_value(next_rarity, new_item_template.get('condition', 'Field-Tested'), 

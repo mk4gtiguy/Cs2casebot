@@ -4,16 +4,41 @@
 # ============================================================
 
 import random
+import secrets
 import time
 import logging
 import re
 import os
+import json
 import math
 import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Set, Any, Tuple
 from fastapi import HTTPException, Request
 import asyncpg
+
+# ── Secure RNG helpers (Fix 1) ───────────────────────────────
+_sysrandom = random.SystemRandom()   # CSPRNG-backed drop-in for random.*
+
+def secure_random() -> float:
+    """Return a float in [0.0, 1.0) using OS entropy."""
+    return secrets.randbelow(10_000_000) / 10_000_000
+
+def secure_randint(a: int, b: int) -> int:
+    """Return a random int in [a, b] inclusive, using OS entropy."""
+    return a + secrets.randbelow(b - a + 1)
+
+def secure_choice(seq):
+    """Choose a random element from a non-empty sequence, using OS entropy."""
+    return seq[secrets.randbelow(len(seq))]
+
+def secure_shuffle(lst: list) -> list:
+    """Return a shuffled copy of lst using OS entropy (Fisher-Yates)."""
+    lst = list(lst)
+    for i in range(len(lst) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        lst[i], lst[j] = lst[j], lst[i]
+    return lst
 
 # ─── Logger ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -44,24 +69,115 @@ async def init_db(database_url: str) -> asyncpg.Pool:
 # SESSIONS
 # ============================================================
 
-sessions: Dict[str, Any] = {}
-SESSION_TTL = 7 * 24 * 3600  # 7 days
+# ============================================================
+# SESSIONS — Redis-backed (falls back to in-memory if no REDIS_URL)
+# ============================================================
+
+SESSION_TTL = 7 * 24 * 3600  # 7 days in seconds
+
+# Try to connect to Redis; fall back to in-memory dict if unavailable
+_redis_client = None
+_sessions_fallback: Dict[str, Any] = {}  # in-memory fallback
+
+def _get_redis():
+    global _redis_client
+    # If we have a cached client, verify it's still alive before returning it
+    if _redis_client is not None:
+        try:
+            _redis_client.ping()
+            return _redis_client
+        except Exception:
+            # Redis dropped — clear cached client so we retry below
+            _redis_client = None
+            logger.warning("⚠️ Redis connection lost — attempting reconnect")
+    redis_url = os.getenv("REDIS_URL", "")
+    if not redis_url:
+        return None
+    try:
+        import redis as _redis_lib
+        client = _redis_lib.Redis.from_url(redis_url, decode_responses=True, socket_timeout=2)
+        client.ping()  # verify connection
+        _redis_client = client
+        logger.info("✅ Redis session store connected")
+        return _redis_client
+    except Exception as e:
+        logger.warning(f"⚠️ Redis unavailable, using in-memory sessions: {e}")
+        return None
+
+# Public sessions dict kept for backward compat with code that reads sessions[token]
+# When Redis is active this is a no-op shim; when falling back it IS the store.
+sessions: Dict[str, Any] = _sessions_fallback
+
+def _session_key(token: str) -> str:
+    return f"session:{token}"
+
+def create_session(token: str, data: dict) -> None:
+    """Store a session. data must be JSON-serialisable."""
+    r = _get_redis()
+    if r:
+        try:
+            r.setex(_session_key(token), SESSION_TTL, json.dumps(data, default=str))
+            return
+        except Exception as e:
+            logger.warning(f"Redis set failed: {e}")
+    # fallback
+    data["created_at"] = data.get("created_at", datetime.now().isoformat())
+    _sessions_fallback[token] = data
+
+def get_session(token: str) -> Optional[dict]:
+    """Retrieve a session dict or None if missing/expired."""
+    r = _get_redis()
+    if r:
+        try:
+            raw = r.get(_session_key(token))
+            if raw:
+                return json.loads(raw)
+            return None
+        except Exception as e:
+            logger.warning(f"Redis get failed: {e}")
+    return _sessions_fallback.get(token)
+
+def delete_session(token: str) -> None:
+    """Delete a session."""
+    r = _get_redis()
+    if r:
+        try:
+            r.delete(_session_key(token))
+            return
+        except Exception as e:
+            logger.warning(f"Redis delete failed: {e}")
+    _sessions_fallback.pop(token, None)
 
 def clean_expired_sessions():
+    """Only needed for the in-memory fallback; Redis handles TTL natively."""
     now = datetime.now()
-    expired = [
-        k for k, v in sessions.items()
-        if (now - v.get("created_at", now)).total_seconds() > SESSION_TTL
-    ]
+    expired = []
+    for k, v in list(_sessions_fallback.items()):
+        try:
+            created = v.get("created_at")
+            if isinstance(created, str):
+                created = datetime.fromisoformat(created)
+            if created and (now - created).total_seconds() > SESSION_TTL:
+                expired.append(k)
+        except Exception:
+            pass
     for k in expired:
-        del sessions[k]
+        _sessions_fallback.pop(k, None)
 
 async def get_user_id_from_session(request: Request) -> Optional[int]:
     session_token = request.cookies.get("session_token")
-    if not session_token or session_token not in sessions:
+    if not session_token:
         return None
-    clean_expired_sessions()
-    return sessions[session_token]["user_id"]
+    data = get_session(session_token)
+    if not data:
+        return None
+    uid = data.get("user_id")
+    if uid is None:
+        return None
+    try:
+        return int(uid)   # always int — handles both str and int stored values
+    except (ValueError, TypeError):
+        return None
 
 async def require_auth(request: Request) -> int:
     user_id = await get_user_id_from_session(request)
@@ -210,601 +326,231 @@ FEATURED_CASES = [
 # ============================================================
 # CASES DATA — 37 Real CS2 Cases
 # ============================================================
-
 CASES = {
     "cs:go_weapon_case": {
-        "name": "CS:GO Weapon Case", "emoji": "📦", "price": 2.0,
-        "items": [
-            {"name": "MP7 | Skulls",           "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "AUG | Wings",             "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "SG 553 | Ultraviolet",    "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "Glock-18 | Dragon Tattoo","rarity": "Purple", "condition": "Well-Worn"},
-            {"name": "USP-S | Dark Water",      "rarity": "Purple", "condition": "Well-Worn"},
-            {"name": "M4A1-S | Dark Water",     "rarity": "Purple", "condition": "Battle-Scarred"},
-            {"name": "AK-47 | Case Hardened",   "rarity": "Pink",   "condition": "Well-Worn"},
-            {"name": "Desert Eagle | Hypnotic", "rarity": "Pink",   "condition": "Minimal Wear"},
-            {"name": "★ Bayonet",               "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Fade",        "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Slaughter",   "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "CS:GO Weapon Case",
+        "emoji": "📦",
+        "price": 2.0,
+        "collection": 'The Arms Deal Collection'
     },
     "esports_2013_case": {
-        "name": "eSports 2013 Case", "emoji": "🎯", "price": 2.0,
-        "items": [
-            {"name": "M4A4 | Faded Zebra",      "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "MAG-7 | Memento",         "rarity": "Blue",   "condition": "Minimal Wear"},
-            {"name": "FAMAS | Doomkitty",       "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "Galil AR | Orange DDPAT", "rarity": "Purple", "condition": "Well-Worn"},
-            {"name": "Sawed-Off | Orange DDPAT","rarity": "Purple", "condition": "Well-Worn"},
-            {"name": "P250 | Splash",           "rarity": "Purple", "condition": "Field-Tested"},
-            {"name": "AK-47 | Red Laminate",    "rarity": "Pink",   "condition": "Factory New"},
-            {"name": "AWP | BOOM",              "rarity": "Pink",   "condition": "Factory New"},
-            {"name": "★ Bayonet",               "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Fade",        "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Slaughter",   "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "eSports 2013 Case",
+        "emoji": "🎯",
+        "price": 2.0,
+        "collection": 'The eSports 2013 Collection'
     },
     "operation_phoenix_weapon_case": {
-        "name": "Operation Phoenix Weapon Case", "emoji": "⚡", "price": 2.5,
-        "items": [
-            {"name": "UMP-45 | Corporal",       "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "Negev | Terrain",         "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "Tec-9 | Sandstorm",       "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "MAG-7 | Heaven Guard",    "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "MAC-10 | Heat",           "rarity": "Purple", "condition": "Battle-Scarred"},
-            {"name": "SG 553 | Pulse",          "rarity": "Purple", "condition": "Minimal Wear"},
-            {"name": "FAMAS | Sergeant",        "rarity": "Purple", "condition": "Battle-Scarred"},
-            {"name": "USP-S | Guardian",        "rarity": "Purple", "condition": "Field-Tested"},
-            {"name": "★ Bayonet",               "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Fade",        "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Slaughter",   "rarity": "Gold",   "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Operation Phoenix Weapon Case",
+        "emoji": "⚡",
+        "price": 2.5,
+        "collection": 'The Phoenix Collection'
     },
     "huntsman_weapon_case": {
-        "name": "Huntsman Weapon Case", "emoji": "🔥", "price": 2.5,
-        "items": [
-            {"name": "Tec-9 | Isaac",           "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "SSG 08 | Slashed",        "rarity": "Blue",   "condition": "Minimal Wear"},
-            {"name": "Galil AR | Kami",         "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "CZ75-Auto | Twist",       "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "P90 | Module",            "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "P2000 | Pulse",           "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "AUG | Torque",            "rarity": "Purple", "condition": "Minimal Wear"},
-            {"name": "PP-Bizon | Antique",      "rarity": "Purple", "condition": "Minimal Wear"},
-            {"name": "★ Huntsman Knife",              "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Huntsman Knife | Fade",       "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Huntsman Knife | Crimson Web","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Huntsman Weapon Case",
+        "emoji": "🔥",
+        "price": 2.5,
+        "collection": 'The Huntsman Collection'
     },
     "operation_breakout_weapon_case": {
-        "name": "Operation Breakout Weapon Case", "emoji": "💎", "price": 2.5,
-        "items": [
-            {"name": "MP7 | Urban Hazard",      "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "Negev | Desert-Strike",   "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "P2000 | Ivory",           "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "SSG 08 | Abyss",          "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "UMP-45 | Labyrinth",      "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "PP-Bizon | Osiris",       "rarity": "Purple", "condition": "Field-Tested"},
-            {"name": "CZ75-Auto | Tigris",      "rarity": "Purple", "condition": "Factory New"},
-            {"name": "Nova | Koi",              "rarity": "Purple", "condition": "Field-Tested"},
-            {"name": "★ Butterfly Knife",              "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Butterfly Knife | Fade",       "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Butterfly Knife | Crimson Web","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Operation Breakout Weapon Case",
+        "emoji": "💎",
+        "price": 2.5,
+        "collection": 'The Breakout Collection'
     },
     "esports_2014_summer_case": {
-        "name": "eSports 2014 Summer Case", "emoji": "🌟", "price": 2.0,
-        "items": [
-            {"name": "SSG 08 | Dark Water",     "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "MAC-10 | Ultraviolet",    "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "USP-S | Blood Tiger",     "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "CZ75-Auto | Hexane",      "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "Negev | Bratatat",        "rarity": "Blue",   "condition": "Minimal Wear"},
-            {"name": "XM1014 | Red Python",     "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "PP-Bizon | Blue Streak",  "rarity": "Purple", "condition": "Minimal Wear"},
-            {"name": "P90 | Virus",             "rarity": "Purple", "condition": "Well-Worn"},
-            {"name": "★ Bayonet",               "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Fade",        "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Slaughter",   "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "eSports 2014 Summer Case",
+        "emoji": "🌟",
+        "price": 2.0,
+        "collection": 'The eSports 2014 Summer Collection'
     },
     "operation_vanguard_weapon_case": {
-        "name": "Operation Vanguard Weapon Case", "emoji": "🎨", "price": 2.5,
-        "items": [
-            {"name": "G3SG1 | Murky",           "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "MAG-7 | Firestarter",     "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "MP9 | Dart",              "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "Five-SeveN | Urban Hazard","rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "UMP-45 | Delusion",       "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "Glock-18 | Grinder",      "rarity": "Purple", "condition": "Well-Worn"},
-            {"name": "M4A1-S | Basilisk",       "rarity": "Purple", "condition": "Well-Worn"},
-            {"name": "M4A4 | Griffin",          "rarity": "Purple", "condition": "Factory New"},
-            {"name": "★ Bayonet",               "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Fade",        "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Slaughter",   "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Operation Vanguard Weapon Case",
+        "emoji": "🎨",
+        "price": 2.5,
+        "collection": 'The Vanguard Collection'
     },
     "chroma_case": {
-        "name": "Chroma Case", "emoji": "🌈", "price": 2.0,
-        "items": [
-            {"name": "Glock-18 | Catacombs",        "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "M249 | System Lock",           "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "MP9 | Deadly Poison",          "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "SCAR-20 | Grotto",             "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "XM1014 | Quicksilver",         "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "Dual Berettas | Urban Shock",  "rarity": "Purple", "condition": "Field-Tested"},
-            {"name": "Desert Eagle | Naga",          "rarity": "Purple", "condition": "Factory New"},
-            {"name": "MAC-10 | Malachite",           "rarity": "Purple", "condition": "Minimal Wear"},
-            {"name": "★ Bayonet | Marble Fade",      "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Tiger Tooth",      "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Doppler",          "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Chroma Case",
+        "emoji": "🌈",
+        "price": 2.0,
+        "collection": 'The Chroma Collection'
     },
     "chroma_2_case": {
-        "name": "Chroma 2 Case", "emoji": "💥", "price": 2.0,
-        "items": [
-            {"name": "AK-47 | Elite Build",     "rarity": "Blue",   "condition": "Minimal Wear"},
-            {"name": "MP7 | Armor Core",        "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "Desert Eagle | Bronze Deco","rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "P250 | Valence",          "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "Negev | Man-o'-war",      "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "Sawed-Off | Origami",     "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "AWP | Worm God",          "rarity": "Purple", "condition": "Factory New"},
-            {"name": "MAG-7 | Heat",            "rarity": "Purple", "condition": "Field-Tested"},
-            {"name": "★ Bayonet | Marble Fade", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Tiger Tooth", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Doppler",     "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Chroma 2 Case",
+        "emoji": "💥",
+        "price": 2.0,
+        "collection": 'The Chroma 2 Collection'
     },
     "falchion_case": {
-        "name": "Falchion Case", "emoji": "🌅", "price": 2.0,
-        "items": [
-            {"name": "Galil AR | Rocket Pop",   "rarity": "Blue",   "condition": "Minimal Wear"},
-            {"name": "Glock-18 | Bunsen Burner","rarity": "Blue",   "condition": "Factory New"},
-            {"name": "Nova | Ranger",           "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "P90 | Elite Build",       "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "UMP-45 | Riot",           "rarity": "Blue",   "condition": "Minimal Wear"},
-            {"name": "USP-S | Torque",          "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "FAMAS | Neural Net",      "rarity": "Purple", "condition": "Battle-Scarred"},
-            {"name": "M4A4 | Evil Daimyo",      "rarity": "Purple", "condition": "Battle-Scarred"},
-            {"name": "★ Falchion Knife",              "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Falchion Knife | Fade",       "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Falchion Knife | Crimson Web","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Falchion Case",
+        "emoji": "🌅",
+        "price": 2.0,
+        "collection": 'The Falchion Collection'
     },
     "shadow_case": {
-        "name": "Shadow Case", "emoji": "⚠️", "price": 2.0,
-        "items": [
-            {"name": "Dual Berettas | Dualing Dragons","rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "FAMAS | Survivor Z",             "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Glock-18 | Wraiths",             "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "MAC-10 | Rangeen",               "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "MAG-7 | Cobalt Core",            "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SCAR-20 | Green Marine",         "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "XM1014 | Scumbria",              "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "Galil AR | Stone Cold",          "rarity": "Purple","condition": "Minimal Wear"},
-            {"name": "★ Shadow Daggers",               "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Shadow Daggers | Fade",        "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Shadow Daggers | Crimson Web", "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Shadow Case",
+        "emoji": "⚠️",
+        "price": 2.0,
+        "collection": 'The Shadow Collection'
     },
     "revolver_case": {
-        "name": "Revolver Case", "emoji": "🤲", "price": 2.0,
-        "items": [
-            {"name": "R8 Revolver | Crimson Web",  "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "AUG | Ricochet",             "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "Desert Eagle | Corinthian",  "rarity": "Blue",   "condition": "Field-Tested"},
-            {"name": "P2000 | Imperial",           "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "Sawed-Off | Yorick",         "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "SCAR-20 | Outbreak",         "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "PP-Bizon | Fuel Rod",        "rarity": "Purple", "condition": "Factory New"},
-            {"name": "Five-SeveN | Retrobution",   "rarity": "Purple", "condition": "Battle-Scarred"},
-            {"name": "★ Bayonet",                  "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Fade",           "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Slaughter",      "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Revolver Case",
+        "emoji": "🤲",
+        "price": 2.0,
+        "collection": 'The Revolver Case Collection'
     },
     "operation_wildfire_case": {
-        "name": "Operation Wildfire Case", "emoji": "🎪", "price": 3.0,
-        "items": [
-            {"name": "PP-Bizon | Photic Zone",     "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "Dual Berettas | Cartel",     "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "MAC-10 | Lapis Gator",       "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "SSG 08 | Necropos",          "rarity": "Blue",   "condition": "Factory New"},
-            {"name": "Tec-9 | Jambiya",            "rarity": "Blue",   "condition": "Well-Worn"},
-            {"name": "USP-S | Lead Conduit",       "rarity": "Blue",   "condition": "Battle-Scarred"},
-            {"name": "FAMAS | Valence",            "rarity": "Purple", "condition": "Minimal Wear"},
-            {"name": "Five-SeveN | Triumvirate",   "rarity": "Purple", "condition": "Minimal Wear"},
-            {"name": "★ Bowie Knife",              "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bowie Knife | Fade",       "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bowie Knife | Crimson Web","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Operation Wildfire Case",
+        "emoji": "🎪",
+        "price": 3.0,
+        "collection": 'The Wildfire Collection'
     },
     "chroma_3_case": {
-        "name": "Chroma 3 Case", "emoji": "🏹", "price": 2.0,
-        "items": [
-            {"name": "Dual Berettas | Ventilators","rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "G3SG1 | Orange Crash",       "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "M249 | Spectre",             "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "MP9 | Bioleak",              "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "P2000 | Oceanic",            "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Sawed-Off | Fubar",          "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "SG 553 | Atlas",             "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "CZ75-Auto | Red Astor",      "rarity": "Purple","condition": "Field-Tested"},
-            {"name": "★ Bayonet | Marble Fade",    "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Tiger Tooth",    "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Doppler",        "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Chroma 3 Case",
+        "emoji": "🏹",
+        "price": 2.0,
+        "collection": 'The Chroma 3 Collection'
     },
     "gamma_case": {
-        "name": "Gamma Case", "emoji": "🗡️", "price": 2.5,
-        "items": [
-            {"name": "Five-SeveN | Violent Daimyo","rarity": "Blue",  "condition": "Factory New"},
-            {"name": "MAC-10 | Carnivore",         "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "Nova | Exo",                 "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "P250 | Iron Clad",           "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "PP-Bizon | Harvester",       "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SG 553 | Aerial",            "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "Tec-9 | Ice Cap",            "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "AUG | Aristocrat",           "rarity": "Purple","condition": "Field-Tested"},
-            {"name": "★ Bayonet | Gamma Doppler",  "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Gamma Doppler",  "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Gamma Doppler",  "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Gamma Case",
+        "emoji": "🗡️",
+        "price": 2.5,
+        "collection": 'The 2021 Train Collection'
     },
     "gamma_2_case": {
-        "name": "Gamma 2 Case", "emoji": "🛡️", "price": 2.5,
-        "items": [
-            {"name": "CZ75-Auto | Imprint",        "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Five-SeveN | Scumbria",      "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "G3SG1 | Ventilator",         "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Negev | Dazzle",             "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "P90 | Grim",                 "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "UMP-45 | Briefing",          "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "XM1014 | Slipstream",        "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Desert Eagle | Directive",   "rarity": "Purple","condition": "Minimal Wear"},
-            {"name": "★ Bayonet | Gamma Doppler",  "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Gamma Doppler",  "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bayonet | Gamma Doppler",  "rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Gamma 2 Case",
+        "emoji": "🛡️",
+        "price": 2.5,
+        "collection": 'The 2021 Train Collection'
     },
     "glove_case": {
-        "name": "Glove Case", "emoji": "👑", "price": 4.0,
-        "items": [
-            {"name": "CZ75-Auto | Polymer",            "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Glock-18 | Ironwork",            "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "MP7 | Cirrus",                   "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Galil AR | Black Sand",          "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "MP9 | Sand Scale",               "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "MAG-7 | Sonar",                  "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "P2000 | Turf",                   "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "Dual Berettas | Royal Consorts", "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Bloodhound Gloves | Snakebite","rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bloodhound Gloves | Bronzed",  "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Bloodhound Gloves | Charred",  "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Glove Case",
+        "emoji": "👑",
+        "price": 4.0,
+        "collection": 'The Glove Collection'
     },
     "spectrum_case": {
-        "name": "Spectrum Case", "emoji": "🎰", "price": 2.5,
-        "items": [
-            {"name": "PP-Bizon | Jungle Slipstream","rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "Five-SeveN | Boost Protocol", "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Galil AR | Crimson Tsunami",  "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "SCAR-20 | Bloodsport",        "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Tec-9 | Decimator",           "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "UMP-45 | Primal Saber",       "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "G3SG1 | Chronos",             "rarity": "Purple","condition": "Factory New"},
-            {"name": "AUG | Midnight Lily",         "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Navaja Knife",              "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Fade",       "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Crimson Web","rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Spectrum Case",
+        "emoji": "🎰",
+        "price": 2.5,
+        "collection": 'The Spectrum Collection'
     },
     "operation_hydra_case": {
-        "name": "Operation Hydra Case", "emoji": "🎲", "price": 2.0,
-        "items": [
-            {"name": "AUG | Stymphalian",           "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "Five-SeveN | Hyper Beast",    "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "G3SG1 | Stinger",             "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "MP5-SD | Phosphor",           "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Nova | Toy Soldier",          "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Sawed-Off | Devourer",        "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "SCAR-20 | Enforcer",          "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "P2000 | Imperial Dragon",     "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Navaja Knife",              "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Fade",       "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Crimson Web","rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Operation Hydra Case",
+        "emoji": "🎲",
+        "price": 2.0,
+        "collection": 'The Horizon Collection'
     },
     "spectrum_2_case": {
-        "name": "Spectrum 2 Case", "emoji": "🎳", "price": 2.5,
-        "items": [
-            {"name": "Dual Berettas | Metamorph",  "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "G3SG1 | Flux",               "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "MAC-10 | Aloha",             "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "MP9 | Capillary",            "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Nova | Gila",                "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "PP-Bizon | Azurite",         "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SSG 08 | Fever Dream",       "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "P250 | Hat Trick",           "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Navaja Knife",             "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Fade",      "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Crimson Web","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Spectrum 2 Case",
+        "emoji": "🎳",
+        "price": 2.5,
+        "collection": 'The Prisma 2 Collection'
     },
     "clutch_case": {
-        "name": "Clutch Case", "emoji": "🎭", "price": 2.0,
-        "items": [
-            {"name": "CZ75-Auto | Emerald Quartz",  "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "Five-SeveN | Angry Mob",      "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "Galil AR | Cerberus",         "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MP7 | Powercore",             "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Nova | Wild Six",             "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "R8 Revolver | Survivalist",   "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "Sawed-Off | Limelight",       "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "MP5-SD | Phosphor",           "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Shadow Daggers",            "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Shadow Daggers | Fade",     "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Shadow Daggers | Crimson Web","rarity": "Gold","tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Clutch Case",
+        "emoji": "🎭",
+        "price": 2.0,
+        "collection": 'The Horizon Collection'
     },
     "horizon_case": {
-        "name": "Horizon Case", "emoji": "🎪", "price": 2.0,
-        "items": [
-            {"name": "AK-47 | Neon Rider",         "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "CZ75-Auto | Eco",            "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "G3SG1 | High Seas",          "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Galil AR | Cerberus",        "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MP5-SD | Acid Wash",         "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Sawed-Off | Morris",         "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SCAR-20 | Bloodsport",       "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "P250 | Nevermore",           "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Ursus Knife",              "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Ursus Knife | Fade",       "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Ursus Knife | Marble Fade","rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Horizon Case",
+        "emoji": "🎪",
+        "price": 2.0,
+        "collection": 'The Horizon Collection'
     },
     "danger_zone_case": {
-        "name": "Danger Zone Case", "emoji": "🎯", "price": 2.0,
-        "items": [
-            {"name": "G3SG1 | Chronos",            "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "MP5-SD | Condition Zero",    "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "Nova | Toy Soldier",         "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "P2000 | Lifted Spirits",     "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SCAR-20 | Torn",             "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "SSG 08 | Death Strike",      "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Tec-9 | Bamboozle",          "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "R8 Revolver | Grip",         "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Paracord Knife",           "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Paracord Knife | Fade",    "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Paracord Knife | Slaughter","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Danger Zone Case",
+        "emoji": "🎯",
+        "price": 2.0,
+        "collection": 'The 2021 Dust 2 Collection'
     },
     "prisma_case": {
-        "name": "Prisma Case", "emoji": "🎱", "price": 2.5,
-        "items": [
-            {"name": "FAMAS | Crypsis",            "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "AK-47 | Uncharted",          "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MAC-10 | Whitefish",         "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "Galil AR | Akoben",          "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "MP7 | Mischief",             "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "P250 | Verdigris",           "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "P90 | Off World",            "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "AWP | Atheris",              "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Navaja Knife",             "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Marble Fade","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Tiger Tooth","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Prisma Case",
+        "emoji": "🎱",
+        "price": 2.5,
+        "collection": 'The Prisma Collection'
     },
     "shattered_web_case": {
-        "name": "Shattered Web Case", "emoji": "🔫", "price": 4.0,
-        "items": [
-            {"name": "MP5-SD | Acid Wash",         "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Nova | Plume",               "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "G3SG1 | Black Sand",         "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "R8 Revolver | Memento",      "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Dual Berettas | Balance",    "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "SCAR-20 | Torn",             "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "M249 | Warbird",             "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "PP-Bizon | Embargo",         "rarity": "Purple","condition": "Minimal Wear"},
-            {"name": "★ Nomad Knife",              "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Nomad Knife | Fade",       "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Nomad Knife | Crimson Web","rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Shattered Web Case",
+        "emoji": "🔫",
+        "price": 4.0,
+        "collection": 'The Shattered Web Collection'
     },
     "cs20_case": {
-        "name": "CS20 Case", "emoji": "🌙", "price": 2.5,
-        "items": [
-            {"name": "Dual Berettas | Elite 1.6", "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Tec-9 | Flash Out",         "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "MAC-10 | Classic Crate",    "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MAG-7 | Popdog",            "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SCAR-20 | Assault",         "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "FAMAS | Decommissioned",    "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "Glock-18 | Sacrifice",      "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "M249 | Aztec",              "rarity": "Purple","condition": "Battle-Scarred"},
-            {"name": "★ Classic Knife",           "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Classic Knife | Fade",    "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Classic Knife | Crimson Web","rarity": "Gold","tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "CS20 Case",
+        "emoji": "🌙",
+        "price": 2.5,
+        "collection": 'The CS20 Collection'
     },
     "prisma_2_case": {
-        "name": "Prisma 2 Case", "emoji": "🎂", "price": 2.0,
-        "items": [
-            {"name": "AUG | Tom Cat",             "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "AWP | Capillary",           "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "CZ75-Auto | Distressed",    "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Desert Eagle | Blue Ply",   "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "MP5-SD | Desert Strike",    "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "Negev | Prototype",         "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "R8 Revolver | Bone Forged", "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "P2000 | Acid Etched",       "rarity": "Purple","condition": "Field-Tested"},
-            {"name": "★ Navaja Knife",            "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Marble Fade","rarity": "Gold","tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Navaja Knife | Tiger Tooth","rarity": "Gold","tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Prisma 2 Case",
+        "emoji": "🎂",
+        "price": 2.0,
+        "collection": 'The Prisma 2 Collection'
     },
     "fracture_case": {
-        "name": "Fracture Case", "emoji": "💎", "price": 2.0,
-        "items": [
-            {"name": "Negev | Ultralight",        "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "P2000 | Gnarled",           "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "SG 553 | Ol' Rusty",        "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "SSG 08 | Mainframe 001",    "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "P250 | Cassette",           "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "P90 | Freight",             "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "PP-Bizon | Runic",          "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MAG-7 | Monster Call",      "rarity": "Purple","condition": "Well-Worn"},
-            {"name": "★ Nomad Knife",             "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Nomad Knife | Fade",      "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Nomad Knife | Crimson Web","rarity": "Gold", "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Fracture Case",
+        "emoji": "💎",
+        "price": 2.0,
+        "collection": 'The Fracture Collection'
     },
     "operation_broken_fang_case": {
-        "name": "Operation Broken Fang Case", "emoji": "⚡", "price": 3.5,
-        "items": [
-            {"name": "CZ75-Auto | Vendetta",      "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "P90 | Cocoa Rampage",       "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "G3SG1 | Digital Mesh",      "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "Galil AR | Vandal",         "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "P250 | Contaminant",        "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "M249 | Deep Relief",        "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "MP5-SD | Condition Zero",   "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "AWP | Exoskeleton",         "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Broken Fang Gloves | Yellow-banded","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Broken Fang Gloves | Unhinged",    "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Broken Fang Gloves | Needle Point","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-        ]
+        "name": "Operation Broken Fang Case",
+        "emoji": "⚡",
+        "price": 3.5,
+        "collection": 'The Operation Broken Fang Collection'
     },
     "snakebite_case": {
-        "name": "Snakebite Case", "emoji": "🌊", "price": 2.5,
-        "items": [
-            {"name": "SG 553 | Heavy Metal",      "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Glock-18 | Clear Polymer",  "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "M249 | O.S.I.P.R.",         "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "CZ75-Auto | Circaetus",     "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "UMP-45 | Oscillator",       "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "R8 Revolver | Junk Yard",   "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Nova | Windblown",           "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "P250 | Cyber Shell",        "rarity": "Purple","condition": "Well-Worn"},
-            {"name": "★ Broken Fang Gloves | Yellow-banded","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Broken Fang Gloves | Unhinged",    "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Broken Fang Gloves | Needle Point","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-        ]
+        "name": "Snakebite Case",
+        "emoji": "🌊",
+        "price": 2.5,
+        "collection": 'The Snakebite Collection'
     },
     "operation_riptide_case": {
-        "name": "Operation Riptide Case", "emoji": "🌪️", "price": 3.0,
-        "items": [
-            {"name": "AUG | Plague",              "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Dual Berettas | Tread",     "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "G3SG1 | Keeping Tabs",      "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "MP7 | Guerrilla",           "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "PP-Bizon | Lumen",          "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "USP-S | Black Lotus",       "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "XM1014 | Watchdog",         "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MAG-7 | BI83 Spectrum",     "rarity": "Purple","condition": "Well-Worn"},
-            {"name": "★ Bowie Knife | Gamma Doppler","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Bowie Knife | Gamma Doppler","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Bowie Knife | Gamma Doppler","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-        ]
+        "name": "Operation Riptide Case",
+        "emoji": "🌪️",
+        "price": 3.0,
+        "collection": 'The 2021 Train Collection'
     },
     "dreams_and_nightmares_case": {
-        "name": "Dreams & Nightmares Case", "emoji": "🎇", "price": 2.5,
-        "items": [
-            {"name": "Five-SeveN | Scrawl",       "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "MAC-10 | Ensnared",         "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "MAG-7 | Foresight",         "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MP5-SD | Necro Jr.",        "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "P2000 | Lifted Spirits",    "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "SCAR-20 | Poultrygeist",    "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "Sawed-Off | Spirit Board",  "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "PP-Bizon | Space Cat",      "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Bowie Knife | Gamma Doppler","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Bowie Knife | Gamma Doppler","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Bowie Knife | Gamma Doppler","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-        ]
+        "name": "Dreams & Nightmares Case",
+        "emoji": "🎇",
+        "price": 2.5,
+        "collection": 'The 2021 Train Collection'
     },
     "recoil_case": {
-        "name": "Recoil Case", "emoji": "📦", "price": 2.0,
-        "items": [
-            {"name": "FAMAS | Meow 36",           "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Galil AR | Destroyer",      "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "M4A4 | Poly Mag",           "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "MAC-10 | Monkeyflage",      "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Negev | Drop Me",           "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "UMP-45 | Roadblock",        "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "Glock-18 | Winterized",     "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "R8 Revolver | Crazy 8",     "rarity": "Purple","condition": "Well-Worn"},
-            {"name": "★ Broken Fang Gloves | Yellow-banded","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Broken Fang Gloves | Unhinged",    "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Broken Fang Gloves | Needle Point","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-        ]
+        "name": "Recoil Case",
+        "emoji": "📦",
+        "price": 2.0,
+        "collection": 'The Recoil Collection'
     },
     "revolution_case": {
-        "name": "Revolution Case", "emoji": "🎯", "price": 2.5,
-        "items": [
-            {"name": "MAG-7 | Insomnia",          "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MP9 | Featherweight",       "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "SCAR-20 | Fragments",       "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "P250 | Re.built",           "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "MP5-SD | Liquidation",      "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "SG 553 | Cyberforce",       "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "Tec-9 | Rebel",             "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "M4A1-S | Emphorosaur-S",    "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Driver Gloves | Imperial Plaid","rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Driver Gloves | King Snake",    "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Driver Gloves | Racing Green",  "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-        ]
+        "name": "Revolution Case",
+        "emoji": "🎯",
+        "price": 2.5,
+        "collection": 'The Revolution Collection'
     },
     "kilowatt_case": {
-        "name": "Kilowatt Case", "emoji": "⚡", "price": 3.5,
-        "items": [
-            {"name": "Dual Berettas | Hideout",   "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "MAC-10 | Light Box",        "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "Nova | Dark Sigil",         "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SSG 08 | Dezastre",         "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "Tec-9 | Slag",              "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "UMP-45 | Motorized",        "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "XM1014 | Irezumi",          "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Glock-18 | Block-18",       "rarity": "Purple","condition": "Minimal Wear"},
-            {"name": "★ Kukri Knife",             "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Kukri Knife | Fade",      "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Kukri Knife | Slaughter", "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Kilowatt Case",
+        "emoji": "⚡",
+        "price": 3.5,
+        "collection": 'The Kilowatt Collection'
     },
     "gallery_case": {
-        "name": "Gallery Case", "emoji": "🔥", "price": 3.0,
-        "items": [
-            {"name": "USP-S | 27",                "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "Desert Eagle | Calligraffiti","rarity": "Blue", "condition": "Battle-Scarred"},
-            {"name": "MP5-SD | Statics",          "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "AUG | Luxe Trim",           "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "M249 | Hypnosis",           "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "R8 Revolver | Tango",       "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "SCAR-20 | Trail Blazer",    "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "M4A4 | Turbine",            "rarity": "Purple","condition": "Factory New"},
-            {"name": "★ Kukri Knife",             "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Kukri Knife | Fade",      "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-            {"name": "★ Kukri Knife | Slaughter", "rarity": "Gold",  "tier": "Legendary", "condition": "Factory New"},
-        ]
+        "name": "Gallery Case",
+        "emoji": "🔥",
+        "price": 3.0,
+        "collection": 'The Gallery Collection'
     },
     "fever_case": {
-        "name": "Fever Case", "emoji": "💎", "price": 4.0,
-        "items": [
-            {"name": "M4A4 | Choppa",             "rarity": "Blue",  "condition": "Well-Worn"},
-            {"name": "MAG-7 | Resupply",          "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "SSG 08 | Memorial",         "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "P2000 | Sure Grip",         "rarity": "Blue",  "condition": "Battle-Scarred"},
-            {"name": "USP-S | PC-GRN",            "rarity": "Blue",  "condition": "Field-Tested"},
-            {"name": "MP9 | Nexus",               "rarity": "Blue",  "condition": "Minimal Wear"},
-            {"name": "XM1014 | Mockingbird",      "rarity": "Blue",  "condition": "Factory New"},
-            {"name": "Desert Eagle | Serpent Strike","rarity": "Purple","condition": "Well-Worn"},
-            {"name": "★ Survival Knife",               "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Survival Knife | Marble Fade", "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-            {"name": "★ Survival Knife | Tiger Tooth", "rarity": "Gold","tier": "Legendary","condition": "Factory New"},
-        ]
+        "name": "Fever Case",
+        "emoji": "💎",
+        "price": 4.0,
+        "collection": 'The Fever Collection'
     },
 }
+
 
 # ============================================================
 # CONTAINER IMAGE MAPPING (by case name)
@@ -854,61 +600,166 @@ def build_container_image_map() -> Dict[str, str]:
 # Build the global map
 CONTAINER_IMAGE_MAP = build_container_image_map()
 
+# ============================================================
+# SKINS DATA LOADER
+# ============================================================
 SKINS_JSON_PATH = os.path.join(os.path.dirname(__file__), "skins.json")
+SKINS_DATA = []
 
-def load_skin_name_to_image():
-    if not os.path.exists(SKINS_JSON_PATH):
-        print(f"⚠️ {SKINS_JSON_PATH} not found – skin images will fallback to default")
-        return {}
-    with open(SKINS_JSON_PATH, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    name_to_image = {}
-    for entry in data:
-        skin_name = entry.get("name")
-        skin_image = entry.get("skinImage")
-        if skin_name and skin_image:
-            filename = os.path.basename(skin_image)
-            # Keep the first occurrence; you may want to keep the latest one
-            if skin_name not in name_to_image:
-                name_to_image[skin_name] = filename
-    return name_to_image
+if os.path.exists(SKINS_JSON_PATH):
+    with open(SKINS_JSON_PATH, 'r', encoding='utf-8') as f:
+        SKINS_DATA = json.load(f)
+    logger.info(f"✅ Loaded {len(SKINS_DATA)} skins from skins.json")
+else:
+    logger.warning(f"⚠️ skins.json not found at {SKINS_JSON_PATH}")
 
-SKIN_NAME_TO_IMAGE = load_skin_name_to_image()
+# ============================================================
+# ITEM ID → PROPER CS2 DISPLAY NAME
+# Maps the skins.json `itemId` field to the real CS2 weapon name.
+# This is the authoritative source — weaponType is a generic category
+# (RIFLE, SHOTGUN, etc.) and must NOT be used for display.
+# ============================================================
+ITEM_ID_TO_DISPLAY_NAME: Dict[str, str] = {
+    'AK_47':          'AK-47',
+    'AUG':            'AUG',
+    'AWP':            'AWP',
+    'BAYONET':        '★ Bayonet',
+    'BLOODHOUND':     '★ Bloodhound Gloves',
+    'BOWIE':          '★ Bowie Knife',
+    'BROKEN_FANG':    '★ Broken Fang Gloves',
+    'BUTTERFLY':      '★ Butterfly Knife',
+    'CLASSIC':        '★ Classic Knife',
+    'CZ75_AUTO':      'CZ75-Auto',
+    'DESERT_EAGLE':   'Desert Eagle',
+    'DRIVER':         '★ Driver Gloves',
+    'DUAL_BERETTAS':  'Dual Berettas',
+    'FALCHION':       '★ Falchion Knife',
+    'FAMAS':          'FAMAS',
+    'FIVE_SEVEN':     'Five-SeveN',
+    'FLIP':           '★ Flip Knife',
+    'G3SG1':          'G3SG1',
+    'GALIL_AR':       'Galil AR',
+    'GLOCK_18':       'Glock-18',
+    'GUT':            '★ Gut Knife',
+    'HAND_WRAPS':     '★ Hand Wraps',
+    'HUNTSMAN':       '★ Huntsman Knife',
+    'HYDRA':          '★ Hydra Gloves',
+    'KARAMBIT':       '★ Karambit',
+    'KUKRI':          '★ Kukri Knife',
+    'M249':           'M249',
+    'M4A1_S':         'M4A1-S',
+    'M4A4':           'M4A4',
+    'M9_BAYONET':     '★ M9 Bayonet',
+    'MAC_10':         'MAC-10',
+    'MAG_7':          'MAG-7',
+    'MOTO':           '★ Moto Gloves',
+    'MP5_SD':         'MP5-SD',
+    'MP7':            'MP7',
+    'MP9':            'MP9',
+    'NAVAJA':         '★ Navaja Knife',
+    'NEGEV':          'Negev',
+    'NOMAD':          '★ Nomad Knife',
+    'NOVA':           'Nova',
+    'P2000':          'P2000',
+    'P250':           'P250',
+    'P90':            'P90',
+    'PARACORD':       '★ Paracord Knife',
+    'PP_BIZON':       'PP-Bizon',
+    'R8_REVOLVER':    'R8 Revolver',
+    'SAWED_OFF':      'Sawed-Off',
+    'SCAR_20':        'SCAR-20',
+    'SG_553':         'SG 553',
+    'SHADOW_DAGGERS': '★ Shadow Daggers',
+    'SKELETON':       '★ Skeleton Knife',
+    'SPECIALIST':     '★ Specialist Gloves',
+    'SPORT':          '★ Sport Gloves',
+    'SSG_08':         'SSG 08',
+    'STILETTO':       '★ Stiletto Knife',
+    'SURVIVAL':       '★ Survival Knife',
+    'TALON':          '★ Talon Knife',
+    'TEC_9':          'Tec-9',
+    'UMP_45':         'UMP-45',
+    'URSUS':          '★ Ursus Knife',
+    'USP_S':          'USP-S',
+    'XM1014':         'XM1014',
+    'ZEUS_X27':       'Zeus x27',
+}
 
-def get_skin_image_filename(item_name: str) -> str:
-    if not SKIN_NAME_TO_IMAGE:
-        return None
+def get_display_weapon_name(item_id: str, fallback: str = '') -> str:
+    """Return the proper CS2 display name for a weapon itemId."""
+    return ITEM_ID_TO_DISPLAY_NAME.get(item_id, fallback or item_id)
 
-    # Remove StatTrak, ★, and any trailing condition in parentheses
-    clean = re.sub(r'StatTrak™\s*|★\s*', '', item_name).strip()
-    clean = re.sub(r'\s*\([^)]*\)$', '', clean).strip()
-    clean = re.sub(r'^[⭐🔴💗🟪🟦]\s*', '', clean)
-    # Extract the skin part (everything after the last '|')
-    if ' | ' in clean:
-        skin = clean.split(' | ')[-1].strip()
-    else:
-        skin = clean
+# Build SKIN_NAME_TO_IMAGE from SKINS_DATA.
+# Index every skin under multiple key formats so lookups succeed regardless
+# of how the name was stored (bare skin name, "WeaponType | Skin", "AK-47 | Skin", etc.)
+SKIN_NAME_TO_IMAGE: Dict[str, str] = {}
+for _skin in SKINS_DATA:
+    _skin_name   = _skin.get("name")         # e.g. "Redline"
+    _item_id     = _skin.get("itemId", "")   # e.g. "AK_47"
+    _weapon_type = _skin.get("weaponType", "")  # e.g. "RIFLE" (generic, avoid for display)
+    _display     = ITEM_ID_TO_DISPLAY_NAME.get(_item_id, _weapon_type)  # e.g. "AK-47"
+    _skin_image  = _skin.get("skinImage")
+    if not (_skin_name and _skin_image):
+        continue
+    _filename = os.path.basename(_skin_image)
+    # Key formats — all the ways this skin's name may appear in the DB:
+    for _key in [
+        _skin_name,                                  # "Redline"
+        f"{_display} | {_skin_name}",               # "AK-47 | Redline"  ← correct CS2 name
+        f"{_weapon_type} | {_skin_name}",           # "RIFLE | Redline"  ← old bad name
+        f"StatTrak™ {_skin_name}",                  # "StatTrak™ Redline"
+        f"StatTrak™ {_display} | {_skin_name}",    # "StatTrak™ AK-47 | Redline"
+        f"StatTrak™ {_weapon_type} | {_skin_name}", # "StatTrak™ RIFLE | Redline"
+    ]:
+        SKIN_NAME_TO_IMAGE.setdefault(_key, _filename)
 
-    # Try full item name first (e.g. "AK-47 | Redline")
-    if clean in SKIN_NAME_TO_IMAGE:
-        return SKIN_NAME_TO_IMAGE[clean]
+logger.info(f"✅ Built SKIN_NAME_TO_IMAGE with {len(SKIN_NAME_TO_IMAGE)} entries")
 
-    # Direct match on skin part
-    if skin in SKIN_NAME_TO_IMAGE:
-        return SKIN_NAME_TO_IMAGE[skin]
+# ============================================================
+# DYNAMIC CASE DATA FROM SKINS.JSON
+# ============================================================
+SKIN_RARITY_MAP = {
+    'CONSUMER': 'Blue',
+    'INDUSTRIAL': 'Blue',
+    'MIL_SPEC': 'Blue',
+    'RESTRICTED': 'Purple',
+    'CLASSIFIED': 'Pink',
+    'COVERT': 'Red',
+    'CONTRABAND': 'Gold',
+    'EXTRAORDINARY': 'Gold'
+}
 
-    # Case-insensitive match
-    skin_lower = skin.lower()
-    for key, filename in SKIN_NAME_TO_IMAGE.items():
-        if key.lower() == skin_lower:
-            return filename
+COLLECTION_ITEMS = {}
+if SKINS_DATA:
+    for skin in SKINS_DATA:
+        collection = skin.get('collection')
+        if not collection:
+            continue
+        display_rarity = SKIN_RARITY_MAP.get(skin.get('rarity'), 'Blue')
+        # Use the proper CS2 weapon display name, not the generic weaponType category
+        proper_weapon = ITEM_ID_TO_DISPLAY_NAME.get(skin.get('itemId', ''), skin.get('weaponType', ''))
+        entry = {
+            'name': f"{proper_weapon} | {skin['name']}",
+            'rarity': display_rarity,
+            'float_min': skin.get('floatTop', 0.0),
+            'float_max': skin.get('floatBottom', 1.0),
+            'weapon_type': proper_weapon,   # now the real CS2 name, e.g. "AK-47"
+            'skin_name': skin['name'],
+            'item_id': skin['itemId'],
+            'skin_image': skin.get('skinImage'),
+        }
+        COLLECTION_ITEMS.setdefault(collection, []).append(entry)
+    logger.info(f"✅ Built COLLECTION_ITEMS with {sum(len(v) for v in COLLECTION_ITEMS.values())} skins across {len(COLLECTION_ITEMS)} collections")
+else:
+    logger.warning("❌ SKINS_DATA not loaded; dynamic case items will not work.")
 
-    # Partial match (e.g., "Gamma Doppler Phase 2" -> "Gamma Doppler")
-    for key in SKIN_NAME_TO_IMAGE:
-        if key in skin or skin in key:
-            return SKIN_NAME_TO_IMAGE[key]
-
-    return None
+# ─── Build global pool by rarity (for trade-ups / upgrades) ──
+ALL_ITEMS_BY_RARITY = {}
+for collection_items in COLLECTION_ITEMS.values():
+    for item in collection_items:
+        rarity = item['rarity']
+        ALL_ITEMS_BY_RARITY.setdefault(rarity, []).append(item)
+logger.info(f"✅ Built ALL_ITEMS_BY_RARITY: { {r: len(items) for r, items in ALL_ITEMS_BY_RARITY.items()} }")
 
 # ============================================================
 # STICKER CAPSULES
@@ -1138,7 +989,7 @@ GAME_CATALOG = {
 # ============================================================
 
 def generate_skin_float() -> float:
-    return round(random.uniform(0.00, 1.00), 4)
+    return round(secure_random(), 4)
 
 def get_skin_condition(float_value: float) -> str:
     if float_value <= 0.07:   return "Factory New"
@@ -1172,62 +1023,102 @@ def calculate_item_value(
     except Exception:
         return 0.25
 
+
 # ============================================================
 # ITEM GENERATION
 # ============================================================
-
 def get_random_item(case_id: str) -> Optional[Dict]:
-    """Roll a random item from a case using CS2 drop rates."""
+    """Roll a random item from a case using the dynamic collection system."""
     case = CASES.get(case_id)
-    if not case or not case.get('items'):
+    if not case:
         return None
 
-    rand = random.random() * 100
-    cumulative = 0.0
-    selected_rarity: Optional[str] = None
+    collection = case.get('collection')
+    if collection and collection in COLLECTION_ITEMS:
+        pool = COLLECTION_ITEMS[collection]
+        # Group by rarity
+        by_rarity = {}
+        for item in pool:
+            by_rarity.setdefault(item['rarity'], []).append(item)
 
-    for rarity, chance in DROP_RATES.items():
-        cumulative += chance
-        if rand <= cumulative:
-            selected_rarity = rarity
-            break
+        # Approximate CS2 drop chances (sum to 1)
+        drop_chances = {
+            'Blue': 0.80,
+            'Purple': 0.16,
+            'Pink': 0.032,
+            'Red': 0.0064,
+            'Gold': 0.0016,
+        }
 
-    if not selected_rarity:
-        selected_rarity = "Blue"
+        # Roll rarity
+        r = secure_random()
+        cumulative = 0.0
+        chosen_rarity = 'Blue'
+        for rarity, chance in drop_chances.items():
+            cumulative += chance
+            if r <= cumulative:
+                chosen_rarity = rarity
+                break
 
-    possible = [i for i in case['items'] if i['rarity'] == selected_rarity]
-    if not possible:
-        possible = case['items']
+        # Fallback if chosen rarity empty
+        if chosen_rarity not in by_rarity or not by_rarity[chosen_rarity]:
+            for fallback in ['Blue', 'Purple', 'Pink', 'Red', 'Gold']:
+                if fallback in by_rarity and by_rarity[fallback]:
+                    chosen_rarity = fallback
+                    break
+            else:
+                # Shouldn't happen if pool is non-empty
+                return None
 
-    item = random.choice(possible)
-    is_stattrak = random.random() < 0.1
-    float_value = generate_skin_float()
-    condition = get_skin_condition(float_value)
-    tier = item.get('tier')
-    value = calculate_item_value(selected_rarity, condition, tier, is_stattrak)
+        skin_template = secure_choice(by_rarity[chosen_rarity])
 
-    raw_name = item['name'].replace('StatTrak™ ', '').replace('StatTrak™', '').strip()
-    name = f"StatTrak™ {raw_name}" if is_stattrak else raw_name
-    rarity_emoji = RARITY_EMOJIS.get(selected_rarity, "")
+        # Generate float within skin's allowed range
+        float_min = skin_template['float_min']
+        float_max = skin_template['float_max']
+        if float_max < float_min:
+            float_min, float_max = float_max, float_min
+        float_value = float_min + secure_random() * (float_max - float_min)
 
-    return {
-        'name':         name,
-        'display_name': f"{rarity_emoji} {name}",
-        'rarity':       selected_rarity,
-        'rarity_emoji': rarity_emoji,
-        'tier':         tier,
-        'condition':    condition,
-        'float':        float_value,
-        'price':        value,
-        'is_stattrak':  is_stattrak,
-    }
+        condition = get_skin_condition(float_value)
+        is_stattrak = secure_random() < 0.1
+        price = calculate_item_value(chosen_rarity, condition, None, is_stattrak)
+
+        # Full name includes weapon type so image lookup and card display are correct
+        # e.g. "XM1014 | Red Python" or "StatTrak™ XM1014 | Red Python"
+        full_name = f"{skin_template['weapon_type']} | {skin_template['skin_name']}"
+        if is_stattrak:
+            name = f"StatTrak™ {full_name}"
+        else:
+            name = full_name
+        display_name = f"{RARITY_EMOJIS.get(chosen_rarity, '')} {name}"
+
+        # Image filename from skin_image
+        skin_image = skin_template.get('skin_image')
+        image_filename = os.path.basename(skin_image) if skin_image else None
+
+        return {
+            'name': name,
+            'display_name': display_name,
+            'rarity': chosen_rarity,
+            'rarity_emoji': RARITY_EMOJIS.get(chosen_rarity, ''),
+            'condition': condition,
+            'float': float_value,
+            'price': price,
+            'is_stattrak': is_stattrak,
+            'tier': None,
+            'weapon_type': skin_template['weapon_type'],
+            'skin_name': skin_template['skin_name'],
+            'item_id': skin_template['item_id'],
+            'image_filename': image_filename,
+        }
+
 
 def get_random_sticker(capsule_id: str) -> Optional[Dict]:
     capsule = STICKER_CAPSULES.get(capsule_id)
     if not capsule or not capsule.get('stickers'):
         return None
-    sticker = random.choice(capsule['stickers'])
-    is_stattrak = random.random() < 0.1
+    sticker = secure_choice(capsule['stickers'])
+    is_stattrak = secure_random() < 0.1
     value = STICKER_VALUES.get(sticker['rarity'], 0.25)
     if is_stattrak:
         value *= 2.0
@@ -1242,6 +1133,63 @@ def get_random_sticker(capsule_id: str) -> Optional[Dict]:
         'image':        image,
     }
 
+def get_skin_image_filename(skin_name: str) -> Optional[str]:
+    """
+    Return the image filename for a skin name string in any stored format:
+      - "Redline"                        bare skin name
+      - "AK-47 | Redline"               correct CS2 name (new items)
+      - "RIFLE | Redline"                old generic category name (legacy DB rows)
+      - "StatTrak™ AK-47 | Redline"     StatTrak™ variant
+      - "StatTrak™ RIFLE | Redline"      legacy StatTrak™ variant
+    """
+    if not skin_name:
+        return None
+    # Strategy 1: direct lookup — covers all pre-indexed key formats
+    result = SKIN_NAME_TO_IMAGE.get(skin_name)
+    if result:
+        return result
+    # Strategy 2: strip StatTrak™ prefix and retry
+    clean = skin_name.replace("StatTrak™ ", "").strip()
+    result = SKIN_NAME_TO_IMAGE.get(clean)
+    if result:
+        return result
+    # Strategy 3: extract just the skin name after " | " and look that up
+    if " | " in clean:
+        skin_part = clean.split(" | ", 1)[1].strip()
+        result = SKIN_NAME_TO_IMAGE.get(skin_part)
+        if result:
+            return result
+    return None
+
+# Build a name → filename lookup for stickers so the inventory API can
+# reconstruct image paths for items that predate the image_url column.
+def _build_sticker_name_to_image() -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for capsule in STICKER_CAPSULES.values():
+        for s in capsule.get("stickers", []):
+            name = s.get("name", "")
+            img  = s.get("image", "")
+            if name and img:
+                mapping[name]                           = os.path.basename(img)
+                # Also index the StatTrak™ variant name
+                mapping[f"StatTrak™ {name}"]            = os.path.basename(img)
+    return mapping
+
+STICKER_NAME_TO_IMAGE: Dict[str, str] = _build_sticker_name_to_image()
+
+def get_sticker_image(sticker_name: str) -> Optional[str]:
+    """
+    Return the sticker image filename (e.g. '4513.webp') for a given sticker
+    name, or None if not found.  Strips the StatTrak™ prefix before lookup
+    so both plain and ST names resolve correctly.
+    """
+    # Direct lookup first (covers plain names and pre-mapped ST names)
+    result = STICKER_NAME_TO_IMAGE.get(sticker_name)
+    if result:
+        return result
+    # Strip StatTrak™ prefix and retry
+    clean = sticker_name.replace("StatTrak™ ", "").strip()
+    return STICKER_NAME_TO_IMAGE.get(clean)
 # ============================================================
 # WEAPON IMAGE PATH
 # ============================================================
@@ -1259,16 +1207,52 @@ def get_weapon_image_path(item_name: str, weapon_dir: Optional[str] = None) -> s
 # ============================================================
 
 from decimal import Decimal
+from fastapi.responses import JSONResponse
+
+# ── Standard response helpers (Fix 18) ──────────────────────
+def error_response(message: str, status_code: int = 400) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"success": False, "error": message}
+    )
+
+def ok_response(data: dict) -> JSONResponse:
+    return JSONResponse(content={"success": True, **data})
 
 def convert_decimals(obj: Any) -> Any:
-    """Recursively convert Decimal → float for JSON serialisation."""
+    """Recursively convert Decimal → float for JSON serialisation.
+    Also stringifies BIGINT user_id fields to prevent JS integer precision loss.
+    Discord IDs are 18-19 digits — beyond JS Number safe range (2^53-1 = 16 digits).
+    """
+    _BIGINT_KEYS = {
+        'user_id', 'admin_id', 'target_id', 'winner_id',
+        'player_id', 'discord_id',
+    }
     if isinstance(obj, Decimal):
         return float(obj)
     if isinstance(obj, dict):
-        return {k: convert_decimals(v) for k, v in obj.items()}
+        result = {}
+        for k, v in obj.items():
+            if k in _BIGINT_KEYS and isinstance(v, int):
+                result[k] = str(v)   # stringify so JS never truncates
+            else:
+                result[k] = convert_decimals(v)
+        return result
     if isinstance(obj, list):
         return [convert_decimals(v) for v in obj]
     return obj
+
+# ============================================================
+# HOUSE EDGE CONSTANTS (Fix 20)
+# ============================================================
+
+HOUSE_EDGE         = 0.04   # 4% – default for all games
+HOUSE_EDGE_POKER   = 0.03   # 3% – slightly lower for poker rake
+HOUSE_EDGE_JACKPOT = 0.05   # 5% – jackpot cut
+
+def apply_house_edge(multiplier: float, edge: float = HOUSE_EDGE) -> float:
+    """Scale a win multiplier down by the house edge."""
+    return round(multiplier * (1.0 - edge), 6)
 
 # ============================================================
 # CRASH MULTIPLIER MATH
@@ -1280,7 +1264,7 @@ def generate_crash_point(house_edge: float = 0.04) -> float:
     house_edge of 0.04 means 4% house edge.
     Returns a float >= 1.00.
     """
-    r = random.random()
+    r = secure_random()
     if r < house_edge:
         return 1.00  # instant crash
     crash = (1.0 - house_edge) / (1.0 - r)
@@ -1347,6 +1331,45 @@ async def add_balance(user_id: int, amount: float, conn=None) -> None:
     else:
         async with pool.acquire() as c:
             await _do(c)
+
+# ============================================================
+# VIP HELPERS  (used by all game endpoints for win boost)
+# ============================================================
+
+async def get_vip_status(user_id: int) -> dict:
+    """
+    Fast VIP lookup — returns tier info for win boost calculations.
+    Returns {'tier': str, 'boost': float, 'active': bool, 'tickets': int}
+    """
+    from datetime import datetime
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT vip_tier, vip_expires_at, tickets FROM users WHERE user_id=$1",
+            user_id
+        )
+    if not row:
+        return {'tier': 'none', 'boost': 1.0, 'active': False, 'tickets': 0}
+    tier    = row['vip_tier'] or 'none'
+    expires = row['vip_expires_at']
+    active  = (tier != 'none' and expires is not None and expires > datetime.utcnow())
+    if not active:
+        return {'tier': 'none', 'boost': 1.0, 'active': False,
+                'tickets': int(row['tickets'] or 0)}
+    # Boost values match VIP_TIERS in premium.py
+    boosts = {'silver': 1.05, 'gold': 1.10, 'platinum': 1.20}
+    return {
+        'tier':    tier,
+        'boost':   boosts.get(tier, 1.0),
+        'active':  True,
+        'tickets': int(row['tickets'] or 0),
+    }
+
+def apply_vip_boost(win: float, vip: dict) -> float:
+    """Multiply a win by the user's VIP boost if active. Returns rounded result."""
+    if not vip.get('active') or win <= 0:
+        return win
+    return round(win * vip['boost'], 2)
 
 # ============================================================
 # WEBSOCKET BROADCAST HELPER

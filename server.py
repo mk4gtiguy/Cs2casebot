@@ -46,7 +46,7 @@ DASHBOARD_URL         = "https://cs2casebot.xyz/"
 # ─── Shared imports ──────────────────────────────────────────
 import shared
 from shared import (
-    logger, sessions, get_user_id_from_session, require_auth,
+    logger, get_user_id_from_session, require_auth,
     require_admin, require_admin_or_moderator,
     CASES, FEATURED_CASES, STICKER_CAPSULES, RARITY_EMOJIS,
     QUEST_TYPES, GAME_CATALOG,
@@ -57,7 +57,7 @@ from shared import (
     STICKER_TRADE_PROGRESSION, GOLD_VALUES, CONDITION_MULTIPLIERS,
     WEAPON_BASE_VALUES, STICKER_VALUES, get_db, init_db, ensure_bot_users,
     SLOT_SYMBOLS, SLOT_PAYOUTS,
-    ADMIN_USER_IDS, MODERATOR_USER_IDS,
+    ADMIN_USER_IDS, MODERATOR_USER_IDS, ALL_ITEMS_BY_RARITY,
 )
 
 # ─── Populate admin / moderator sets from env ────────────────
@@ -103,6 +103,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Admin table init skipped: {e}")
 
+        # ── Premium / VIP tables ──
+        try:
+            from routes.premium import init_premium_tables, daily_ticket_award_loop
+            await init_premium_tables()
+            logger.info("✅ Premium tables ready")
+            asyncio.create_task(daily_ticket_award_loop())
+            logger.info("🎟️  Daily ticket award task started")
+        except Exception as e:
+            logger.warning(f"Premium table init skipped: {e}")
+
     # Mount battle matchmaking loop
     try:
         from routes.case_battles import battle_manager, start_matchmaking
@@ -113,6 +123,9 @@ async def lifespan(app: FastAPI):
 
     # Keep-alive ping
     asyncio.create_task(_db_keepalive())
+
+    # Fix 9: Start game-session TTL cleanup task
+    asyncio.create_task(_cleanup_game_sessions())
 
     logger.info("✅ Server ready!")
     yield
@@ -127,6 +140,32 @@ async def lifespan(app: FastAPI):
     if shared.db_pool:
         await shared.db_pool.close()
 
+# ─── Fix 17: Per-user rate limiting middleware ───
+from starlette.middleware.base import BaseHTTPMiddleware
+import time as _time
+
+class PerUserRateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, requests_per_second: int = 10):
+        super().__init__(app)
+        self._rps = requests_per_second
+        self._user_windows: dict = {}   # user_id -> (window_start, count)
+
+    async def dispatch(self, request, call_next):
+        if request.url.path.startswith("/api/games/"):
+            session_token = request.cookies.get("session_token")
+            session = shared.get_session(session_token or "") or {}
+            uid = session.get("user_id")
+            if uid:
+                now = _time.monotonic()
+                window_start, count = self._user_windows.get(uid, (now, 0))
+                if now - window_start > 1.0:
+                    self._user_windows[uid] = (now, 1)
+                elif count >= self._rps:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
+                else:
+                    self._user_windows[uid] = (window_start, count + 1)
+        return await call_next(request)
 # ============================================================
 # APP
 # ============================================================
@@ -139,13 +178,32 @@ app = FastAPI(
     redoc_url=None,
 )
 
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail, "status": exc.status_code})
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=422, content={"error": "Validation error", "detail": exc.errors()})
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception on {request.url}: {exc}", exc_info=True)
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://cs2casebot.xyz"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Fix 17: Per-user rate limiting on all /api/games/* endpoints
+app.add_middleware(PerUserRateLimitMiddleware, requests_per_second=10)
 
 # ============================================================
 # MOUNT GAME ROUTERS
@@ -170,6 +228,7 @@ _safe_include("routes.games_hard")
 _safe_include("routes.games_heavy")
 _safe_include("routes.games_poker")
 _safe_include("routes.admin")
+_safe_include("routes.premium")
 
 @app.get("/admin", include_in_schema=False)
 async def page_admin(request: Request):
@@ -207,11 +266,17 @@ async def page_battle_setup(): return _html("static/battle-setup.html")
 @app.get("/games",         include_in_schema=False)
 async def page_games():        return _html("static/games.html")
 
+@app.get("/terms",         include_in_schema=False)
+async def page_terms():        return _html("static/terms.html")
+
+@app.get("/privacy",       include_in_schema=False)
+async def page_privacy():      return _html("static/privacy.html")
+
 # Individual game pages
 _GAME_PAGES = [
     "slots", "slots-cs2", "slots-jackpot", "slots-bomb",
     "coinflip", "dice", "mines", "crash", "limbo", "hilo",
-    "dragon-tiger", "keno", "plinko", "tower", "shotgun", "ladder-climb",
+    "keno", "plinko", "tower", "shotgun", "ladder-climb",
     "roulette", "slide", "mystery-box", "russian-roulette",
     "baccarat", "blackjack", "live-race", "poker",
 ]
@@ -230,6 +295,28 @@ for _game in _GAME_PAGES:
 async def serve_game_with_ext(game_name: str):
     return _html(f"static/games/{game_name}.html")
 
+@app.get("/static/images/containers/{filename}.png")
+async def serve_container_image(filename: str):
+    # Try .png first (if any), then .webp
+    for ext in ('.png', '.webp'):
+        path = f"static/images/containers/{filename}{ext}"
+        if os.path.exists(path):
+            return FileResponse(path)
+    # Fallback to a default image
+    default = "static/images/containers/default.png"
+    if os.path.exists(default):
+        return FileResponse(default)
+    # If nothing, return a tiny placeholder
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#ccc"/><text x="12" y="40" font-size="20" fill="#333">?</text></svg>'''
+    from fastapi.responses import Response
+    return Response(content=svg, media_type="image/svg+xml")
+
+@app.get("/static/images/stickers/{filename}")
+async def serve_sticker_image(filename: str):
+    path = f"static/images/stickers/{filename}"
+    if os.path.exists(path):
+        return FileResponse(path)
+    raise HTTPException(404, "Sticker image not found")
 # ============================================================
 # DATABASE TABLE INIT
 # ============================================================
@@ -277,9 +364,27 @@ async def _init_all_tables(pool):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_expires TIMESTAMP",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
-            # NEW: settings and tickets columns
+            # settings and tickets columns
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'::jsonb",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS tickets INTEGER DEFAULT 0",
+            # achievement/stat tracking columns
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_spent DECIMAL(15,2) DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS jackpot_wins INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_stickers INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_inventory_items INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_quests_completed INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_premium_opens INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_games_played INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS win_streak INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS coinflip_wins INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS dice_wins INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS mines_wins INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS slots_wins INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_hourly_claimed INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS total_weekly_claimed INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS prestige INTEGER DEFAULT 0",
         ]:
             try:
                 await conn.execute(col_sql)
@@ -299,9 +404,15 @@ async def _init_all_tables(pool):
                 status      TEXT DEFAULT 'kept',
                 case_id     TEXT,
                 float_value DECIMAL(10,4),
+                image_url   TEXT,
                 created_at  TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Migrate: add image_url column to existing inventory tables
+        try:
+            await conn.execute("ALTER TABLE inventory ADD COLUMN IF NOT EXISTS image_url TEXT")
+        except Exception:
+            pass
         # Guild settings
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS guild_settings (
@@ -585,6 +696,75 @@ async def _db_keepalive():
         except Exception as e:
             logger.warning(f"DB keep-alive failed: {e}")
 
+# Fix 9: Background task — purge abandoned in-memory game sessions every 60s
+SESSION_TTL_SECONDS = 300   # 5 minutes
+
+async def _cleanup_game_sessions():
+    """Purge abandoned game sessions to prevent memory leaks."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            from datetime import timedelta
+            cutoff = datetime.utcnow() - timedelta(seconds=SESSION_TTL_SECONDS)
+
+            # Collect session+lock dict pairs from each game module
+            session_lock_pairs = []
+            try:
+                from routes.games_easy import _hilo_sessions, _hilo_locks
+                session_lock_pairs.append((_hilo_sessions, _hilo_locks))
+            except Exception:
+                pass
+            try:
+                from routes.games_medium import (
+                    _mine_sessions, _mine_locks,
+                    _tower_sessions, _tower_locks,
+                    _shotgun_sessions, _shotgun_locks,
+                    _ladder_sessions, _ladder_locks,
+                )
+                session_lock_pairs.extend([
+                    (_mine_sessions, _mine_locks),
+                    (_tower_sessions, _tower_locks),
+                    (_shotgun_sessions, _shotgun_locks),
+                    (_ladder_sessions, _ladder_locks),
+                ])
+            except Exception:
+                pass
+            try:
+                from routes.games_hard import (
+                    _mystery_sessions, _mystery_locks,
+                    _rr_sessions, _rr_locks,
+                    _bj_sessions, _bj_locks,
+                )
+                session_lock_pairs.extend([
+                    (_mystery_sessions, _mystery_locks),
+                    (_rr_sessions, _rr_locks),
+                    (_bj_sessions, _bj_locks),
+                ])
+            except Exception:
+                pass
+            try:
+                from routes.games_poker import _vp_sessions, _vp_locks
+                session_lock_pairs.append((_vp_sessions, _vp_locks))
+            except Exception:
+                pass
+
+            total_cleaned = 0
+            for sessions_dict, locks_dict in session_lock_pairs:
+                expired = [
+                    uid for uid, s in sessions_dict.items()
+                    if s.get('created_at', datetime.utcnow()) < cutoff
+                ]
+                for uid in expired:
+                    sessions_dict.pop(uid, None)
+                    locks_dict.pop(uid, None)
+                    total_cleaned += 1
+
+            if total_cleaned:
+                logger.info(f"🧹 Cleaned {total_cleaned} expired game sessions")
+        except Exception as e:
+            logger.warning(f"Session cleanup error: {e}")
+
+
 # ============================================================
 # AUTH ROUTES
 # ============================================================
@@ -632,25 +812,27 @@ async def auth_callback(code: str, request: Request, response: Response):
     user_id  = int(discord_user["id"])
     username = discord_user.get("global_name") or discord_user.get("username", "Unknown")
     avatar   = discord_user.get("avatar")
+    avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else None
 
-    # Upsert user
+    # Upsert user — persist avatar_url so it survives server restarts
     pool = await get_db()
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users (user_id, username, balance, created_at, updated_at)
-            VALUES ($1, $2, 1000, NOW(), NOW())
+            INSERT INTO users (user_id, username, balance, avatar_url, created_at, updated_at)
+            VALUES ($1, $2, 1000, $3, NOW(), NOW())
             ON CONFLICT (user_id) DO UPDATE
-            SET username = $2, updated_at = NOW()
-        """, user_id, username)
+            SET username = $2, avatar_url = COALESCE($3, users.avatar_url), updated_at = NOW()
+        """, user_id, username, avatar_url)
 
-    # Create session
+    # Create session — use Redis-backed helper (falls back to in-memory if no Redis)
     token = secrets.token_urlsafe(32)
-    sessions[token] = {
-        "user_id":    user_id,
+    shared.create_session(token, {
+        "user_id":    int(user_id),   # always store as int
         "username":   username,
         "avatar":     avatar,
-        "created_at": datetime.now(),
-    }
+        "avatar_url": avatar_url,
+        "created_at": datetime.now().isoformat(),
+    })
 
     resp = RedirectResponse(url="/")
     resp.set_cookie(
@@ -658,14 +840,15 @@ async def auth_callback(code: str, request: Request, response: Response):
         max_age=7 * 24 * 3600,
         httponly=True,
         samesite="lax",
+        secure=os.getenv("SECURE_COOKIES", "true").lower() != "false",
     )
     return resp
 
 @app.post("/api/logout")
 async def logout(request: Request, response: Response):
     token = request.cookies.get("session_token")
-    if token and token in sessions:
-        del sessions[token]
+    if token:
+        shared.delete_session(token)
     response.delete_cookie("session_token")
     return {"success": True}
 
@@ -673,8 +856,8 @@ async def logout(request: Request, response: Response):
 async def auth_logout_get(request: Request, response: Response):
     """GET logout — used by frontend window.location redirects."""
     token = request.cookies.get("session_token")
-    if token and token in sessions:
-        del sessions[token]
+    if token:
+        shared.delete_session(token)
     resp = RedirectResponse(url="/")
     resp.delete_cookie("session_token")
     return resp
@@ -694,15 +877,21 @@ async def get_me(request: Request):
         user = await conn.fetchrow(
             "SELECT * FROM users WHERE user_id = $1", user_id
         )
-        session = sessions.get(request.cookies.get("session_token"), {})
+        session = shared.get_session(request.cookies.get("session_token") or "") or {}
 
     if not user:
         raise HTTPException(404, "User not found")
 
     avatar_url = None
+    session = shared.get_session(request.cookies.get("session_token") or "") or {}
+    # Prefer session avatar (fresh from OAuth), fall back to DB-persisted value
     avatar = session.get("avatar")
     if avatar:
         avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png"
+    elif session.get("avatar_url"):
+        avatar_url = session.get("avatar_url")
+    elif user.get("avatar_url"):
+        avatar_url = user["avatar_url"]
 
     return {
         "user_id":     str(user["user_id"]),
@@ -754,8 +943,28 @@ async def get_inventory(
         )
     def _enrich(r):
         d = convert_decimals(dict(r))
-        d["display_name"] = d.get("item_name", "")
-        d["name"]         = d.get("item_name", "")
+        raw_name = d.get("item_name", "")
+        # Strip leading rarity emoji from stored names so frontend gets clean names
+        import re as _re
+        clean = _re.sub(r'^[\U0001F300-\U0001FFFF\U00002600-\U000027BF\U0000FE00-\U0000FEFF\s🟦🟪🟥🟨🟩⬛⬜🟫🔥⭐💫👑✨]+', '', raw_name).strip()
+        d["display_name"] = clean or raw_name
+        d["name"]         = clean or raw_name
+        # Populate image_url for items that predate the image_url column
+        if not d.get("image_url"):
+            item_type = (d.get("item_type") or "").lower()
+            item_name = clean or raw_name
+            if item_type == "sticker":
+                # Reconstruct sticker image path from shared sticker data
+                from shared import get_sticker_image
+                sticker_file = get_sticker_image(item_name)
+                if sticker_file:
+                    d["image_url"] = f"/static/images/stickers/{sticker_file}"
+            else:
+                # Weapon skin: use name-based lookup (works for "AK-47 | Redline" format)
+                from shared import get_skin_image_filename
+                filename = get_skin_image_filename(item_name)
+                if filename:
+                    d["image_url"] = f"/static/images/skins/{filename}"
         return d
     return {
         "items": [_enrich(r) for r in rows],
@@ -818,6 +1027,41 @@ async def get_profile(request: Request):
         "xp_needed": xp_needed,
         "xp_progress": round(xp_progress, 1),
     }
+
+# ── XP / levelling helper ────────────────────────────────────
+async def grant_xp(user_id: int, amount: int, conn=None) -> dict:
+    """
+    Award XP to a user and handle level-ups.
+    Returns {"xp": new_xp, "level": new_level, "leveled_up": bool}
+    Works inside an existing conn (no transaction) or opens its own.
+    """
+    async def _do(c):
+        row = await c.fetchrow("SELECT xp, level, prestige FROM users WHERE user_id=$1", user_id)
+        if not row:
+            return {"xp": 0, "level": 1, "leveled_up": False}
+        xp    = (row["xp"] or 0) + amount
+        level = row["level"] or 1
+        leveled_up = False
+        # Level-up loop
+        while True:
+            xp_needed = level * 50 + 100
+            if xp >= xp_needed:
+                xp -= xp_needed
+                level += 1
+                leveled_up = True
+            else:
+                break
+        await c.execute(
+            "UPDATE users SET xp=$1, level=$2 WHERE user_id=$3",
+            xp, level, user_id
+        )
+        return {"xp": xp, "level": level, "leveled_up": leveled_up}
+
+    pool = await get_db()
+    if conn:
+        return await _do(conn)
+    async with pool.acquire() as c:
+        return await _do(c)
 
 @app.get("/api/user/me/balance")
 async def get_balance_alias(request: Request):
@@ -971,27 +1215,82 @@ async def get_achievements(request: Request):
     user_id = await require_auth(request)
     pool = await get_db()
     async with pool.acquire() as conn:
-        user = await conn.fetchrow("SELECT total_opens, total_golds, total_trades FROM users WHERE user_id = $1", user_id)
-        unlocks = await conn.fetch("SELECT achievement_id FROM user_achievements WHERE user_id = $1", user_id)
-    unlocked_set = {u["achievement_id"] for u in unlocks}
-    # Define achievement list
+        user = await conn.fetchrow("""
+            SELECT total_opens, total_golds, total_trades, daily_streak, balance,
+                   total_spent, total_hourly_claimed, total_weekly_claimed,
+                   coinflip_wins, dice_wins, slots_wins, mines_wins, jackpot_wins,
+                   total_premium_opens, total_inventory_items, total_stickers,
+                   total_games_played, win_streak, total_quests_completed,
+                   total_premium_opens
+            FROM users WHERE user_id = $1
+        """, user_id)
+
+    def u(col, default=0):
+        if not user: return default
+        v = user[col]
+        return float(v) if v is not None else default
+
     achievement_defs = [
-        {"id": "first_open", "name": "First Case", "icon": "📦", "description": "Open your first case", "condition": lambda u: u["total_opens"] >= 1},
-        {"id": "gold_finder", "name": "Gold Hunter", "icon": "⭐", "description": "Find your first gold", "condition": lambda u: u["total_golds"] >= 1},
-        {"id": "case_hunter", "name": "Case Collector", "icon": "📦", "description": "Open 100 cases", "condition": lambda u: u["total_opens"] >= 100},
-        {"id": "gold_hoarder", "name": "Gold Hoarder", "icon": "⭐", "description": "Find 10 golds", "condition": lambda u: u["total_golds"] >= 10},
+        # ── Case opening ──
+        {"id": "first_open",        "name": "First Case",         "icon": "🎯", "description": "Open your first case",             "unlocked": u('total_opens') >= 1},
+        {"id": "case_master",       "name": "Case Master",        "icon": "🎰", "description": "Open 100 cases",                   "unlocked": u('total_opens') >= 100},
+        {"id": "case_collector",    "name": "Case Collector",     "icon": "📦", "description": "Open 500 cases",                   "unlocked": u('total_opens') >= 500},
+        {"id": "case_connoisseur",  "name": "Case Connoisseur",   "icon": "🎁", "description": "Open 1,000 cases",                 "unlocked": u('total_opens') >= 1000},
+        # ── Gold hunting ──
+        {"id": "first_gold",        "name": "First Gold",         "icon": "⭐", "description": "Find your first Gold item",         "unlocked": u('total_golds') >= 1},
+        {"id": "gold_hunter",       "name": "Gold Hunter",        "icon": "🏆", "description": "Find 10 Gold items",               "unlocked": u('total_golds') >= 10},
+        {"id": "gold_digger",       "name": "Gold Digger",        "icon": "⛏️", "description": "Find 50 Gold items",               "unlocked": u('total_golds') >= 50},
+        {"id": "gold_legend",       "name": "Gold Legend",        "icon": "👑", "description": "Find 100 Gold items",              "unlocked": u('total_golds') >= 100},
+        # ── Daily streak ──
+        {"id": "streak_5",          "name": "Streak 5",           "icon": "🔥", "description": "Maintain a 5-day daily streak",    "unlocked": u('daily_streak') >= 5},
+        {"id": "streak_10",         "name": "Streak 10",          "icon": "💎", "description": "Maintain a 10-day daily streak",   "unlocked": u('daily_streak') >= 10},
+        {"id": "daily_dedication",  "name": "Daily Dedication",   "icon": "📆", "description": "Maintain a 30-day daily streak",   "unlocked": u('daily_streak') >= 30},
+        {"id": "streak_25",         "name": "Lucky Streak",       "icon": "🍀", "description": "Maintain a 25-day daily streak",   "unlocked": u('daily_streak') >= 25},
+        {"id": "streak_50",         "name": "Streak Legend",      "icon": "👑", "description": "Maintain a 50-day daily streak",   "unlocked": u('daily_streak') >= 50},
+        # ── Balance milestones ──
+        {"id": "high_roller",       "name": "High Roller",        "icon": "💎", "description": "Reach $100,000 balance",           "unlocked": u('balance') >= 100000},
+        {"id": "millionaire",       "name": "Millionaire",        "icon": "💰", "description": "Reach $1,000,000 balance",         "unlocked": u('balance') >= 1000000},
+        # ── Spending ──
+        {"id": "spender",           "name": "Spender",            "icon": "💳", "description": "Spend $10,000 on cases",           "unlocked": u('total_spent') >= 10000},
+        {"id": "big_spender",       "name": "Big Spender",        "icon": "💎", "description": "Spend $100,000 on cases",          "unlocked": u('total_spent') >= 100000},
+        # ── Trading ──
+        {"id": "first_trade",       "name": "First Trade",        "icon": "🤝", "description": "Complete your first trade-up",     "unlocked": u('total_trades') >= 1},
+        {"id": "market_trader",     "name": "Market Trader",      "icon": "📊", "description": "Complete 10 trade-ups",            "unlocked": u('total_trades') >= 10},
+        {"id": "trade_master",      "name": "Trade Master",       "icon": "🔄", "description": "Complete 50 trade-ups",            "unlocked": u('total_trades') >= 50},
+        {"id": "trade_legend",      "name": "Trade Legend",       "icon": "🏅", "description": "Complete 500 trade-ups",           "unlocked": u('total_trades') >= 500},
+        # ── Claims ──
+        {"id": "hourly_grinder",    "name": "Hourly Grinder",     "icon": "🕐", "description": "Claim 100 hourly rewards",         "unlocked": u('total_hourly_claimed') >= 100},
+        {"id": "weekly_warrior",    "name": "Weekly Warrior",     "icon": "📅", "description": "Claim 10 weekly rewards",          "unlocked": u('total_weekly_claimed') >= 10},
+        # ── Games ──
+        {"id": "coinflip_champion", "name": "Coinflip Champion",  "icon": "🪙", "description": "Win 50 coinflips",                 "unlocked": u('coinflip_wins') >= 50},
+        {"id": "dice_master",       "name": "Dice Master",        "icon": "🎲", "description": "Win 100 dice rolls",               "unlocked": u('dice_wins') >= 100},
+        {"id": "slots_king",        "name": "Slots King",         "icon": "🎰", "description": "Win 50 slots spins",               "unlocked": u('slots_wins') >= 50},
+        {"id": "miner",             "name": "Miner",              "icon": "⛏️", "description": "Win 10 mines games",               "unlocked": u('mines_wins') >= 10},
+        {"id": "jackpot_winner",    "name": "Jackpot Winner",     "icon": "🎰", "description": "Win a jackpot",                    "unlocked": u('jackpot_wins') >= 1},
+        {"id": "gambler",           "name": "Gambler",            "icon": "🎯", "description": "Play 50 casino games",             "unlocked": u('total_games_played') >= 50},
+        {"id": "casino_regular",    "name": "Casino Regular",     "icon": "🎰", "description": "Play 500 casino games",            "unlocked": u('total_games_played') >= 500},
+        {"id": "steamroller",       "name": "Steamroller",        "icon": "🔥", "description": "Win 10 games in a row",            "unlocked": u('win_streak') >= 10},
+        {"id": "unstoppable",       "name": "Unstoppable",        "icon": "⚡", "description": "Win 25 games in a row",            "unlocked": u('win_streak') >= 25},
+        # ── Premium ──
+        {"id": "premium_user",      "name": "Premium User",       "icon": "🎟️", "description": "Open your first premium case",    "unlocked": u('total_premium_opens') >= 1},
+        {"id": "whale",             "name": "Whale",              "icon": "🐋", "description": "Open 100 premium cases",           "unlocked": u('total_premium_opens') >= 100},
+        # ── Inventory / stickers ──
+        {"id": "inventory_collector","name": "Inventory Collector","icon": "📦", "description": "Have 100 items in your inventory", "unlocked": u('total_inventory_items') >= 100},
+        {"id": "hoarder",           "name": "Hoarder",            "icon": "🏚️", "description": "Have 500 items in your inventory", "unlocked": u('total_inventory_items') >= 500},
+        {"id": "sticker_collector", "name": "Sticker Collector",  "icon": "⭐", "description": "Collect 50 stickers",              "unlocked": u('total_stickers') >= 50},
+        {"id": "sticker_master",    "name": "Sticker Master",     "icon": "✨", "description": "Collect 200 stickers",             "unlocked": u('total_stickers') >= 200},
+        # ── Quests ──
+        {"id": "quest_master",      "name": "Quest Master",       "icon": "📋", "description": "Complete 50 quests",               "unlocked": u('total_quests_completed') >= 50},
+        # ── General ──
+        {"id": "newbie",            "name": "Newbie",             "icon": "👋", "description": "Log in for the first time",        "unlocked": user is not None},
     ]
-    achievements = []
-    for adef in achievement_defs:
-        unlocked = adef["id"] in unlocked_set or (adef["condition"](user) if user else False)
-        achievements.append({
-            "id": adef["id"],
-            "name": adef["name"],
-            "icon": adef["icon"],
-            "description": adef["description"],
-            "unlocked": unlocked,
-        })
-    return {"achievements": achievements}
+
+    unlocked_count = sum(1 for a in achievement_defs if a["unlocked"])
+    return {
+        "achievements": achievement_defs,
+        "unlocked_count": unlocked_count,
+        "total_count": len(achievement_defs),
+    }
 
 # ─── Daily, Cases, Featured, etc. ──────────────────────────
 
@@ -1013,7 +1312,7 @@ async def claim_daily(request: Request):
         else:
             streak = 1
         reward = 500 + (streak * 100)
-        jackpot = random.randint(1, 1000000) == 1
+        jackpot = shared.secure_randint(1, 1000000) == 1
         if jackpot:
             reward += 50000
         await conn.execute("UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4",
@@ -1046,7 +1345,8 @@ async def get_case_image(case_id: str):
 
 @app.get("/api/premium-cases")
 async def get_premium_cases():
-    return {"enabled": False, "message": "Premium cases are coming soon!", "cases": []}
+    """Deprecated — premium cases replaced by VIP ticket system."""
+    return {"enabled": False, "message": "Premium cases replaced by VIP subscription. See /api/vip/tiers"}
 
 # ============================================================
 # CASES API (existing)
@@ -1097,14 +1397,18 @@ async def open_case(req: OpenCaseRequest, request: Request):
                 item = get_random_item(req.case_id)
                 if not item:
                     continue
+                # Build image_url for skins at insert time so inventory can display it later
+                skin_img_file = item.get('image_filename')
+                skin_img_url = f"/static/images/skins/{skin_img_file}" if skin_img_file else None
                 row = await conn.fetchrow("""
                     INSERT INTO inventory
                     (user_id, item_name, item_type, rarity, price, condition,
-                     is_stattrak, status, case_id, float_value)
-                    VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8)
+                     is_stattrak, status, case_id, float_value, image_url)
+                    VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8,$9)
                     RETURNING id
                 """, user_id, item["name"], item["rarity"], item["price"],
-                    item["condition"], item["is_stattrak"], req.case_id, item["float"])
+                    item["condition"], item["is_stattrak"], req.case_id, item["float"],
+                    skin_img_url)
                 item["id"] = row["id"]
                 items.append(item)
 
@@ -1115,13 +1419,18 @@ async def open_case(req: OpenCaseRequest, request: Request):
                     )
 
             await conn.execute(
-                "UPDATE users SET total_opens = total_opens + $1 WHERE user_id = $2",
-                qty, user_id
+                "UPDATE users SET total_opens = total_opens + $1, total_spent = total_spent + $2 WHERE user_id = $3",
+                qty, total_cost, user_id
             )
+            # Grant XP: 10 per case, bonus 25 for each gold
+            xp_amount = qty * 10
+            gold_count = sum(1 for it in items if it.get("rarity") == "Gold")
+            xp_amount += gold_count * 25
+            await grant_xp(user_id, xp_amount, conn)
             # Update live feed
             if items:
                 best = max(items, key=lambda x: x["price"])
-                session_data = sessions.get(request.cookies.get("session_token"), {})
+                session_data = shared.get_session(request.cookies.get("session_token") or "") or {}
                 username = session_data.get("username", "Someone")
                 await conn.execute("""
                     INSERT INTO live_feed (user_id, username, item_name, rarity, rarity_emoji, case_type, float_value)
@@ -1136,6 +1445,11 @@ async def open_case(req: OpenCaseRequest, request: Request):
 
     for it in items:
         it.setdefault("display_name", it.get("name", ""))
+    for item in items:
+        if item.get('image_filename'):
+            item['image_url'] = f"/static/images/skins/{item['image_filename']}"
+        else:
+            item['image_url'] = None
     return {"success": True, "items": items, "total_cost": total_cost}
 
 # ─── STICKER CAPSULE ──────────────────────────────────────────────
@@ -1167,14 +1481,27 @@ async def open_sticker(request: Request):
             if not sticker:
                 raise HTTPException(500, "Failed to generate sticker")
 
+            # Build image_url for sticker so inventory can display it later
+            sticker_img = sticker.get('image', '')
+            sticker_img_file = sticker_img.split('/')[-1] if sticker_img else ''
+            sticker_img_url = f"/static/images/stickers/{sticker_img_file}" if sticker_img_file else None
+
             row = await conn.fetchrow("""
                 INSERT INTO inventory
-                    (user_id, item_name, item_type, rarity, price, is_stattrak)
-                VALUES ($1, $2, 'sticker', $3, $4, $5)
+                    (user_id, item_name, item_type, rarity, price, is_stattrak, image_url)
+                VALUES ($1, $2, 'sticker', $3, $4, $5, $6)
                 RETURNING id
-            """, user_id, sticker['name'], sticker['rarity'], sticker['price'], sticker['is_stattrak'])
+            """, user_id, sticker['name'], sticker['rarity'], sticker['price'], sticker['is_stattrak'],
+                sticker_img_url)
 
             sticker['id'] = row['id']   # attach ID for frontend keep/sell
+
+            # Track sticker count, spending, and grant XP
+            await conn.execute(
+                "UPDATE users SET total_stickers = total_stickers + 1, total_spent = total_spent + $1 WHERE user_id = $2",
+                capsule['price'], user_id
+            )
+            await grant_xp(user_id, 5, conn)
 
             new_balance = await conn.fetchval("SELECT balance FROM users WHERE user_id = $1", user_id)
 
@@ -1186,21 +1513,40 @@ async def open_sticker(request: Request):
 
 @app.post("/api/sell-item")
 async def sell_item(request: Request):
-    body = await request.json()
-    user_id = await require_auth(request)
-    item_id = body.get("item_id")
+    body     = await request.json()
+    user_id  = await require_auth(request)
+    item_id  = body.get("item_id")
+
+    # Validate item_id
+    if item_id is None:
+        raise HTTPException(400, "item_id is required")
+    try:
+        item_id = int(item_id)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "item_id must be an integer")
+
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Accept 'kept' or 'pending' (item just opened, not explicitly kept yet)
             item = await conn.fetchrow(
-                "SELECT * FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept'",
+                "SELECT * FROM inventory WHERE id=$1 AND user_id=$2 AND status IN ('kept','pending')",
                 item_id, user_id
             )
             if not item:
-                raise HTTPException(404, "Item not found")
+                raise HTTPException(404, "Item not found or already sold")
             sell_price = round(float(item["price"]) * 0.70, 2)
             await conn.execute("UPDATE inventory SET status='sold' WHERE id=$1", item_id)
             await add_balance(user_id, sell_price, conn)
+            # Update quest progress for selling
+            await conn.execute("""
+                UPDATE quests SET progress = progress + 1
+                WHERE user_id=$1 AND quest_type='sell_items' AND completed=FALSE
+            """, user_id)
+            await conn.execute("""
+                UPDATE quests SET completed=TRUE
+                WHERE user_id=$1 AND quest_type='sell_items' AND progress >= required AND completed=FALSE
+            """, user_id)
     return {"success": True, "sell_price": sell_price}
 
 @app.post("/api/keep-item")
@@ -1216,6 +1562,11 @@ async def keep_item(request: Request):
         if not item:
             raise HTTPException(404, "Item not found")
         await conn.execute("UPDATE inventory SET status='kept' WHERE id=$1", item_id)
+        # Track inventory size for achievements
+        await conn.execute(
+            "UPDATE users SET total_inventory_items = (SELECT COUNT(*) FROM inventory WHERE user_id=$1 AND status='kept') WHERE user_id=$1",
+            user_id
+        )
     return {"success": True}
 
 # ============================================================
@@ -1243,7 +1594,7 @@ async def get_quests(request: Request):
         rows = await conn.fetch(
             "SELECT * FROM quests WHERE user_id=$1 ORDER BY created_at", user_id
         )
-    return [dict(r) for r in rows]
+    return {"quests": [dict(r) for r in rows]}
 
 @app.post("/api/claim")
 async def claim_quests(request: Request):
@@ -1258,11 +1609,18 @@ async def claim_quests(request: Request):
             if not quests:
                 raise HTTPException(400, "No quests ready to claim")
             total = sum(q["reward"] for q in quests)
+            num_quests = len(quests)
             await conn.execute(
                 "UPDATE quests SET claimed=true WHERE user_id=$1 AND completed=true AND claimed=false",
                 user_id
             )
             await add_balance(user_id, total, conn)
+            # Track quests completed and grant XP (50 XP per quest)
+            await conn.execute(
+                "UPDATE users SET total_quests_completed = total_quests_completed + $1 WHERE user_id = $2",
+                num_quests, user_id
+            )
+            await grant_xp(user_id, num_quests * 50, conn)
     return {"success": True, "total_reward": total, "message": f"Claimed ${total:,.0f}!"}
 
 # ============================================================
@@ -1306,9 +1664,7 @@ async def quick_trade(req: TradeRequest, request: Request):
             )
             # Generate new item
             if req.is_gold_trade and req.rarity == "Gold":
-                # Items already deleted — use fixed tier
-                old_item = {}
-                next_tier = "Rare"  # default progression
+                next_tier = "Rare"
                 new_item = {
                     "name": f"Mystery Gold {next_tier}",
                     "rarity": "Gold", "condition": "Factory New",
@@ -1317,29 +1673,30 @@ async def quick_trade(req: TradeRequest, request: Request):
                 }
             else:
                 next_rarity = cfg["next"]
-                possible = [
-                    i for case in CASES.values()
-                    for i in case["items"] if i["rarity"] == next_rarity
-                ]
-                template = random.choice(possible) if possible else {
-                    "name": f"Mystery {next_rarity}", "condition": "Field-Tested", "tier": None
-                }
-                is_st = random.random() < 0.1
+                possible = ALL_ITEMS_BY_RARITY.get(next_rarity, [])
+                if not possible:
+                    raise HTTPException(400, f"No items available for rarity {next_rarity}")
+                template = shared.secure_choice(possible)
+                is_st = shared.secure_random() < 0.1
                 fv = generate_skin_float()
                 cond = get_skin_condition(fv)
                 price = calculate_item_value(next_rarity, cond, template.get("tier"), is_st)
                 name = f"{'StatTrak™ ' if is_st else ''}{template['name']}"
+                # Build image_url so inventory displays correctly
+                trade_img_file = os.path.basename(template.get("skin_image") or "") if template.get("skin_image") else None
+                trade_img_url = f"/static/images/skins/{trade_img_file}" if trade_img_file else None
                 new_item = {
                     "name": name, "rarity": next_rarity, "condition": cond,
                     "tier": template.get("tier"), "is_stattrak": is_st,
-                    "float": fv, "price": price,
+                    "float": fv, "price": price, "image_url": trade_img_url,
                 }
             row = await conn.fetchrow("""
                 INSERT INTO inventory (user_id, item_name, item_type, rarity, price, condition,
-                    is_stattrak, status, float_value)
-                VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7) RETURNING id
+                    is_stattrak, status, float_value, image_url)
+                VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8) RETURNING id
             """, user_id, new_item["name"], new_item["rarity"], new_item["price"],
-                new_item["condition"], new_item["is_stattrak"], new_item.get("float", 0.0))
+                new_item["condition"], new_item["is_stattrak"], new_item.get("float", 0.0),
+                new_item.get("image_url"))
             new_item["id"] = row["id"]
             await conn.execute(
                 "UPDATE users SET total_trades=total_trades+1 WHERE user_id=$1", user_id
@@ -1384,30 +1741,28 @@ async def skin_upgrade_endpoint(request: Request):
 
                 await conn.execute("DELETE FROM inventory WHERE id=$1", item_id)
 
-                success = random.random() < success_odds.get(item["rarity"], 0.5)
+                success = shared.secure_random() < success_odds.get(item["rarity"], 0.5)
 
                 if success:
-                    possible = [
-                        i for case in CASES.values()
-                        for i in case["items"] if i["rarity"] == next_rarity
-                    ]
-                    template = random.choice(possible) if possible else {
-                        "name": f"Mystery {next_rarity}",
-                        "condition": "Field-Tested",
-                        "tier": None
-                    }
-                    is_st = random.random() < 0.1
+                    possible = ALL_ITEMS_BY_RARITY.get(next_rarity, [])
+                    if not possible:
+                        raise HTTPException(400, f"No items available for rarity {next_rarity}")
+                    template = shared.secure_choice(possible)
+                    is_st = shared.secure_random() < 0.1
                     fv = generate_skin_float()
                     cond = get_skin_condition(fv)
                     price = calculate_item_value(next_rarity, cond, template.get("tier"), is_st)
                     name = f"{'StatTrak™ ' if is_st else ''}{template['name']}"
+                    # Build image_url so inventory displays correctly
+                    upgrade_img_file = os.path.basename(template.get("skin_image") or "") if template.get("skin_image") else None
+                    upgrade_img_url = f"/static/images/skins/{upgrade_img_file}" if upgrade_img_file else None
 
                     await conn.execute("""
                         INSERT INTO inventory
                             (user_id, item_name, item_type, rarity, price,
-                             condition, is_stattrak, status, float_value)
-                        VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7)
-                    """, user_id, name, next_rarity, price, cond, is_st, fv)
+                             condition, is_stattrak, status, float_value, image_url)
+                        VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8)
+                    """, user_id, name, next_rarity, price, cond, is_st, fv, upgrade_img_url)
 
                     await conn.execute("""
                         INSERT INTO skin_upgrades
@@ -1592,7 +1947,6 @@ async def live_feed(limit: int = 20):
 # ============================================================
 
 from shared import get_skin_image_filename
-
 @app.get("/api/skin-image")
 async def get_skin_image(name: str):
     filename = get_skin_image_filename(name)
@@ -1707,29 +2061,13 @@ async def admin_reset_balance(request: Request, _=Depends(require_admin)):
 # ============================================================
 
 @app.post("/webhook/stripe")
-async def stripe_webhook(request: Request):
-    if not STRIPE_ENABLED:
-        raise HTTPException(503, "Stripe not configured")
-    payload = await request.body()
-    sig     = request.headers.get("stripe-signature", "")
+async def stripe_webhook_legacy(request: Request):
+    """Forwarded to routes.premium stripe_webhook — this stub kept for router compatibility."""
     try:
-        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+        from routes.premium import stripe_webhook as _premium_webhook
+        return await _premium_webhook(request)
     except Exception:
-        raise HTTPException(400, "Invalid webhook")
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        meta    = session.get("metadata", {})
-        user_id = int(meta.get("user_id", 0))
-        tickets = int(meta.get("tickets", 0))
-        if user_id and tickets:
-            pool = await get_db()
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE users SET tickets=tickets+$1 WHERE user_id=$2",
-                    tickets, user_id
-                )
-    return {"received": True}
+        raise HTTPException(503, "Stripe not configured")
 
 # ─── Missing admin settings endpoint ──────────────────────────
 @app.get("/api/admin/settings")
@@ -1759,10 +2097,14 @@ async def get_quests_alias(request: Request):
     """Alias for /api/quests – frontend compatibility."""
     return await get_quests(request)
 
-# ─── TICKET PURCHASE (stub) ──────────────────────────────────────────
+# ─── TICKET PURCHASE — now handled by /api/tickets/buy (routes/premium.py) ──
 @app.post("/api/buy-tickets")
-async def buy_tickets(request: Request):
-    raise HTTPException(503, "Ticket purchasing is not available yet")
+async def buy_tickets_legacy(request: Request):
+    """Legacy alias — redirects to new ticket store."""
+    from routes.premium import tickets_buy, BuyPackBody
+    body = await request.json()
+    pack_id = body.get("pack_id", "")
+    return await tickets_buy(BuyPackBody(pack_id=pack_id), request)
 
 # ============================================================
 # MISSING ALIAS ROUTES  (index.html calls these paths)
@@ -1826,7 +2168,7 @@ async def coinflip_create(request: Request):
             await ensure_user_exists(user_id, conn=conn)
             if not await deduct_balance(user_id, amount, conn):
                 raise HTTPException(400, "Insufficient balance")
-            user_wins = random.random() < 0.5
+            user_wins = shared.secure_random() < 0.5
             if user_wins:
                 win = round(amount * 1.9, 2)   # 5% house edge
                 await add_balance(user_id, win, conn)
@@ -1849,7 +2191,7 @@ async def dice_play(request: Request):
     bet_number = int(body.get("bet_number", 7))
     if amount < 10:
         raise HTTPException(400, "Minimum bet is $10")
-    roll = random.randint(2, 12)
+    roll = shared.secure_randint(2, 12)
     if bet_type == "over":
         win = roll > bet_number
         mult = round(12 / max(1, 12 - bet_number), 2)
@@ -1884,7 +2226,7 @@ async def slots_play(request: Request):
     amount = float(body.get("amount", 100))
     if amount < 10:
         raise HTTPException(400, "Minimum bet is $10")
-    symbols = [random.choice(SLOT_SYMBOLS) for _ in range(3)]
+    symbols = [shared.secure_choice(SLOT_SYMBOLS) for _ in range(3)]
     emojis  = [s["emoji"] for s in symbols]
     combo   = "".join(emojis)
     mult    = SLOT_PAYOUTS.get(combo, 0)
@@ -1919,7 +2261,7 @@ async def mines_start(request: Request):
     if amount < 10:
         raise HTTPException(400, "Minimum bet is $10")
     total_tiles = grid_size * grid_size
-    mine_positions = random.sample(range(total_tiles), min(mine_count, total_tiles - 1))
+    mine_positions = shared.secure_shuffle(list(range(total_tiles)))[:min(mine_count, total_tiles - 1)]
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -2026,12 +2368,14 @@ async def open_premium_case(request: Request):
                 if not item:
                     continue
                 item.setdefault("display_name", item.get("name", ""))
+                skin_img_file = item.get('image_filename')
+                skin_img_url = f"/static/images/skins/{skin_img_file}" if skin_img_file else None
                 row = await conn.fetchrow("""
                     INSERT INTO inventory
-                    (user_id,item_name,item_type,rarity,price,condition,is_stattrak,status,case_id,float_value)
-                    VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8) RETURNING id
+                    (user_id,item_name,item_type,rarity,price,condition,is_stattrak,status,case_id,float_value,image_url)
+                    VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8,$9) RETURNING id
                 """, user_id, item["name"], item["rarity"], item["price"],
-                    item["condition"], item["is_stattrak"], case_id, item["float"])
+                    item["condition"], item["is_stattrak"], case_id, item["float"], skin_img_url)
                 item["id"] = row["id"]
                 items.append(item)
             await conn.execute(
@@ -2042,19 +2386,26 @@ async def open_premium_case(request: Request):
 @app.post("/api/sell-batch")
 async def sell_batch(request: Request):
     """Sell multiple inventory items at once."""
-    body = await request.json()
+    body     = await request.json()
     user_id  = await require_auth(request)
     item_ids = body.get("item_ids", [])
     if not item_ids:
         raise HTTPException(400, "No items provided")
     if len(item_ids) > 100:
         raise HTTPException(400, "Maximum 100 items per batch")
+    # Sanitise: ensure all IDs are ints
+    try:
+        item_ids = [int(i) for i in item_ids if i is not None]
+    except (ValueError, TypeError):
+        raise HTTPException(400, "All item_ids must be integers")
+    if not item_ids:
+        raise HTTPException(400, "No valid item IDs provided")
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
             rows = await conn.fetch("""
                 SELECT id, price FROM inventory
-                WHERE id = ANY($1::int[]) AND user_id=$2 AND status='kept'
+                WHERE id = ANY($1::int[]) AND user_id=$2 AND status IN ('kept','pending')
             """, item_ids, user_id)
             if not rows:
                 raise HTTPException(404, "No valid items found")
