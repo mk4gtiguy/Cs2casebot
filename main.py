@@ -1477,6 +1477,27 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Error syncing commands: {e}")
 
+    # Recover any giveaways that were running before a restart.
+    try:
+        now_utc = datetime.utcnow()
+        async with db_pool.acquire() as conn:
+            pending = await conn.fetch(
+                "SELECT id, end_time FROM giveaways WHERE ended = false AND end_time > $1",
+                now_utc
+            )
+            expired = await conn.fetch(
+                "SELECT id FROM giveaways WHERE ended = false AND end_time <= $1",
+                now_utc
+            )
+        for row in pending:
+            delay = max(0.0, (row['end_time'] - now_utc).total_seconds())
+            asyncio.create_task(_run_giveaway(row['id'], delay))
+        for row in expired:
+            asyncio.create_task(_run_giveaway(row['id'], 0))
+        logger.info(f"🎉 Recovered {len(pending)} pending + {len(expired)} expired giveaways")
+    except Exception as e:
+        logger.error(f"Giveaway recovery failed: {e}")
+
 # ============================================
 # XP SYSTEM
 # ============================================
@@ -1676,6 +1697,9 @@ async def daily(interaction: discord.Interaction):
             if jackpot_hit:
                 reward += 50000
 
+            streak_bonus = {10: 25, 25: 75, 50: 250, 100: 1000}.get(streak, 0)
+            reward += streak_bonus
+
             await conn.execute("UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4", reward, streak, now, interaction.user.id)
 
             updated_user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
@@ -1692,10 +1716,8 @@ async def daily(interaction: discord.Interaction):
         embed.add_field(name="Streak", value=f"{streak} days", inline=True)
         embed.add_field(name="New Balance", value=f"${new_balance:,.2f}", inline=True)
 
-        if streak in [10, 25, 50, 100]:
-            bonus = {10:25, 25:75, 50:250, 100:1000}[streak]
-            embed.add_field(name="🏆 Streak Bonus", value=f"${bonus} added!", inline=True)
-            await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", bonus, interaction.user.id)
+        if streak_bonus:
+            embed.add_field(name="🏆 Streak Bonus", value=f"${streak_bonus} added!", inline=True)
 
         await update_quest_progress(interaction.user.id, "daily_streak", 1, conn)
         embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
@@ -1910,6 +1932,7 @@ async def bulk_open(interaction: discord.Interaction, case: str, quantity: int):
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
 
+                old_balance = float(deducted) + total_cost
                 items = []
                 for _ in range(quantity):
                     item = get_random_item(case_id)
@@ -2611,7 +2634,7 @@ async def sticker_tradeup(interaction: discord.Interaction, item_ids: str):
                 current_rarity = None
                 for r in rarities:
                     if r in rarity_order:
-                        if current_rarity is None or rarity_order.index(r) < rarity_order.index(current_rarity):
+                        if current_rarity is None or rarity_order.index(r) > rarity_order.index(current_rarity):
                             current_rarity = r
 
                 if current_rarity is None or current_rarity not in STICKER_TRADE_PROGRESSION:
@@ -2885,29 +2908,40 @@ async def create_giveaway(interaction: discord.Interaction, prize: str, duration
     async with db_pool.acquire() as conn:
         await conn.execute("UPDATE giveaways SET message_id = $1 WHERE id = $2", msg.id, giveaway_id)
 
-    async def end_giveaway():
-        await asyncio.sleep(duration_minutes * 60)
-        async with db_pool.acquire() as conn:
-            entries = await conn.fetch("SELECT user_id FROM giveaway_entries WHERE giveaway_id = $1", giveaway_id)
-            if not entries:
-                await interaction.channel.send(f"🎉 Giveaway for **{prize}** ended with no entries!")
-                return
+    asyncio.create_task(_run_giveaway(giveaway_id, duration_minutes * 60))
 
-            winners_list = secure_shuffle([e['user_id'] for e in entries])[:min(winners, len(entries))]
+
+async def _run_giveaway(giveaway_id: int, delay_seconds: float):
+    """Run a single giveaway — safe to call at startup for recovery."""
+    if delay_seconds > 0:
+        await asyncio.sleep(delay_seconds)
+    async with db_pool.acquire() as conn:
+        giveaway = await conn.fetchrow(
+            "SELECT * FROM giveaways WHERE id = $1 AND ended = false", giveaway_id
+        )
+        if not giveaway:
+            return
+        channel = bot.get_channel(giveaway['channel_id'])
+        if channel is None:
+            return
+        entries = await conn.fetch("SELECT user_id FROM giveaway_entries WHERE giveaway_id = $1", giveaway_id)
+        if not entries:
+            await channel.send(f"🎉 Giveaway for **{giveaway['prize']}** ended with no entries!")
+        else:
+            winners_list = secure_shuffle([e['user_id'] for e in entries])[:min(giveaway['winner_count'], len(entries))]
             winner_mentions = []
             for winner_id in winners_list:
-                user = await bot.fetch_user(winner_id)
-                winner_mentions.append(user.mention)
-
-            winner_text = ", ".join(winner_mentions)
+                try:
+                    user = await bot.fetch_user(winner_id)
+                    winner_mentions.append(user.mention)
+                except Exception:
+                    winner_mentions.append(f"<@{winner_id}>")
             result_embed = discord.Embed(title="🏆 GIVEAWAY WINNERS! 🏆", color=discord.Color.gold())
-            result_embed.add_field(name="Prize", value=prize, inline=False)
-            result_embed.add_field(name="Winners", value=winner_text, inline=False)
+            result_embed.add_field(name="Prize", value=giveaway['prize'], inline=False)
+            result_embed.add_field(name="Winners", value=", ".join(winner_mentions), inline=False)
             result_embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
-            await interaction.channel.send(embed=result_embed)
-            await conn.execute("UPDATE giveaways SET ended = true WHERE id = $1", giveaway_id)
-
-    asyncio.create_task(end_giveaway())
+            await channel.send(embed=result_embed)
+        await conn.execute("UPDATE giveaways SET ended = true WHERE id = $1", giveaway_id)
 
 @bot.tree.command(name="giveaway_reroll", description="Reroll a giveaway (Admin only)")
 @app_commands.default_permissions(administrator=True)
@@ -2931,8 +2965,11 @@ async def reroll_giveaway(interaction: discord.Interaction, giveaway_id: int):
         new_winners = secure_shuffle([e['user_id'] for e in entries])[:min(giveaway['winner_count'], len(entries))]
         winner_mentions = []
         for winner_id in new_winners:
-            user = await bot.fetch_user(winner_id)
-            winner_mentions.append(user.mention)
+            try:
+                user = await bot.fetch_user(winner_id)
+                winner_mentions.append(user.mention)
+            except Exception:
+                winner_mentions.append(f"<@{winner_id}>")
 
         embed = discord.Embed(title="🔄 Giveaway Rerolled!", color=discord.Color.gold())
         embed.add_field(name="Prize", value=giveaway['prize'], inline=False)
@@ -3216,9 +3253,10 @@ async def reveal_mines_tile(game_id: int, user_id: int, tile_index: int) -> dict
             async with conn.transaction():
                 await ensure_user_exists(user_id, conn=conn)
                 
-                # Check if game exists
+                # FOR UPDATE prevents two concurrent reveal requests from both
+                # seeing the same game state and double-processing the same tile.
                 game = await conn.fetchrow(
-                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2",
+                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 FOR UPDATE",
                     game_id, user_id
                 )
                 

@@ -470,6 +470,25 @@ async def _init_all_tables(pool):
                 created_at   TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Migration: add admin-required columns that may be missing on older installs.
+        # The admin module's CREATE TABLE IF NOT EXISTS never runs because server.py
+        # creates the table first; ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent.
+        for _col, _def in [
+            ("required_level", "INT DEFAULT 0"),
+            ("required_opens",  "INT DEFAULT 0"),
+            ("created_by",      "BIGINT"),
+            ("drawn_at",        "TIMESTAMPTZ"),
+        ]:
+            await conn.execute(f"""
+                DO $$ BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='giveaways' AND column_name='{_col}'
+                    ) THEN
+                        ALTER TABLE giveaways ADD COLUMN {_col} {_def};
+                    END IF;
+                END $$;
+            """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS giveaway_entries (
                 id           SERIAL PRIMARY KEY,
@@ -2504,6 +2523,16 @@ async def sell_batch(request: Request):
             total = round(sum(float(r["price"]) * 0.70 for r in rows), 2)
             ids   = [r["id"] for r in rows]
             await add_balance(user_id, total, conn)
+            # Update sell_items quest progress for each item sold (mirrors sell_item)
+            n_sold = len(ids)
+            await conn.execute("""
+                UPDATE quests SET progress = progress + $1
+                WHERE user_id=$2 AND quest_type='sell_items' AND completed=FALSE
+            """, n_sold, user_id)
+            await conn.execute("""
+                UPDATE quests SET completed=TRUE
+                WHERE user_id=$1 AND quest_type='sell_items' AND progress >= required AND completed=FALSE
+            """, user_id)
     return {
         "success": True,
         "count": len(ids),
