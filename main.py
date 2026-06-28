@@ -93,7 +93,7 @@ async def jackpot_draw() -> tuple:
             entries = await conn.fetch("SELECT user_id, amount FROM jackpot_entries")
             pot = await conn.fetchval("SELECT pot FROM jackpot_state WHERE id = 1") or 0
             if not entries:
-                return None, 0
+                return None, 0, 0
             # Weighted selection using secure RNG
             total = sum(float(e['amount']) for e in entries)
             pick = secure_random() * total
@@ -1194,7 +1194,8 @@ async def init_db():
                     id SERIAL PRIMARY KEY,
                     giveaway_id INTEGER REFERENCES giveaways(id) ON DELETE CASCADE,
                     user_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-                    created_at TIMESTAMP DEFAULT NOW()
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE (giveaway_id, user_id)
                 )
             """)
             
@@ -1362,14 +1363,11 @@ async def ensure_user_exists(user_id: int, username: str = None, conn=None):
             async with db_pool.acquire() as conn:
                 return await ensure_user_exists(user_id, username, conn)
         
-        user = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
-        if not user:
-            await conn.execute("""
-                INSERT INTO users (user_id, username, balance, created_at, updated_at)
-                VALUES ($1, $2, 1000, NOW(), NOW())
-            """, user_id, username or f"User_{user_id}")
-            logger.info(f"✅ Created user {user_id} ({username or f'User_{user_id}'})")
-            return True
+        await conn.execute("""
+            INSERT INTO users (user_id, username, balance, created_at, updated_at)
+            VALUES ($1, $2, 1000, NOW(), NOW())
+            ON CONFLICT (user_id) DO NOTHING
+        """, user_id, username or f"User_{user_id}")
         return True
     except Exception as e:
         logger.error(f"ensure_user_exists error for {user_id}: {e}")
@@ -1677,13 +1675,17 @@ async def daily(interaction: discord.Interaction):
 
             if jackpot_hit:
                 reward += 50000
-                embed2 = discord.Embed(title="🎰🎰🎰 JACKPOT! 🎰🎰🎰", description=f"You won an additional **$50,000**!", color=discord.Color.gold())
-                await interaction.followup.send(embed2)
 
             await conn.execute("UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4", reward, streak, now, interaction.user.id)
 
             updated_user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
             new_balance = updated_user['balance'] if updated_user else reward
+
+        # Send jackpot notification outside the transaction so a Discord error
+        # cannot roll back the already-committed balance update.
+        if jackpot_hit:
+            embed2 = discord.Embed(title="🎰🎰🎰 JACKPOT! 🎰🎰🎰", description=f"You won an additional **$50,000**!", color=discord.Color.gold())
+            await interaction.followup.send(embed2)
 
         embed = discord.Embed(title="🎁 Daily Reward Claimed!", color=discord.Color.green())
         embed.add_field(name="Reward", value=f"${reward:,.2f}", inline=True)
@@ -3091,8 +3093,8 @@ async def join_coinflip_game(game_id: int, user_id: int) -> dict:
                 winner_id, game_id
             )
             
-            await update_quest_progress(winner_id, "jackpot_win", 1)
-            
+            await update_quest_progress(winner_id, "jackpot_win", 1, conn)
+
             return {
                 'success': True,
                 'winner_id': winner_id,
