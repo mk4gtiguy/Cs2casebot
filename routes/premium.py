@@ -27,6 +27,7 @@ from shared import (
     logger, get_db, require_auth,
     add_balance, deduct_balance, ensure_user_exists,
     CASES, get_random_item, convert_decimals,
+    _invalidate_vip_cache,
 )
 
 router = APIRouter(tags=["premium"])
@@ -336,6 +337,7 @@ async def vip_cancel(request: Request):
             "UPDATE users SET vip_expires_at = NOW() WHERE user_id = $1",
             user_id
         )
+    _invalidate_vip_cache(user_id)
     return {"success": True, "message": "VIP cancelled. Access remains until end of current period."}
 
 # ============================================================
@@ -461,6 +463,7 @@ async def stripe_webhook(request: Request):
                         user_id, cfg['daily_tickets'], 'subscription',
                         {'tier': tier, 'event': 'new_subscription'}, conn=conn
                     )
+            _invalidate_vip_cache(user_id)
             logger.info(f"✅ VIP {tier} granted to user {user_id}")
 
         else:
@@ -503,6 +506,7 @@ async def stripe_webhook(request: Request):
                             row['user_id'], daily, 'subscription',
                             {'tier': row['vip_tier'], 'event': 'renewal'}, conn=conn
                         )
+                _invalidate_vip_cache(row['user_id'])
                 logger.info(f"✅ VIP extended for user {row['user_id']}")
 
     # ── Subscription cancelled / payment failed ───────────────
@@ -512,10 +516,15 @@ async def stripe_webhook(request: Request):
             pool = await get_db()
             async with pool.acquire() as conn:
                 if event_type == "customer.subscription.deleted":
+                    row = await conn.fetchrow(
+                        "SELECT user_id FROM users WHERE stripe_customer_id=$1", customer_id
+                    )
                     await conn.execute("""
                         UPDATE users SET vip_expires_at = NOW()
                         WHERE stripe_customer_id = $1
                     """, customer_id)
+                    if row:
+                        _invalidate_vip_cache(row['user_id'])
                 else:
                     logger.warning(f"Payment failed for customer {customer_id}")
 

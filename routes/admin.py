@@ -48,6 +48,7 @@ import shared
 from shared import (
     logger, get_db, require_auth, ADMIN_USER_IDS,
     deduct_balance, add_balance, convert_decimals, CASES,
+    _invalidate_vip_cache,
 )
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -429,6 +430,7 @@ async def admin_set_vip(
                        target_id=user_id,
                        target_username=user["username"] if user else None,
                        details={"tier": body.tier, "days": body.days})
+    _invalidate_vip_cache(user_id)
     return {"success": True, "tier": body.tier}
 
 # ── VIP list, bulk grant/revoke, and revenue stats ────────────
@@ -509,6 +511,7 @@ async def admin_vip_grant(
                        target_id=uid,
                        target_username=user["username"] if user else None,
                        details={"tier": body.tier, "days": body.days})
+    _invalidate_vip_cache(uid)
     return {"success": True, "tier": body.tier, "days": body.days}
 
 class VIPRevokeBody(BaseModel):
@@ -534,6 +537,7 @@ async def admin_vip_revoke(
                        target_id=uid,
                        target_username=user["username"] if user else None,
                        details={"reason": body.reason})
+    _invalidate_vip_cache(uid)
     return {"success": True}
 
 @router.get("/vip/stats")
