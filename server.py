@@ -1095,8 +1095,10 @@ async def save_user_settings(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         raw = await conn.fetchval("SELECT settings FROM users WHERE user_id=$1", user_id)
-        try: existing = _j.loads(raw) if isinstance(raw, str) else (raw or {})
-        except: existing = {}
+        try:
+            existing = _j.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception:
+            existing = {}
         existing.update(body)
         await conn.execute("UPDATE users SET settings=$1 WHERE user_id=$2", _j.dumps(existing), user_id)
         try:
@@ -1106,7 +1108,8 @@ async def save_user_settings(request: Request):
                 SET theme=$2,spin_speed=$3,sound_enabled=$4,confetti_mode=$5,updated_at=NOW()
             """, user_id, existing.get("theme","casino"), existing.get("spin_speed","normal"),
                 bool(existing.get("sound_enabled",True)), existing.get("confetti_mode","always"))
-        except: pass
+        except Exception as e:
+            logger.warning(f"Failed to persist user_settings for user {user_id}: {e}")
     return {"success": True}
 
 @app.get("/api/user/streak")
@@ -1417,11 +1420,36 @@ async def open_case(req: OpenCaseRequest, request: Request):
                         "UPDATE users SET total_golds = total_golds + 1 WHERE user_id = $1",
                         user_id
                     )
+                    await conn.execute("""
+                        UPDATE quests SET progress = progress + 1
+                        WHERE user_id=$1 AND quest_type='get_golds' AND completed=FALSE
+                    """, user_id)
+                    await conn.execute("""
+                        UPDATE quests SET completed=TRUE
+                        WHERE user_id=$1 AND quest_type='get_golds' AND progress >= required AND completed=FALSE
+                    """, user_id)
 
             await conn.execute(
                 "UPDATE users SET total_opens = total_opens + $1, total_spent = total_spent + $2 WHERE user_id = $3",
                 qty, total_cost, user_id
             )
+            # Update open_cases and earn_money quest progress
+            await conn.execute("""
+                UPDATE quests SET progress = progress + $2
+                WHERE user_id=$1 AND quest_type='open_cases' AND completed=FALSE
+            """, user_id, qty)
+            await conn.execute("""
+                UPDATE quests SET completed=TRUE
+                WHERE user_id=$1 AND quest_type='open_cases' AND progress >= required AND completed=FALSE
+            """, user_id)
+            await conn.execute("""
+                UPDATE quests SET progress = progress + $2
+                WHERE user_id=$1 AND quest_type='earn_money' AND completed=FALSE
+            """, user_id, int(total_cost))
+            await conn.execute("""
+                UPDATE quests SET completed=TRUE
+                WHERE user_id=$1 AND quest_type='earn_money' AND progress >= required AND completed=FALSE
+            """, user_id)
             # Grant XP: 10 per case, bonus 25 for each gold
             xp_amount = qty * 10
             gold_count = sum(1 for it in items if it.get("rarity") == "Gold")
@@ -1650,21 +1678,29 @@ async def quick_trade(req: TradeRequest, request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Verify ownership
+            # Verify ownership and capture gold tier before deletion
+            current_gold_tier = None
             for iid in req.item_ids:
                 row = await conn.fetchrow(
-                    "SELECT id FROM inventory WHERE id=$1 AND user_id=$2 AND rarity=$3 AND status='kept'",
+                    "SELECT id, tier FROM inventory WHERE id=$1 AND user_id=$2 AND rarity=$3 AND status='kept'",
                     iid, user_id, req.rarity
                 )
                 if not row:
                     raise HTTPException(400, f"Item {iid} not valid")
+                if current_gold_tier is None and row.get("tier"):
+                    current_gold_tier = row["tier"]
             # Delete traded items
             await conn.execute(
-                f"DELETE FROM inventory WHERE id = ANY($1::int[])", req.item_ids
+                "DELETE FROM inventory WHERE id = ANY($1::int[])", req.item_ids
             )
             # Generate new item
             if req.is_gold_trade and req.rarity == "Gold":
-                next_tier = "Rare"
+                # Advance to the next tier in the progression
+                try:
+                    tier_idx = GOLD_TIER_PROGRESSION.index(current_gold_tier or "Common")
+                except ValueError:
+                    tier_idx = 0
+                next_tier = GOLD_TIER_PROGRESSION[min(tier_idx + 1, len(GOLD_TIER_PROGRESSION) - 1)]
                 new_item = {
                     "name": f"Mystery Gold {next_tier}",
                     "rarity": "Gold", "condition": "Factory New",
