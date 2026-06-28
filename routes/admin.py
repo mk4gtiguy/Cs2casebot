@@ -584,13 +584,13 @@ async def admin_cases(admin_id: int = Depends(require_admin)):
     return {
         "cases": [
             {
-                "id":       c["id"],
+                "id":       case_id,
                 "name":     c["name"],
                 "emoji":    c.get("emoji", "📦"),
-                "price":    price_map.get(c["id"], float(c.get("price", 1000))),
-                "featured": featured_map.get(c["id"], False),
+                "price":    price_map.get(case_id, float(c.get("price", 1000))),
+                "featured": featured_map.get(case_id, False),
             }
-            for c in CASES
+            for case_id, c in CASES.items()
         ]
     }
 
@@ -764,27 +764,27 @@ async def admin_draw_giveaway(
 ):
     pool = await get_db()
     async with pool.acquire() as conn:
-        giveaway = await conn.fetchrow(
-            "SELECT * FROM giveaways WHERE id=$1", giveaway_id
-        )
-        if not giveaway:
-            raise HTTPException(404, "Giveaway not found")
-        if giveaway["status"] != "active":
-            return {"success": False, "error": "Giveaway already drawn or cancelled"}
-
-        entries = await conn.fetch(
-            "SELECT user_id FROM giveaway_entries WHERE giveaway_id=$1", giveaway_id
-        )
-        if not entries:
-            return {"success": False, "error": "No entries yet"}
-
-        from shared import secure_shuffle
-        entry_ids = [e["user_id"] for e in entries]
-        n_winners = min(giveaway["winner_count"], len(entry_ids))
-        winners   = secure_shuffle(entry_ids)[:n_winners]
-        prize_each = float(giveaway["prize_amount"]) / n_winners
-
         async with conn.transaction():
+            giveaway = await conn.fetchrow(
+                "SELECT * FROM giveaways WHERE id=$1 FOR UPDATE", giveaway_id
+            )
+            if not giveaway:
+                raise HTTPException(404, "Giveaway not found")
+            if giveaway["status"] != "active":
+                return {"success": False, "error": "Giveaway already drawn or cancelled"}
+
+            entries = await conn.fetch(
+                "SELECT user_id FROM giveaway_entries WHERE giveaway_id=$1", giveaway_id
+            )
+            if not entries:
+                return {"success": False, "error": "No entries yet"}
+
+            from shared import secure_shuffle
+            entry_ids = [e["user_id"] for e in entries]
+            n_winners = min(giveaway["winner_count"], len(entry_ids))
+            winners   = secure_shuffle(entry_ids)[:n_winners]
+            prize_each = float(giveaway["prize_amount"]) / n_winners
+
             for uid in winners:
                 await add_balance(uid, prize_each, conn)
 

@@ -1043,6 +1043,8 @@ async def bj_action(req: BJActionRequest, request: Request):
 
         # ── INSURANCE ──────────────────────────────────────
         if action == 'insurance':
+            if sess['insurance']:
+                raise HTTPException(400, "Insurance already purchased")
             ins_cost = round(bet / 2, 2)
             pool = await get_db()
             async with pool.acquire() as conn:
@@ -1211,7 +1213,7 @@ async def _check_bj_completion(user_id: int, sess: Dict, current_hand: int) -> D
     async with pool.acquire() as conn:
         async with conn.transaction():
             if total_win:
-                await add_balance(user_id, total_win, conn)
+                total_win = await _add_win(user_id, total_win, conn)
             total_bet = sum(sess['bets']) + sess['insurance']
             await log_game(conn, user_id, 'blackjack', total_bet, total_win, {
                 'hands': len(sess['hands']),

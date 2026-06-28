@@ -890,7 +890,9 @@ async def holdem_leave(request: Request, body: dict):
     # Return remaining chips
     remaining = player.chips
     if remaining > 0:
-        await add_balance(user_id, remaining)
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            await add_balance(user_id, remaining, conn)
 
     del room.players[user_id]
     room.seats = {s: u for s, u in room.seats.items() if u != user_id}
