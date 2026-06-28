@@ -273,9 +273,10 @@ async function flip(){
   const coin=document.getElementById('theCoin');
   const isHeads=call==='heads';
   // Result will come from server — but we flip visually first
+  // Visual-only spin count — actual result comes from server
   const spins=Math.floor(Math.random()*3+3)*360;
   coin.style.setProperty('--flip-dur','1.2s');
-  coin.style.setProperty('--flip-end',(spins+180)+'deg'); // unknown result
+  coin.style.setProperty('--flip-end',(spins+180)+'deg');
   coin.classList.add('flip');
 
   try{

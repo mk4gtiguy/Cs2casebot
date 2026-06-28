@@ -147,8 +147,16 @@ body{background-image:radial-gradient(ellipse 80% 40% at 30% 50%,rgba(59,130,246
   </div>
 
   <div class="pair-row">
-    <div class="pair-toggle" id="ppToggle" onclick="togglePair('player')">🎴 PLAYER PAIR · 11:1 (+$100)</div>
-    <div class="pair-toggle" id="bpToggle" onclick="togglePair('banker')">🎴 BANKER PAIR · 11:1 (+$100)</div>
+    <div class="pair-toggle" id="ppToggle" onclick="togglePair('player')">🎴 PLAYER PAIR · 11:1</div>
+    <div class="pair-toggle" id="bpToggle" onclick="togglePair('banker')">🎴 BANKER PAIR · 11:1</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:0 2px;">
+    <span style="font-size:8px;color:#2a2040;letter-spacing:1px;flex-shrink:0;">SIDE BET $</span>
+    <input id="sideBetInp" type="number" value="100" min="50" max="5000" step="50"
+      style="flex:1;background:rgba(0,0,0,0.4);border:1px solid rgba(255,215,0,0.1);border-radius:8px;
+             padding:6px 10px;color:#e0d8f0;font-family:Orbitron,monospace;font-size:11px;
+             font-weight:700;outline:none;text-align:center;"
+      placeholder="SIDE BET AMOUNT">
   </div>
 
   <div class="bet-ctrl">
@@ -179,10 +187,9 @@ async function init(){try{const d=await api('/api/user/me');balance=d.balance;up
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function setBetOn(side){
   betOn=side;
-  ['player-btn','tie-btn','banker-btn'].forEach(c=>{document.querySelector('.'+c).classList.remove('sel');});
-  document.querySelector('.'+side+'-btn,.'+side+'-btn').classList.add('sel');
-  // Fix: find by onclick
-  document.querySelectorAll('.bbb').forEach(b=>{if(b.getAttribute('onclick').includes("'"+side+"'")) b.classList.add('sel'); else b.classList.remove('sel');});
+  document.querySelectorAll('.bbb').forEach(b=>{
+    b.classList.toggle('sel', b.getAttribute('onclick').includes("'"+side+"'"));
+  });
   const btn=document.getElementById('dealBtn');btn.disabled=false;btn.textContent='🎴 DEAL — '+side.toUpperCase();
 }
 function togglePair(side){
@@ -199,7 +206,7 @@ async function deal(){
   dealing=true;document.getElementById('dealBtn').disabled=true;
   resetHands();setResult('DEALING…','idle');
   try{
-    const d=await api('/api/games/hard/baccarat',{method:'POST',body:JSON.stringify({amount:bet,bet_on:betOn,player_pair:pPair,banker_pair:bPair})});
+    const d=await api('/api/games/hard/baccarat',{method:'POST',body:JSON.stringify({amount:bet,bet_on:betOn,player_pair:pPair,banker_pair:bPair,side_bet:pPair||bPair?parseInt(document.getElementById("sideBetInp")?.value||100):0})});
     // Animate cards
     await delay(200);
     for(const c of d.player_hand){renderCard('playerCards',c,true);await delay(150);}

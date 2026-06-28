@@ -189,13 +189,13 @@ function handleMsg(msg,bet){
     updatePlayerCashout(msg.user_id,msg.at_mult,msg.win);
     if(msg.user_id===0) document.getElementById('coBtn').disabled=true;
   }else if(msg.type==='crashed'){
-    inRound=false;hasBet=false;betting=false;
+    inRound=false;hasBet=false;betting=false;roomId=null;
     setMult(msg.crash_at.toFixed(2)+'×','crashed');
     setPhase('crashed','💥 CRASHED AT '+msg.crash_at.toFixed(2)+'×');
     document.getElementById('coBtn').disabled=true;
     document.getElementById('betBtn').disabled=false;
     addHistory(msg.crash_at);
-    balance=refreshBalSoon();
+    refreshBalSoon();
   }
 }
 

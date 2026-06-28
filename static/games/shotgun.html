@@ -198,7 +198,7 @@ async function startGame(){
   setResult('TRIGGGER LOADED — PULL WHEN READY','idle');
   document.getElementById('coBtn').disabled=true;
   try{
-    await api('/api/games/hard/shotgun/start',{method:'POST',body:JSON.stringify({amount:bet,chambers})});
+    await api('/api/games/medium/shotgun/start',{method:'POST',body:JSON.stringify({amount:bet,chambers})});
     gameActive=true;balance=await refreshBal();updateBal();
     // Spin cylinder animation
     const ring=document.getElementById('cylRing');
@@ -215,7 +215,7 @@ async function pull(){
   document.getElementById('pullBtn').disabled=true;
   document.getElementById('coBtn').disabled=true;
   try{
-    const d=await api('/api/games/hard/shotgun/pull',{method:'POST'});
+    const d=await api('/api/games/medium/shotgun/pull',{method:'POST'});
     if(d.fired){
       const ring=document.getElementById('cylRing');
       ring.classList.add('fire');
@@ -267,7 +267,7 @@ async function cashout(){
   document.getElementById('coBtn').disabled=true;
   document.getElementById('pullBtn').disabled=true;
   try{
-    const d=await api('/api/games/hard/shotgun/cashout',{method:'POST'});
+    const d=await api('/api/games/medium/shotgun/cashout',{method:'POST'});
     balance=await refreshBal();updateBal();
     setResult('💰 CASHED OUT · '+d.multiplier.toFixed(2)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
   }catch(e){

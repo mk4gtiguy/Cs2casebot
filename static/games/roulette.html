@@ -250,9 +250,11 @@ function animateWheel(target,dur){
 }
 
 // Bet management
-function toggleBet(type){
-  const idx=bets.findIndex(b=>b.type===type&&b.value===type);
-  if(idx>=0){bets.splice(idx,1);}else{bets.push({type,value:type,label:type.toUpperCase()});}
+function toggleBet(type, value){
+  // For simple bets (red/black/odd/even/etc.) value defaults to type
+  const v = (value !== undefined) ? value : type;
+  const idx=bets.findIndex(b=>b.type===type&&String(b.value)===String(v));
+  if(idx>=0){bets.splice(idx,1);}else{bets.push({type, value:v, label:type.toUpperCase()});}
   renderBets();
 }
 function addDozBet(n){bets.push({type:'dozen',value:n,label:'DOZEN '+n});renderBets();}

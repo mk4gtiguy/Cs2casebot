@@ -150,7 +150,7 @@ async function startGame(){
   document.getElementById('chainHistory').innerHTML='';
   chainLen=0;chainMult=1;updateChainDisplay();setResult('DEALING…','idle');
   try{
-    const d=await api('/api/games/medium/hilo/start',{method:'POST',body:JSON.stringify({amount:bet})});
+    const d=await api('/api/games/easy/hilo/start',{method:'POST',body:JSON.stringify({amount:bet})});
     currentCard=d.card;renderCard('currCard',currentCard);
     document.getElementById('prevCard').innerHTML='<div class="back-pattern">♠</div>';
     document.getElementById('prevCard').className='playing-card back';
@@ -164,7 +164,7 @@ async function guess(dir){
   if(!gameActive||acting) return;
   acting=true;setResult('FLIPPING…','idle');
   try{
-    const d=await api('/api/games/medium/hilo/guess',{method:'POST',body:JSON.stringify({guess:dir})});
+    const d=await api('/api/games/easy/hilo/guess',{method:'POST',body:JSON.stringify({guess:dir})});
     renderCard('prevCard',currentCard);currentCard=d.new_card;renderCard('currCard',currentCard,true);
     if(d.bust){
       gameActive=false;addChainPip(false);
@@ -184,7 +184,7 @@ async function cashout(){
   if(!gameActive||acting) return;
   acting=true;gameActive=false;document.getElementById('btnCashout').disabled=true;
   try{
-    const d=await api('/api/games/medium/hilo/cashout',{method:'POST'});
+    const d=await api('/api/games/easy/hilo/cashout',{method:'POST'});
     balance=await refreshBal();updateBal();
     setResult('💰 CASHED OUT — '+chainMult.toFixed(2)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
   }catch(e){setResult('ERROR: '+e.message,'idle');}

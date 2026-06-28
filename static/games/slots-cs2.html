@@ -230,7 +230,7 @@ function buildReels(){
 function setBet(v){bet=v;document.getElementById('betDisp').textContent='$'+bet.toLocaleString();document.querySelectorAll('.qb').forEach(b=>b.classList.remove('active'));}
 function halveBet(){setBet(Math.max(100,Math.floor(bet/2/100)*100));}
 function doubleBet(){setBet(Math.min(balance,bet*2));}
-function maxBet(){setBet(Math.min(balance,50000));}
+function maxBet(){setBet(Math.min(balance,750000));}
 
 async function spin(){
   if(spinning||bet>balance) return;

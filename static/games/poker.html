@@ -242,15 +242,18 @@ let roomCode=null,ws=null,myChips=0,myHole=[];
 // VP state
 let vpHand=[],vpHeld=new Set(),vpDealt=false,vpActing=false;
 
-async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}}
+async function init(){
+  setMode('holdem');
+  try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
+}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 
 function setMode(m){
   mode=m;
   document.getElementById('btnHoldem').classList.toggle('active',m==='holdem');
   document.getElementById('btnVideo').classList.toggle('active',m==='video');
-  document.getElementById('holdemSection').style.display=m==='holdem'?'':'none';
-  document.getElementById('videoSection').style.display=m==='video'?'':'none';
+  document.getElementById('holdemSection').style.display=m==='holdem'?'block':'none';
+  document.getElementById('videoSection').style.display=m==='video'?'block':'none';
 }
 
 // ══ HOLD'EM ══

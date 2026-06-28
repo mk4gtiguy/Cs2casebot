@@ -170,7 +170,7 @@ async function startLadder(){
   currentRung=0;currentMult=1;
   updateStats(0,1,bet);setResult('CLIMB THE RUNGS — CASH OUT ANYTIME','idle');
   try{
-    await api('/api/games/hard/ladder/start',{method:'POST',body:JSON.stringify({amount:bet})});
+    await api('/api/games/medium/ladder/start',{method:'POST',body:JSON.stringify({amount:bet})});
     gameActive=true;balance=await refreshBal();updateBal();
     buildRungs(0,-1);document.getElementById('climbBtn').disabled=false;
     document.getElementById('coBtn').disabled=true;
@@ -182,7 +182,7 @@ async function climb(){
   if(!gameActive||acting) return;
   acting=true;document.getElementById('climbBtn').disabled=true;
   try{
-    const d=await api('/api/games/hard/ladder/climb',{method:'POST'});
+    const d=await api('/api/games/medium/ladder/climb',{method:'POST'});
     const bet=parseInt(document.getElementById('betInp').value)||500;
     if(!d.climbed){
       gameActive=false;
@@ -213,7 +213,7 @@ async function cashout(){
   if(!gameActive||acting) return;
   acting=true;gameActive=false;document.getElementById('coBtn').disabled=true;
   try{
-    const d=await api('/api/games/hard/ladder/cashout',{method:'POST'});
+    const d=await api('/api/games/medium/ladder/cashout',{method:'POST'});
     balance=await refreshBal();updateBal();
     setResult('💰 CASHED OUT RUNG '+d.rungs+' · '+d.multiplier.toFixed(2)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
   }catch(e){setResult('ERROR','idle');}

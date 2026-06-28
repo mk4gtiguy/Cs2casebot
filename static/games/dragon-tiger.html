@@ -199,7 +199,7 @@ async function deal(){
   dealing=true;document.getElementById('dealBtn').disabled=true;
   resetCards();setResult('DEALING…','idle');
   try{
-    const d=await api('/api/games/medium/dragon-tiger',{method:'POST',body:JSON.stringify({amount:bet,bet_on:betSide})});
+    const d=await api('/api/games/easy/dragon-tiger',{method:'POST',body:JSON.stringify({amount:bet,bet_on:betSide})});
     await delay(400);
     renderDTCard('dragonSlot',d.dragon,true);
     // Show the baccarat-style card value (A=1, 2-10 face value, J/Q/K=0)

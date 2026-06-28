@@ -326,7 +326,7 @@ function onRaceResults(msg){
       <div class="rc-payout">${r.payout>0?'+$'+r.payout.toLocaleString(undefined,{maximumFractionDigits:0}):''}</div>`;
     grid.appendChild(card);
   });
-  balance=refreshBalSoon();
+  refreshBalSoon();
   setTimeout(()=>{
     setPhase('idle','SELECT AN AGENT AND JOIN A NEW RACE');
     show('agentSection');hide('trackWrap');hide('lobbySection');
