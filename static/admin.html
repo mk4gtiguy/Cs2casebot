@@ -1221,7 +1221,7 @@ async function saveBattleSettingsAdmin() {
         if (!data) return;
         document.getElementById('announcementList').innerHTML = data.announcements.map(a => `
             <div style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04);">
-                <strong>${a.title}</strong> - ${a.message} <span style="color:#555;font-size:10px;">(${a.type})</span>
+                <strong>${esc(a.title)}</strong> - ${esc(a.message)} <span style="color:#555;font-size:10px;">(${esc(a.type)})</span>
             </div>
         `).join('');
     }

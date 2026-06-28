@@ -1933,7 +1933,7 @@
                     const newBanner = document.createElement('div');
                     newBanner.id = 'maintenanceBanner';
                     newBanner.style.cssText = 'position:fixed;top:0;left:0;width:100%;z-index:999999;background:linear-gradient(135deg,#ff4444,#cc0000);color:white;text-align:center;padding:15px 20px;font-family:Orbitron,sans-serif;font-weight:bold;font-size:16px;letter-spacing:1px;box-shadow:0 4px 30px rgba(255,0,0,0.3);border-bottom:3px solid #ffd700;';
-                    newBanner.innerHTML = `🔧 <strong>MAINTENANCE MODE</strong> — ${data.settings.maintenance_message || 'Please check back soon!'}`;
+                    newBanner.innerHTML = `🔧 <strong>MAINTENANCE MODE</strong> — ${esc(data.settings.maintenance_message || 'Please check back soon!')}`;
                     document.body.prepend(newBanner);
                     const container = document.querySelector('.container');
                     if (container) container.style.marginTop = '70px';
@@ -2039,8 +2039,8 @@
             const container = document.getElementById('featuredCarousel');
             container.innerHTML = data.featured.map(c => `
                 <div class="featured-item" onclick="openCasePopup('${c.id}', 1)">
-                    <img src="/api/case-image/${c.id}" alt="${c.name}" onerror="this.style.display='none'">
-                    <div class="name">${c.name}</div>
+                    <img src="/api/case-image/${c.id}" alt="${esc(c.name)}" onerror="this.style.display='none'">
+                    <div class="name">${esc(c.name)}</div>
                     <div class="price">$${c.price.toFixed(2)}</div>
                 </div>
             `).join('');
@@ -2058,8 +2058,8 @@
                 grid.innerHTML = data.favorites.map(c => `
                     <div class="case-btn" onclick="openCasePopup('${c.id}', ${state.bulkQuantity})">
                         <button class="remove-fav" onclick="event.stopPropagation(); removeFavorite('${c.id}')" title="Remove from favorites">✕</button>
-                        <img src="/api/case-image/${c.id}" alt="${c.name}" onerror="this.style.display='none'">
-                        <div class="name">${c.name}</div>
+                        <img src="/api/case-image/${c.id}" alt="${esc(c.name)}" onerror="this.style.display='none'">
+                        <div class="name">${esc(c.name)}</div>
                         <div class="price">$${c.price.toFixed(2)}</div>
                         <button class="btn btn-primary btn-sm" style="margin-top:8px;font-size:9px;padding:4px 10px;">Open ${state.bulkQuantity > 1 ? state.bulkQuantity : ''}</button>
                     </div>
@@ -2123,8 +2123,8 @@
                 return `
                     <div class="case-btn" data-case-id="${c.id}" onclick="openCasePopup('${c.id}', ${state.bulkQuantity})">
                         <span class="fav-star ${isFav ? 'active' : 'inactive'}" data-case-id="${c.id}" onclick="event.stopPropagation(); toggleFavorite('${c.id}')">${isFav ? '⭐' : '☆'}</span>
-                        <img src="/api/case-image/${c.id}" alt="${c.name}" onerror="this.style.display='none'">
-                        <div class="name">${c.name}</div>
+                        <img src="/api/case-image/${c.id}" alt="${esc(c.name)}" onerror="this.style.display='none'">
+                        <div class="name">${esc(c.name)}</div>
                         <div class="price">$${c.price.toFixed(2)}</div>
                         <button class="btn btn-primary btn-sm" style="margin-top:8px;font-size:9px;padding:4px 10px;">Open ${state.bulkQuantity > 1 ? state.bulkQuantity : ''}</button>
                     </div>
@@ -3626,7 +3626,7 @@ window.setInvTypeFilter = setInvTypeFilter;
                 const shortName = displayName.length > 20 ? displayName.substring(0, 18) + '...' : displayName;
                 html += `
                     <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
-                        <span>${medal} <span style="color:#aaa;">${shortName}</span></span>
+                        <span>${medal} <span style="color:#aaa;">${esc(shortName)}</span></span>
                         <span style="color:#ffd700;font-weight:bold;">${value}</span>
                     </div>
                 `;
