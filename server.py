@@ -2292,13 +2292,26 @@ async def dice_play(request: Request):
     bet_number = int(body.get("bet_number", 7))
     if amount < 10:
         raise HTTPException(400, "Minimum bet is $10")
+    # Dice roll is 2-12 (11 values). Validate bet_number per type to prevent
+    # trivially-guaranteed wins (e.g. bet_number=1 "over" always wins).
+    if bet_type == "over":
+        if not (2 <= bet_number <= 11):
+            raise HTTPException(400, "For 'over', bet_number must be 2–11")
+    elif bet_type == "under":
+        if not (3 <= bet_number <= 12):
+            raise HTTPException(400, "For 'under', bet_number must be 3–12")
+    else:
+        if not (2 <= bet_number <= 12):
+            raise HTTPException(400, "For 'exact', bet_number must be 2–12")
     roll = shared.secure_randint(2, 12)
+    # Multiplier formula uses 11 (actual number of outcomes in 2-12) so that
+    # EV is correct. "over": wins = 12-n outcomes; "under": wins = n-2 outcomes.
     if bet_type == "over":
         win = roll > bet_number
-        mult = round(12 / max(1, 12 - bet_number), 2)
+        mult = round(11 / max(1, 12 - bet_number), 2)
     elif bet_type == "under":
         win = roll < bet_number
-        mult = round(12 / max(1, bet_number - 1), 2)
+        mult = round(11 / max(1, bet_number - 2), 2)
     else:   # exact
         win = roll == bet_number
         mult = 10.0
@@ -2361,8 +2374,13 @@ async def mines_start(request: Request):
     mine_count = int(body.get("mine_count", 3))
     if amount < 10:
         raise HTTPException(400, "Minimum bet is $10")
+    # Validate grid and mine count. mine_count=0 would place no mines, giving
+    # guaranteed 4.8x payouts. grid_size must be 3-7 to keep games manageable.
+    grid_size  = max(3, min(7, grid_size))
     total_tiles = grid_size * grid_size
-    mine_positions = shared.secure_shuffle(list(range(total_tiles)))[:min(mine_count, total_tiles - 1)]
+    if mine_count < 1 or mine_count >= total_tiles:
+        raise HTTPException(400, f"mine_count must be 1–{total_tiles - 1} for a {grid_size}×{grid_size} grid")
+    mine_positions = shared.secure_shuffle(list(range(total_tiles)))[:mine_count]
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -2399,6 +2417,9 @@ async def mines_reveal(request: Request):
             )
             if not game:
                 raise HTTPException(404, "Game not found or already ended")
+            total_tiles_g = game["grid_size"] ** 2
+            if tile_idx < 0 or tile_idx >= total_tiles_g:
+                raise HTTPException(400, f"tile_index must be 0–{total_tiles_g - 1}")
             mine_positions = list(game["mine_positions"])
             revealed       = list(game["revealed_tiles"] or [])
             if tile_idx in revealed:
