@@ -218,23 +218,27 @@ async def mystery_start(req: MysteryStartRequest, request: Request):
     difficulty = req.difficulty if req.difficulty in MYSTERY_DIFFICULTIES else 'medium'
     cfg        = MYSTERY_DIFFICULTIES[difficulty]
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+    async with _get_mystery_lock(user_id):
+        if _mystery_sessions.get(user_id, {}).get('active'):
+            raise HTTPException(400, "You already have an active Mystery Box game — cashout or finish first")
 
-    grid = generate_mystery_grid(cfg['size'], cfg['bombs'])
-    _mystery_sessions[user_id] = {
-        'bet':        bet,
-        'difficulty': difficulty,
-        'grid':       grid,
-        'opened':     [],
-        'total_mult': 0.0,
-        'active':     True,
-        'created_at': datetime.utcnow(),
-    }
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+
+        grid = generate_mystery_grid(cfg['size'], cfg['bombs'])
+        _mystery_sessions[user_id] = {
+            'bet':        bet,
+            'difficulty': difficulty,
+            'grid':       grid,
+            'opened':     [],
+            'total_mult': 0.0,
+            'active':     True,
+            'created_at': datetime.utcnow(),
+        }
 
     return {
         "success":    True,
@@ -489,25 +493,28 @@ async def rr_start(req: RRStartRequest, request: Request):
     personality = req.personality if req.personality in BOT_PERSONALITIES else 'calm'
     bot         = BOT_PERSONALITIES[personality]
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+    async with _get_rr_lock(user_id):
+        if _rr_sessions.get(user_id, {}).get('active'):
+            raise HTTPException(400, "You already have an active Russian Roulette game — cashout or finish first")
 
-    # Place bullet in a random chamber (1-6)
-    bullet_chamber = secure_randint(1, RR_CHAMBERS)
-    _rr_sessions[user_id] = {
-        'bet':            bet,
-        'personality':    personality,
-        'bullet_chamber': bullet_chamber,
-        'current_pull':   1,
-        'player_pulls':   0,
-        'active':         True,
-        'turn':           'player',
-        'created_at':     datetime.utcnow(),
-    }
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+
+        bullet_chamber = secure_randint(1, RR_CHAMBERS)
+        _rr_sessions[user_id] = {
+            'bet':            bet,
+            'personality':    personality,
+            'bullet_chamber': bullet_chamber,
+            'current_pull':   1,
+            'player_pulls':   0,
+            'active':         True,
+            'turn':           'player',
+            'created_at':     datetime.utcnow(),
+        }
 
     return {
         "success":      True,
@@ -934,81 +941,86 @@ async def bj_deal(req: BJStartRequest, request: Request):
     user_id = await require_auth(request)
     bet     = clamp_bet(req.amount)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
-            # High Roller: bets >= $25,000 require 1 ticket
-            if bet >= 25000:
-                from routes.premium import deduct_ticket as _deduct_ticket
-                ok = await _deduct_ticket(user_id, 'spend_game',
-                                          {'game': 'blackjack', 'bet': bet}, conn)
-                if not ok:
-                    raise HTTPException(400, "High Roller bets require 1 ticket")
-    shoe   = new_bj_shoe()
-    p_hand = [shoe.pop(), shoe.pop()]
-    d_hand = [shoe.pop(), shoe.pop()]
+    async with _get_bj_lock(user_id):
+        if _bj_sessions.get(user_id, {}).get('active'):
+            raise HTTPException(400, "You already have an active Blackjack game — finish or abandon it first")
 
-    # Check immediate blackjack
-    p_bj = is_blackjack(p_hand)
-    d_bj = is_blackjack(d_hand)
-
-    session = {
-        'bet':         bet,
-        'shoe':        shoe,
-        'hands':       [p_hand],
-        'bets':        [bet],
-        'dealer':      d_hand,
-        'active_hand': 0,
-        'doubled':     [False],
-        'stood':       [False],
-        'insurance':   0.0,
-        'active':      True,
-        'done':        False,
-        'created_at':  datetime.utcnow(),
-    }
-
-    # Immediate resolution if either has blackjack
-    if p_bj or d_bj:
-        session['active'] = False
-        session['done']   = True
-        win = 0.0
-        result = ''
-        if p_bj and d_bj:
-            win    = bet   # push
-            result = 'push'
-        elif p_bj:
-            win    = apply_house(bet * 2.5)   # 3:2 payout
-            result = 'blackjack'
-        else:
-            win    = 0
-            result = 'dealer_blackjack'
-
-        _bj_sessions.pop(user_id, None)
-        async with (await get_db()).acquire() as conn:
+        pool = await get_db()
+        async with pool.acquire() as conn:
             async with conn.transaction():
-                if win:
-                    win = await _add_win(user_id, win, conn)
-                await log_game(conn, user_id, 'blackjack', bet, win, {
-                    'result': result, 'player_bj': p_bj, 'dealer_bj': d_bj,
-                })
-        return {
-            "success":       True,
-            "player_hands":  [p_hand],
-            "dealer_hand":   d_hand,
-            "player_values": [bj_hand_value(p_hand)[0]],
-            "dealer_value":  bj_hand_value(d_hand)[0],
-            "blackjack":     True,
-            "result":        result,
-            "win":           round(win, 2),
-            "done":          True,
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+                # High Roller: bets >= $25,000 require 1 ticket
+                if bet >= 25000:
+                    from routes.premium import deduct_ticket as _deduct_ticket
+                    ok = await _deduct_ticket(user_id, 'spend_game',
+                                              {'game': 'blackjack', 'bet': bet}, conn)
+                    if not ok:
+                        raise HTTPException(400, "High Roller bets require 1 ticket")
+
+        shoe   = new_bj_shoe()
+        p_hand = [shoe.pop(), shoe.pop()]
+        d_hand = [shoe.pop(), shoe.pop()]
+
+        # Check immediate blackjack
+        p_bj = is_blackjack(p_hand)
+        d_bj = is_blackjack(d_hand)
+
+        session = {
+            'bet':         bet,
+            'shoe':        shoe,
+            'hands':       [p_hand],
+            'bets':        [bet],
+            'dealer':      d_hand,
+            'active_hand': 0,
+            'doubled':     [False],
+            'stood':       [False],
+            'insurance':   0.0,
+            'active':      True,
+            'done':        False,
+            'created_at':  datetime.utcnow(),
         }
 
-    # Insurance offer when dealer shows Ace
-    offer_insurance = (d_hand[0]['rank'] == 'A')
-    _bj_sessions[user_id] = session
+        # Immediate resolution if either has blackjack
+        if p_bj or d_bj:
+            session['active'] = False
+            session['done']   = True
+            win = 0.0
+            result = ''
+            if p_bj and d_bj:
+                win    = bet   # push
+                result = 'push'
+            elif p_bj:
+                win    = apply_house(bet * 2.5)   # 3:2 payout
+                result = 'blackjack'
+            else:
+                win    = 0
+                result = 'dealer_blackjack'
+
+            _bj_sessions.pop(user_id, None)
+            async with (await get_db()).acquire() as conn:
+                async with conn.transaction():
+                    if win:
+                        win = await _add_win(user_id, win, conn)
+                    await log_game(conn, user_id, 'blackjack', bet, win, {
+                        'result': result, 'player_bj': p_bj, 'dealer_bj': d_bj,
+                    })
+            return {
+                "success":       True,
+                "player_hands":  [p_hand],
+                "dealer_hand":   d_hand,
+                "player_values": [bj_hand_value(p_hand)[0]],
+                "dealer_value":  bj_hand_value(d_hand)[0],
+                "blackjack":     True,
+                "result":        result,
+                "win":           round(win, 2),
+                "done":          True,
+            }
+
+        # Insurance offer when dealer shows Ace
+        offer_insurance = (d_hand[0]['rank'] == 'A')
+        _bj_sessions[user_id] = session
 
     return {
         "success":          True,
