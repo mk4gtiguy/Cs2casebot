@@ -1584,17 +1584,20 @@ async def keep_item(request: Request):
     item_id = body.get("item_id")
     pool = await get_db()
     async with pool.acquire() as conn:
-        item = await conn.fetchrow(
-            "SELECT id FROM inventory WHERE id=$1 AND user_id=$2", item_id, user_id
-        )
-        if not item:
-            raise HTTPException(404, "Item not found")
-        await conn.execute("UPDATE inventory SET status='kept' WHERE id=$1", item_id)
-        # Track inventory size for achievements
-        await conn.execute(
-            "UPDATE users SET total_inventory_items = (SELECT COUNT(*) FROM inventory WHERE user_id=$1 AND status='kept') WHERE user_id=$1",
-            user_id
-        )
+        async with conn.transaction():
+            # FOR UPDATE prevents two concurrent keep-item requests from both
+            # passing the ownership check on the same item.
+            item = await conn.fetchrow(
+                "SELECT id FROM inventory WHERE id=$1 AND user_id=$2 FOR UPDATE", item_id, user_id
+            )
+            if not item:
+                raise HTTPException(404, "Item not found")
+            await conn.execute("UPDATE inventory SET status='kept' WHERE id=$1", item_id)
+            # Track inventory size for achievements (atomic with the status update)
+            await conn.execute(
+                "UPDATE users SET total_inventory_items = (SELECT COUNT(*) FROM inventory WHERE user_id=$1 AND status='kept') WHERE user_id=$1",
+                user_id
+            )
     return {"success": True}
 
 # ============================================================
@@ -1607,24 +1610,24 @@ async def get_quests(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         await ensure_user_exists(user_id, conn=conn)
-        # Create today's quests if missing
-        last = await conn.fetchrow(
-            "SELECT created_at FROM quests WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1",
-            user_id
-        )
-        if not last or last["created_at"].date() < datetime.now().date():
-            # Wrap DELETE + INSERT in a transaction so a crash can't leave the
-            # user with no quests (partial reset).
-            async with conn.transaction():
+        async with conn.transaction():
+            # Lock the user row so concurrent GET /api/quests requests serialise
+            # here and only one of them performs the daily reset.
+            await conn.fetchval("SELECT 1 FROM users WHERE user_id=$1 FOR UPDATE", user_id)
+            last = await conn.fetchrow(
+                "SELECT created_at FROM quests WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1",
+                user_id
+            )
+            if not last or last["created_at"].date() < datetime.now().date():
                 await conn.execute("DELETE FROM quests WHERE user_id=$1", user_id)
                 for qt, qi in QUEST_TYPES.items():
                     await conn.execute("""
                         INSERT INTO quests (user_id, quest_type, progress, required, reward)
                         VALUES ($1,$2,0,$3,$4)
                     """, user_id, qt, qi["base_required"], qi["base_reward"])
-        rows = await conn.fetch(
-            "SELECT * FROM quests WHERE user_id=$1 ORDER BY created_at", user_id
-        )
+            rows = await conn.fetch(
+                "SELECT * FROM quests WHERE user_id=$1 ORDER BY created_at", user_id
+            )
     return {"quests": [dict(r) for r in rows]}
 
 @app.post("/api/claim")
