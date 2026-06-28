@@ -417,8 +417,9 @@ async def bomb_slots_spin(req: BombSlotsRequest, request: Request):
             if is_bust:
                 # Double bomb: extra 25% penalty; triple: extra 50%
                 penalty_rate = 0.50 if symbols.count('💣') == 3 else 0.25
-                extra_loss = round(bet * penalty_rate, 2)
-                await deduct_balance(user_id, extra_loss, conn)
+                extra_loss_target = round(bet * penalty_rate, 2)
+                success = await deduct_balance(user_id, extra_loss_target, conn)
+                extra_loss = extra_loss_target if success else 0.0
             elif mult:
                 win = apply_house(bet * mult)
                 win = await _add_win(user_id, win, conn)
@@ -809,9 +810,9 @@ async def dragon_tiger(req: DragonTigerRequest, request: Request):
                 raise HTTPException(400, "Insufficient balance")
 
             if mult == 0.5:
-                # Half return (tie pushback)
+                # Half return (tie pushback) — not a win, skip VIP boost
                 win = round(bet * 0.5, 2)
-                win = await _add_win(user_id, win, conn)
+                await add_balance(user_id, win, conn)
             elif user_wins:
                 win = apply_house(bet * mult)
                 win = await _add_win(user_id, win, conn)

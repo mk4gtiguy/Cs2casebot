@@ -894,7 +894,13 @@ def evaluate_roulette_bet(bet_type: str, bet_value: Any, result: int) -> float:
     r = result
     # Straight-up single number
     if bet_type == 'straight':
-        return 36.0 if r == int(bet_value) else 0
+        try:
+            n = int(bet_value)
+        except (ValueError, TypeError):
+            raise HTTPException(400, f"straight bet_value must be an integer 0–36, got {bet_value!r}")
+        if not 0 <= n <= 36:
+            raise HTTPException(400, f"Straight number {n} out of range (0–36)")
+        return 36.0 if r == n else 0
 
     # Colours
     if bet_type == 'red':
@@ -916,7 +922,12 @@ def evaluate_roulette_bet(bet_type: str, bet_value: Any, result: int) -> float:
 
     # Dozens: 1st (1-12), 2nd (13-24), 3rd (25-36)
     if bet_type == 'dozen':
-        d = int(bet_value)   # 1, 2, or 3
+        try:
+            d = int(bet_value)
+        except (ValueError, TypeError):
+            raise HTTPException(400, f"dozen bet_value must be 1, 2, or 3, got {bet_value!r}")
+        if d not in (1, 2, 3):
+            raise HTTPException(400, "dozen must be 1, 2, or 3")
         if d == 1 and 1 <= r <= 12:   return 3.0
         if d == 2 and 13 <= r <= 24:  return 3.0
         if d == 3 and 25 <= r <= 36:  return 3.0
@@ -924,7 +935,12 @@ def evaluate_roulette_bet(bet_type: str, bet_value: Any, result: int) -> float:
 
     # Columns: col 1 = 1,4,7,...34; col 2 = 2,5,8,...35; col 3 = 3,6,9,...36
     if bet_type == 'column':
-        col = int(bet_value)   # 1, 2, or 3
+        try:
+            col = int(bet_value)
+        except (ValueError, TypeError):
+            raise HTTPException(400, f"column bet_value must be 1, 2, or 3, got {bet_value!r}")
+        if col not in (1, 2, 3):
+            raise HTTPException(400, "column must be 1, 2, or 3")
         if r != 0 and r % 3 == col % 3:
             return 3.0
         return 0

@@ -126,7 +126,8 @@ async def grant_tickets(user_id: int, amount: int, source: str, metadata: dict =
         await _do(conn)
     else:
         async with pool.acquire() as c:
-            await _do(c)
+            async with c.transaction():
+                await _do(c)
 
 async def deduct_ticket(user_id: int, source: str, metadata: dict = None, conn=None) -> bool:
     """

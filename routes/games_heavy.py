@@ -22,9 +22,19 @@ from shared import (
     convert_decimals, broadcast_to_set, RACE_AGENTS,
     secure_random, secure_randint, secure_choice, secure_shuffle,
     apply_house_edge, HOUSE_EDGE,
+    get_vip_status, apply_vip_boost,
 )
 
 router = APIRouter(prefix="/api/games/race", tags=["games-race"])
+
+async def _add_win(user_id: int, win: float, conn) -> float:
+    """Apply VIP boost then credit balance. Returns the final (boosted) win."""
+    if win <= 0:
+        return win
+    vip = await get_vip_status(user_id)
+    win = apply_vip_boost(win, vip)
+    await add_balance(user_id, win, conn)
+    return win
 
 HOUSE_EDGE  = 0.04
 MIN_BET     = 100
@@ -433,16 +443,16 @@ class RaceRoom:
                     share = PLACE_SHARES.get(place, 0)
                     payout = round(net_pot * share, 2) if not racer.is_bot else 0
 
-                    self.payouts[uid] = payout
-
                     if payout and not racer.is_bot:
-                        await add_balance(uid, payout, conn)
+                        payout = await _add_win(uid, payout, conn)
                         await log_game(conn, uid, racer.bet, payout, {
                             'room':     self.room_code,
                             'agent':    racer.agent_id,
                             'place':    place,
                             'net_pot':  net_pot,
                         })
+
+                    self.payouts[uid] = payout
 
                     results.append({
                         'user_id':    uid,
