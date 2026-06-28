@@ -27,6 +27,7 @@ from shared import (
     DROP_RATES, get_random_item, get_user_id_from_session,
     require_admin, ADMIN_USER_IDS, BOT_IDS, BOT_NAMES,
     convert_decimals, broadcast_to_set,
+    secure_random, secure_randint, secure_choice, secure_shuffle,
 )
 
 # ─── Router ─────────────────────────────────────────────────
@@ -314,7 +315,7 @@ class BattleManager:
 
     def _get_bot_item(self, difficulty: str) -> dict:
         """Roll a case item with difficulty-adjusted drop rates."""
-        case_id = random.choice(list(CASES.keys()))
+        case_id = secure_choice(list(CASES.keys()))
         rates = DROP_RATES.copy()
 
         if difficulty == 'hard':
@@ -334,15 +335,15 @@ class BattleManager:
         rates = {k: (v / total) * 100 for k, v in rates.items()}
 
         case = CASES.get(case_id, {})
-        rand = random.random() * 100
+        rand = secure_random() * 100
         cum  = 0.0
         for rarity, chance in rates.items():
             cum += chance
             if rand <= cum:
                 possible = [i for i in case.get('items', []) if i['rarity'] == rarity]
                 if possible:
-                    tmpl     = random.choice(possible)
-                    is_st    = random.random() < 0.1
+                    tmpl     = secure_choice(possible)
+                    is_st    = secure_random() < 0.1
                     fv       = generate_skin_float()
                     cond     = get_skin_condition(fv)
                     tier     = tmpl.get('tier')
@@ -418,18 +419,20 @@ class BattleManager:
         entry_fee = float(battle['entry_fee'])
         prize     = round(entry_fee * len(participants) * 0.95, 2)  # 5% house edge
 
-        await conn.execute("""
-            UPDATE case_battles
-            SET status = 'completed', ended_at = NOW(), winner_id = $1
-            WHERE id = $2
-        """, winner['user_id'], battle_id)
+        # Fix 16: Wrap status update AND payout in one atomic transaction
+        async with conn.transaction():
+            await conn.execute("""
+                UPDATE case_battles
+                SET status = 'completed', ended_at = NOW(), winner_id = $1
+                WHERE id = $2
+            """, winner['user_id'], battle_id)
 
-        # Only pay real users (not bots)
-        if winner['user_id'] > 0:
-            await conn.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                prize, winner['user_id']
-            )
+            # Only pay real users (not bots)
+            if winner['user_id'] > 0:
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                    prize, winner['user_id']
+                )
 
         winner_row = await conn.fetchrow(
             "SELECT username FROM users WHERE user_id = $1", winner['user_id']
@@ -697,7 +700,7 @@ async def _handle_open(battle_id: int, user_id: int, case_id: Optional[str]):
             return
 
         if not case_id or case_id not in CASES:
-            case_id = random.choice(list(CASES.keys()))
+            case_id = secure_choice(list(CASES.keys()))
 
         item = get_random_item(case_id)
         if not item:
@@ -799,6 +802,8 @@ async def join_queue(request: Request, req: QueueRequest):
         )
         if not user or float(user['balance']) < req.fee:
             raise HTTPException(400, "Insufficient balance")
+        if req.fee > 750_000:
+            raise HTTPException(400, "Maximum battle fee is $750,000")
 
     mm_ws = battle_manager.matchmaking_ws.get(user_id)
     if not mm_ws:
@@ -829,6 +834,8 @@ async def start_pve(request: Request, req: PvERequest):
             )
             if not user or float(user['balance']) < req.fee:
                 raise HTTPException(400, "Insufficient balance")
+            if req.fee > 750_000:
+                raise HTTPException(400, "Maximum battle fee is $750,000")
 
             await conn.execute(
                 "UPDATE users SET balance = balance - $1 WHERE user_id = $2",

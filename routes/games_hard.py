@@ -18,13 +18,26 @@ import shared
 from shared import (
     logger, get_db, require_auth, ensure_user_exists,
     deduct_balance, add_balance, convert_decimals,
+    secure_random, secure_randint, secure_choice, secure_shuffle,
+    apply_house_edge, HOUSE_EDGE,
+    get_vip_status, apply_vip_boost,
 )
 
 router = APIRouter(prefix="/api/games/hard", tags=["games-hard"])
 
+# ── VIP-aware balance credit ──────────────────────────────────
+async def _add_win(user_id: int, win: float, conn) -> float:
+    """Apply VIP boost then credit balance. Returns the final (boosted) win."""
+    if win <= 0:
+        return win
+    vip = await get_vip_status(user_id)
+    win = apply_vip_boost(win, vip)
+    await add_balance(user_id, win, conn)
+    return win
+
 HOUSE_EDGE = 0.04
 MIN_BET    = 50
-MAX_BET    = 500_000
+MAX_BET    = 750_000
 
 def clamp_bet(v: float) -> float:
     return max(MIN_BET, min(MAX_BET, float(v)))
@@ -76,7 +89,7 @@ def simulate_slide(power: float) -> tuple[int, float, float]:
     # Clamp power
     power = max(0.0, min(1.0, power))
     # Add friction jitter — up to ±12% deviation
-    jitter = random.uniform(-0.12, 0.12)
+    jitter = -0.12 + secure_random() * 0.24
     actual_power = max(0.0, min(1.0, power + jitter))
     # Map power to zone (0 power → zone 0, 1.0 power → zone 8)
     zone = min(8, int(actual_power * 9))
@@ -105,7 +118,7 @@ async def slide(req: SlideRequest, request: Request):
             if not await deduct_balance(user_id, bet, conn):
                 raise HTTPException(400, "Insufficient balance")
             if win:
-                await add_balance(user_id, win, conn)
+                win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'slide', bet, win, {
                 'input_power': round(input_power, 3),
                 'actual_power': round(actual_power, 3),
@@ -155,14 +168,14 @@ def generate_mystery_grid(size: int = 9, bombs: int = 2) -> List[Dict]:
     """Generate a grid with given bombs count, rest are multipliers."""
     mults = [c for c in MYSTERY_BOX_CONTENTS if c[0] == 'mult']
     grid  = []
-    bomb_positions = set(random.sample(range(size), bombs))
+    bomb_positions = set(secure_shuffle(list(range(size)))[:bombs])
     for i in range(size):
         if i in bomb_positions:
-            grid.append({'type': 'bomb', 'value': 0, 'skin': random.choice(['💣', '⚠️', '🔴'])})
+            grid.append({'type': 'bomb', 'value': 0, 'skin': secure_choice(['💣', '⚠️', '🔴'])})
         else:
             # Weighted random multiplier
             total  = sum(m[2] for m in mults)
-            r      = random.randint(1, total)
+            r      = secure_randint(1, total)
             cum    = 0
             chosen = mults[0]
             for m in mults:
@@ -171,7 +184,7 @@ def generate_mystery_grid(size: int = 9, bombs: int = 2) -> List[Dict]:
                     chosen = m
                     break
             # CS2 skin names for flavour
-            skin = random.choice(['📦', '🔫', '🗡️', '💎', '⭐', '🎯'])
+            skin = secure_choice(['📦', '🔫', '🗡️', '💎', '⭐', '🎯'])
             grid.append({'type': 'mult', 'value': chosen[1], 'skin': skin})
     return grid
 
@@ -183,6 +196,12 @@ MYSTERY_DIFFICULTIES = {
 }
 
 _mystery_sessions: Dict[int, Dict] = {}
+_mystery_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_mystery_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _mystery_locks:
+        _mystery_locks[user_id] = asyncio.Lock()
+    return _mystery_locks[user_id]
 
 class MysteryStartRequest(BaseModel):
     amount:     float
@@ -277,7 +296,7 @@ async def mystery_open(req: MysteryOpenRequest, request: Request):
         pool = await get_db()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await add_balance(user_id, win, conn)
+                win = await _add_win(user_id, win, conn)
                 await log_game(conn, user_id, 'mystery_box', sess['bet'], win, {
                     'difficulty': sess['difficulty'],
                     'boxes_opened': len(sess['opened']),
@@ -327,7 +346,7 @@ async def mystery_cashout(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await add_balance(user_id, win, conn)
+            win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'mystery_box', sess['bet'], win, {
                 'difficulty': sess['difficulty'],
                 'boxes_opened': len(sess['opened']),
@@ -444,6 +463,12 @@ def rr_payout_mult(pulls_survived: int) -> float:
     return round(apply_house(mult * 1.5), 3)   # 1.5× bonus for courage
 
 _rr_sessions: Dict[int, Dict] = {}
+_rr_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_rr_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _rr_locks:
+        _rr_locks[user_id] = asyncio.Lock()
+    return _rr_locks[user_id]
 
 class RRStartRequest(BaseModel):
     amount:      float
@@ -464,7 +489,7 @@ async def rr_start(req: RRStartRequest, request: Request):
                 raise HTTPException(400, "Insufficient balance")
 
     # Place bullet in a random chamber (1-6)
-    bullet_chamber = random.randint(1, RR_CHAMBERS)
+    bullet_chamber = secure_randint(1, RR_CHAMBERS)
     _rr_sessions[user_id] = {
         'bet':            bet,
         'personality':    personality,
@@ -482,7 +507,7 @@ async def rr_start(req: RRStartRequest, request: Request):
         "bot_avatar":   bot['avatar'],
         "turn":         "player",
         "player_pulls": 0,
-        "taunt":        random.choice(bot['taunt_safe']),
+        "taunt":        secure_choice(bot['taunt_safe']),
         "multiplier":   1.0,
     }
 
@@ -517,7 +542,7 @@ async def rr_pull(request: Request):
             "fired":        True,
             "chamber":      pull_num,
             "player_pulls": sess['player_pulls'],
-            "taunt":        random.choice(bot['taunt_bust']),
+            "taunt":        secure_choice(bot['taunt_bust']),
         }
 
     # Player survived — advance
@@ -529,11 +554,11 @@ async def rr_pull(request: Request):
     bot  = BOT_PERSONALITIES[sess['personality']]
 
     # Bluff detection — sometimes bot shows a false tell
-    is_bluff = random.random() < bot['bluff_chance']
+    is_bluff = secure_random() < bot["bluff_chance"]
     tension  = sess['player_pulls'] >= 2
 
     taunt_pool = bot['taunt_tension'] if tension else bot['taunt_safe']
-    taunt = random.choice(taunt_pool)
+    taunt = secure_choice(taunt_pool)
 
     return {
         "success":       True,
@@ -570,7 +595,7 @@ async def rr_bot_pull(request: Request):
         pool = await get_db()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await add_balance(user_id, win, conn)
+                win = await _add_win(user_id, win, conn)
                 await log_game(conn, user_id, 'russian_roulette', sess['bet'], win, {
                     'personality': sess['personality'],
                     'player_pulls': sess['player_pulls'],
@@ -583,7 +608,7 @@ async def rr_bot_pull(request: Request):
             "player_pulls": sess['player_pulls'],
             "multiplier":   mult,
             "win":          win,
-            "taunt":        random.choice(bot['taunt_bust']),
+            "taunt":        secure_choice(bot['taunt_bust']),
         }
 
     # Bot survived — back to player
@@ -592,7 +617,7 @@ async def rr_bot_pull(request: Request):
     mult = rr_payout_mult(sess['player_pulls'])
     pot  = round(sess['bet'] * mult, 2)
     tension = sess['player_pulls'] >= 2
-    taunt   = random.choice(bot['taunt_tension'] if tension else bot['taunt_safe'])
+    taunt   = secure_choice(bot['taunt_tension'] if tension else bot['taunt_safe'])
 
     return {
         "success":       True,
@@ -623,7 +648,7 @@ async def rr_cashout(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await add_balance(user_id, win, conn)
+            win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'russian_roulette', sess['bet'], win, {
                 'personality': sess['personality'],
                 'player_pulls': sess['player_pulls'],
@@ -666,7 +691,7 @@ def new_baccarat_shoe() -> List[Dict]:
                 shoe.append({'rank': rank, 'suit': suit,
                              'value': BACCARAT_CARD_VALUES[rank],
                              'display': rank + suit})
-    random.shuffle(shoe)
+    shoe[:] = secure_shuffle(shoe)
     return shoe
 
 def hand_value(cards: List[Dict]) -> int:
@@ -728,6 +753,7 @@ class BaccaratRequest(BaseModel):
     bet_on:       str   # 'player' | 'banker' | 'tie'
     player_pair:  bool = False
     banker_pair:  bool = False
+    side_bet:     float = 0.0   # Fix 26: configurable side bet amount (default 0 = disabled)
 
 @router.post("/baccarat")
 async def baccarat(req: BaccaratRequest, request: Request):
@@ -736,6 +762,9 @@ async def baccarat(req: BaccaratRequest, request: Request):
     bet_on  = req.bet_on.lower()
     if bet_on not in ('player', 'banker', 'tie'):
         raise HTTPException(400, "bet_on must be 'player', 'banker', or 'tie'")
+
+    # Fix 26: side bet can't exceed main bet; default 0 means no side bet
+    side_bet = max(0.0, min(float(req.side_bet), bet))
 
     shoe = new_baccarat_shoe()
     ph, bh = baccarat_deal(shoe)
@@ -763,16 +792,15 @@ async def baccarat(req: BaccaratRequest, request: Request):
         # Push on tie — return bet
         win += bet
 
-    # Side bets
+    # Side bets — only charged if side_bet > 0
     p_has_pair = (ph[0]['rank'] == ph[1]['rank'])
     b_has_pair = (bh[0]['rank'] == bh[1]['rank'])
-    side_bet   = 100.0   # fixed side bet cost if enabled
 
-    if req.player_pair:
+    if req.player_pair and side_bet > 0:
         total_bet += side_bet
         if p_has_pair:
             win += apply_house(side_bet * 12)
-    if req.banker_pair:
+    if req.banker_pair and side_bet > 0:
         total_bet += side_bet
         if b_has_pair:
             win += apply_house(side_bet * 12)
@@ -783,11 +811,19 @@ async def baccarat(req: BaccaratRequest, request: Request):
             await ensure_user_exists(user_id, conn=conn)
             if not await deduct_balance(user_id, total_bet, conn):
                 raise HTTPException(400, "Insufficient balance")
+            # High Roller: bets >= $25,000 require 1 ticket
+            if total_bet >= 25000:
+                from routes.premium import deduct_ticket as _deduct_ticket
+                ok = await _deduct_ticket(user_id, 'spend_game',
+                                          {'game': 'baccarat', 'bet': total_bet}, conn)
+                if not ok:
+                    raise HTTPException(400, "High Roller bets require 1 ticket")
             if win:
-                await add_balance(user_id, win, conn)
+                win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'baccarat', total_bet, win, {
                 'bet_on': bet_on, 'outcome': outcome,
                 'player_value': pv, 'banker_value': bv,
+                'side_bet': side_bet,
             })
 
     return {
@@ -830,7 +866,7 @@ def new_bj_shoe(decks: int = 6) -> List[Dict]:
             for suit in BJ_SUITS:
                 shoe.append({'rank': rank, 'suit': suit,
                              'display': rank + suit})
-    random.shuffle(shoe)
+    shoe[:] = secure_shuffle(shoe)
     return shoe
 
 def bj_hand_value(hand: List[Dict]) -> tuple[int, bool]:
@@ -866,6 +902,12 @@ def dealer_play(hand: List[Dict], shoe: List[Dict]) -> List[Dict]:
     return hand
 
 _bj_sessions: Dict[int, Dict] = {}
+_bj_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_bj_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _bj_locks:
+        _bj_locks[user_id] = asyncio.Lock()
+    return _bj_locks[user_id]
 
 class BJStartRequest(BaseModel):
     amount: float
@@ -885,8 +927,13 @@ async def bj_deal(req: BJStartRequest, request: Request):
             await ensure_user_exists(user_id, conn=conn)
             if not await deduct_balance(user_id, bet, conn):
                 raise HTTPException(400, "Insufficient balance")
-
-    shoe  = new_bj_shoe()
+            # High Roller: bets >= $25,000 require 1 ticket
+            if bet >= 25000:
+                from routes.premium import deduct_ticket as _deduct_ticket
+                ok = await _deduct_ticket(user_id, 'spend_game',
+                                          {'game': 'blackjack', 'bet': bet}, conn)
+                if not ok:
+                    raise HTTPException(400, "High Roller bets require 1 ticket")
     p_hand = [shoe.pop(), shoe.pop()]
     d_hand = [shoe.pop(), shoe.pop()]
 
@@ -928,7 +975,7 @@ async def bj_deal(req: BJStartRequest, request: Request):
         async with (await get_db()).acquire() as conn:
             async with conn.transaction():
                 if win:
-                    await add_balance(user_id, win, conn)
+                    win = await _add_win(user_id, win, conn)
                 await log_game(conn, user_id, 'blackjack', bet, win, {
                     'result': result, 'player_bj': p_bj, 'dealer_bj': d_bj,
                 })

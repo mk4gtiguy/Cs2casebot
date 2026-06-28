@@ -20,16 +20,18 @@ from shared import (
     logger, get_db, require_auth, get_user_id_from_session,
     ensure_user_exists, deduct_balance, add_balance,
     convert_decimals, broadcast_to_set, RACE_AGENTS,
+    secure_random, secure_randint, secure_choice, secure_shuffle,
+    apply_house_edge, HOUSE_EDGE,
 )
 
 router = APIRouter(prefix="/api/games/race", tags=["games-race"])
 
 HOUSE_EDGE  = 0.04
 MIN_BET     = 100
-MAX_BET     = 500_000
+MAX_BET     = 750_000
 MAX_PLAYERS = 4
 TRACK_LENGTH = 400.0    # reduced from 1000 → races finish in ~8-12 seconds
-TICK_RATE    = 0.05     # 50ms ticks → 20 updates/sec
+TICK_RATE    = 0.10     # 100ms ticks → 10 updates/sec (Fix 12: halved for bandwidth)
 LOBBY_SECS   = 12       # reduced lobby wait from 15
 BOT_FILL_AT  = 3        # fill with bots faster
 
@@ -169,8 +171,8 @@ class Racer:
         self.finish_time = None
 
         # Bot-specific drift for unpredictability
-        self._drift     = random.uniform(0.85, 1.15)
-        self._luck      = random.uniform(0.9, 1.1)
+        self._drift     = 0.85 + secure_random() * 0.30
+        self._luck      = 0.9 + secure_random() * 0.20
 
     def tick(self, elapsed: float) -> float:
         """Advance one physics tick. Returns distance moved."""
@@ -193,13 +195,13 @@ class Racer:
             self.stamina = min(1.0, self.stamina + profile['recovery_rate'])
 
         # Burst trigger
-        burst_roll = random.random()
+        burst_roll = secure_random()
         if not self.bursting and self.stamina > 0.3:
             if personality == 'aggressive' and burst_roll < profile['burst_chance'] * 1.4:
                 self.bursting = True
             elif personality == 'erratic':
                 # Erratic: burst in random waves
-                if burst_roll < profile['burst_chance'] * (1.0 + random.uniform(-0.5, 0.5)):
+                if burst_roll < profile['burst_chance'] * (1.0 + (-0.5 + secure_random() * 1.0)):
                     self.bursting = True
             elif personality == 'tactical' and elapsed > 2.0 and self.position < TRACK_LENGTH * 0.7:
                 # Tactical: conserves, then sprints in the last 30%
@@ -215,7 +217,7 @@ class Racer:
         speed = base * (profile['burst_mult'] if self.bursting else 1.0)
 
         # Final position noise
-        noise = random.uniform(0.92, 1.08)
+        noise = 0.92 + secure_random() * 0.16
         dist  = speed * noise * TICK_RATE
 
         self.position = min(TRACK_LENGTH, self.position + dist)
@@ -281,7 +283,7 @@ class RaceRoom:
         """Fill remaining slots with bot racers."""
         used_agents = {r.agent_id for r in self.racers.values()}
         available   = [a for a in AGENT_PROFILES if a not in used_agents]
-        random.shuffle(available)
+        available[:] = secure_shuffle(available)
 
         bot_names = [
             '🤖 Ghost', '🤖 Shadow', '🤖 Phantom', '🤖 Specter'
@@ -495,7 +497,7 @@ def _find_open_room(bet: float) -> Optional[RaceRoom]:
 def _new_room_code() -> str:
     import string
     chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choices(chars, k=6))
+    return ''.join(secure_choice(chars) for _ in range(6))
 
 # ============================================================
 # HTTP ENDPOINTS

@@ -22,13 +22,15 @@ from shared import (
     logger, get_db, require_auth, get_user_id_from_session,
     ensure_user_exists, deduct_balance, add_balance,
     convert_decimals, broadcast_to_set,
+    secure_random, secure_randint, secure_choice, secure_shuffle,
+    apply_house_edge, HOUSE_EDGE_POKER,
 )
 
 router = APIRouter(prefix="/api/games/poker", tags=["games-poker"])
 
 HOUSE_EDGE   = 0.03   # 3% rake on every pot
 MIN_BET      = 100
-MAX_BET      = 1_000_000
+MAX_BET      = 750_000
 MAX_PLAYERS  = 4
 
 def clamp_bet(v: float) -> float:
@@ -62,7 +64,7 @@ def new_deck() -> List[Dict]:
              'display': r + s,
              'value': RANK_V[r]}
             for r in RANKS for s in SUITS]
-    random.shuffle(deck)
+    deck[:] = secure_shuffle(deck)
     return deck
 
 # ── Hand evaluator ───────────────────────────────────────────
@@ -215,23 +217,23 @@ def bot_action(profile_key: str, strength: float,
     p   = BOT_PROFILES[profile_key]
     low = p['bet_mult'][0]
     high = p['bet_mult'][1]
-    raise_size = round(big_blind * random.uniform(low, high), 0)
+    raise_size = round(big_blind * (low + secure_random() * (high - low)), 0)
 
     # Bluff override
-    is_bluffing = random.random() < p['bluff_freq']
+    is_bluffing = secure_random() < p['bluff_freq']
 
     effective_strength = min(1.0, strength + (0.4 if is_bluffing else 0))
 
     if call_amount == 0:
         # Check or raise
-        if random.random() < p['raise_freq'] * effective_strength:
+        if secure_random() < p['raise_freq'] * effective_strength:
             return 'raise', raise_size
         return 'check', 0
 
     if effective_strength < p['fold_thresh']:
         return 'fold', 0
 
-    if random.random() < p['raise_freq'] * effective_strength:
+    if secure_random() < p['raise_freq'] * effective_strength:
         return 'raise', max(call_amount * 2, raise_size)
 
     return 'call', call_amount
@@ -349,7 +351,7 @@ class HoldemRoom:
 
     def fill_bots(self):
         """Fill remaining seats with bot players."""
-        profiles = random.sample(BOT_NAMES, len(BOT_NAMES))
+        profiles = secure_shuffle(list(BOT_NAMES))
         bot_idx  = 0
         while len(self.players) < MAX_PLAYERS:
             seat = self.next_free_seat()
@@ -568,14 +570,16 @@ class HoldemRoom:
                     'community':  self.community,
                     'phase':      self.phase,
                 })
-                # Wait up to 30s for human action
-                deadline = time.time() + 30
-                while self.waiting_for_human and time.time() < deadline:
-                    await asyncio.sleep(0.1)
-                if self.waiting_for_human:
-                    # Timeout — auto-fold
-                    await self._apply_action(uid, 'fold', 0)
-                    self.waiting_for_human = False
+                # Wait up to 30s for human action (Fix 11: try/finally ensures reset)
+                try:
+                    deadline = time.time() + 30
+                    while self.waiting_for_human and time.time() < deadline:
+                        await asyncio.sleep(0.1)
+                    if self.waiting_for_human:
+                        # Timeout — auto-fold
+                        await self._apply_action(uid, 'fold', 0)
+                finally:
+                    self.waiting_for_human = False   # always reset
                 acted.add(uid)
 
             i          += 1
@@ -601,6 +605,13 @@ class HoldemRoom:
                 p.status = 'allin'
 
         elif action == 'raise':
+            # Fix 4: enforce minimum raise
+            min_raise = max(self.big_blind, self.current_bet * 2)
+            if amount < min_raise:
+                raise ValueError(
+                    f"Minimum raise is {min_raise:.2f} "
+                    f"(current bet {self.current_bet:.2f}, big blind {self.big_blind:.2f})"
+                )
             total_raise = min(amount, p.chips)
             p.chips          -= total_raise
             p.bet_this_street += total_raise
@@ -638,7 +649,7 @@ class HoldemRoom:
 
         if len(alive) == 1:
             winner = alive[0]
-            win    = round(self.pot * (1 - HOUSE_EDGE), 2)
+            win    = round(self.pot * (1 - HOUSE_EDGE_POKER), 2)
             if not winner.is_bot:
                 winner.chips += win
                 pool = await get_db()
@@ -663,45 +674,63 @@ class HoldemRoom:
         # Multi-player showdown — evaluate hands using all 7 cards
         ranked = []
         for p in alive:
-            # Each player uses their 2 hole cards + 5 community = best 5 of 7
             all7 = p.hole_cards + self.community
             rank, tb, best = best_hand_from_7(all7)
             ranked.append((rank, tb, p, best))
 
-        # Sort: highest rank first, then highest tiebreaker list
         ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-        # Determine winner(s) — must match BOTH rank AND full tiebreaker
-        top_rank = ranked[0][0]
-        top_tb   = ranked[0][1]
-        winners = [
-            (r[2], r[3]) for r in ranked
-            if r[0] == top_rank and r[1] == top_tb
+        # Fix 25: side pot calculation for all-in players
+        pot_players = [
+            {'user_id': p.user_id, 'total_contributed': p.total_bet, 'status': p.status}
+            for p in alive
         ]
+        side_pots = _calculate_side_pots(pot_players)
 
-        split   = round(self.pot * (1 - HOUSE_EDGE) / len(winners), 2)
+        # Build hand-rank lookup
+        hand_lookup = {r[2].user_id: (r[0], r[1], r[2], r[3]) for r in ranked}
+
         pool    = await get_db()
-
         winner_dicts = []
+
         async with pool.acquire() as conn:
             async with conn.transaction():
-                for p, best_cards in winners:
-                    if not p.is_bot:
-                        p.chips += split
-                        await add_balance(p.user_id, split, conn)
-                        await log_game(conn, p.user_id, 'holdem',
-                                       p.total_bet, split, {
-                                           'room': self.room_code,
-                                           'round': self.round_num,
-                                           'hand_rank': HAND_NAMES[top_rank],
-                                       })
-                    wr = p.to_dict(show_cards=True)
-                    wr['best_hand']  = best_cards
-                    wr['hand_name']  = HAND_NAMES[top_rank]
-                    wr['payout']     = split
-                    winner_dicts.append(wr)
+                for pot_info in side_pots:
+                    eligible_ids = pot_info['eligible']
+                    pot_amount   = pot_info['amount']
 
-        # Send all hole cards for reveal
+                    # Among eligible players, find the best hand
+                    eligible_ranked = [
+                        hand_lookup[uid] for uid in eligible_ids if uid in hand_lookup
+                    ]
+                    if not eligible_ranked:
+                        continue
+                    eligible_ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+                    top_rank = eligible_ranked[0][0]
+                    top_tb   = eligible_ranked[0][1]
+                    pot_winners = [
+                        (r[2], r[3]) for r in eligible_ranked
+                        if r[0] == top_rank and r[1] == top_tb
+                    ]
+
+                    split = round(pot_amount * (1 - HOUSE_EDGE_POKER) / len(pot_winners), 2)
+                    for p, best_cards in pot_winners:
+                        if not p.is_bot:
+                            p.chips += split
+                            await add_balance(p.user_id, split, conn)
+                            await log_game(conn, p.user_id, 'holdem',
+                                           p.total_bet, split, {
+                                               'room': self.room_code,
+                                               'round': self.round_num,
+                                               'hand_rank': HAND_NAMES[top_rank],
+                                           })
+                        wr = p.to_dict(show_cards=True)
+                        wr['best_hand']  = best_cards
+                        wr['hand_name']  = HAND_NAMES[top_rank]
+                        wr['payout']     = split
+                        winner_dicts.append(wr)
+
         all_player_cards = [p.to_dict(show_cards=True) for p in alive]
 
         await self.broadcast({
@@ -710,8 +739,8 @@ class HoldemRoom:
             'all_players': all_player_cards,
             'community':   self.community,
             'pot':         self.pot,
-            'net_pot':     round(self.pot * (1 - HOUSE_EDGE), 2),
-            'split':       len(winners) > 1,
+            'net_pot':     round(self.pot * (1 - HOUSE_EDGE_POKER), 2),
+            'split':       len(winner_dicts) > 1,
         })
 
 
@@ -719,12 +748,37 @@ class HoldemRoom:
 # ROOM REGISTRY
 # ============================================================
 
+def _calculate_side_pots(players: list) -> list:
+    """
+    Fix 25: Returns list of {'amount': float, 'eligible': [user_id]} dicts.
+    players: list of {'user_id': int, 'total_contributed': float, 'status': str}
+    """
+    contributions = sorted(
+        [p for p in players if p['total_contributed'] > 0],
+        key=lambda p: p['total_contributed']
+    )
+    pots = []
+    prev_level = 0.0
+    remaining = list(contributions)
+
+    for player in contributions:
+        level = player['total_contributed']
+        if level <= prev_level:
+            continue
+        pot_slice = (level - prev_level) * len(remaining)
+        eligible  = [p['user_id'] for p in remaining]
+        pots.append({'amount': pot_slice, 'eligible': eligible})
+        prev_level = level
+        remaining  = [p for p in remaining if p['total_contributed'] > level]
+
+    return pots
+
 _holdem_rooms:    Dict[str, HoldemRoom] = {}
 _holdem_lock      = asyncio.Lock()
 
 def _holdem_room_code() -> str:
     import string
-    return 'P' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
+    return 'P' + ''.join(secure_choice(string.ascii_uppercase + string.digits) for _ in range(5))
 
 def _find_holdem_room(buy_in: float) -> Optional[HoldemRoom]:
     for room in _holdem_rooms.values():
@@ -1025,6 +1079,12 @@ def vp_evaluate(cards: List[Dict]) -> Tuple[str, int]:
     return 'nothing', 0
 
 _vp_sessions: Dict[int, Dict] = {}
+_vp_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_vp_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _vp_locks:
+        _vp_locks[user_id] = asyncio.Lock()
+    return _vp_locks[user_id]
 
 class VPDealRequest(BaseModel):
     amount: float
@@ -1036,66 +1096,71 @@ class VPDrawRequest(BaseModel):
 async def vp_deal(req: VPDealRequest, request: Request):
     user_id = await require_auth(request)
     bet     = clamp_bet(req.amount)
+    lock    = _get_vp_lock(user_id)
+    async with lock:
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+        deck  = new_deck()
+        hand  = [deck.pop() for _ in range(5)]
+        _vp_sessions[user_id] = {'bet': bet, 'deck': deck, 'hand': hand}
 
-    deck  = new_deck()
-    hand  = [deck.pop() for _ in range(5)]
-    _vp_sessions[user_id] = {'bet': bet, 'deck': deck, 'hand': hand}
-
-    return {
-        "success": True,
-        "hand":    hand,
-        "paytable": VP_PAYTABLE,
-    }
+        return {
+            "success": True,
+            "hand":    hand,
+            "paytable": VP_PAYTABLE,
+        }
 
 @router.post("/video/draw")
 async def vp_draw(req: VPDrawRequest, request: Request):
     user_id = await require_auth(request)
-    sess    = _vp_sessions.pop(user_id, None)
-    if not sess:
-        raise HTTPException(400, "No active Video Poker hand — deal first")
+    lock    = _get_vp_lock(user_id)
+    async with lock:
+        # Fix 22: get without popping — only remove after successful DB commit
+        sess = _vp_sessions.get(user_id)
+        if not sess:
+            raise HTTPException(400, "No active Video Poker hand — deal first")
 
-    hold    = [i for i in req.hold if 0 <= i <= 4]
-    deck    = sess['deck']
-    hand    = sess['hand']
-    bet     = sess['bet']
+        hold    = [i for i in req.hold if 0 <= i <= 4]
+        deck    = sess['deck']
+        hand    = sess['hand']
+        bet     = sess['bet']
 
-    # Replace non-held cards
-    final_hand = []
-    for i in range(5):
-        if i in hold:
-            final_hand.append(hand[i])
-        else:
-            final_hand.append(deck.pop())
+        # Replace non-held cards
+        final_hand = []
+        for i in range(5):
+            if i in hold:
+                final_hand.append(hand[i])
+            else:
+                final_hand.append(deck.pop())
 
-    hand_key, mult = vp_evaluate(final_hand)
-    win = apply_house(bet * mult) if mult else 0
+        hand_key, mult = vp_evaluate(final_hand)
+        win = apply_house(bet * mult) if mult else 0
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            if win:
-                await add_balance(user_id, win, conn)
-            await log_game(conn, user_id, 'video_poker', bet, win, {
-                'hand':      hand_key,
-                'mult':      mult,
-                'held':      hold,
-            })
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if win:
+                    await add_balance(user_id, win, conn)
+                await log_game(conn, user_id, 'video_poker', bet, win, {
+                    'hand':      hand_key,
+                    'mult':      mult,
+                    'held':      hold,
+                })
+        # Only remove session AFTER the transaction commits successfully
+        _vp_sessions.pop(user_id, None)
+        _vp_locks.pop(user_id, None)
 
-    return {
-        "success":   True,
-        "final_hand": final_hand,
-        "held":       hold,
-        "hand_name":  VP_HAND_NAMES[hand_key],
-        "mult":       mult,
-        "win":        win,
-        "bet":        bet,
-    }
-
-# apply_house is defined at the top of this file
+        return {
+            "success":   True,
+            "final_hand": final_hand,
+            "held":       hold,
+            "hand_name":  VP_HAND_NAMES[hand_key],
+            "mult":       mult,
+            "win":        win,
+            "bet":        bet,
+        }

@@ -17,13 +17,26 @@ import shared
 from shared import (
     logger, get_db, require_auth, ensure_user_exists,
     deduct_balance, add_balance, convert_decimals,
+    secure_random, secure_randint, secure_choice, secure_shuffle,
+    apply_house_edge, HOUSE_EDGE,
+    get_vip_status, apply_vip_boost,
 )
 
 router = APIRouter(prefix="/api/games/medium", tags=["games-medium"])
 
+# ── VIP-aware balance credit ──────────────────────────────────
+async def _add_win(user_id: int, win: float, conn) -> float:
+    """Apply VIP boost then credit balance. Returns the final (boosted) win."""
+    if win <= 0:
+        return win
+    vip = await get_vip_status(user_id)
+    win = apply_vip_boost(win, vip)
+    await add_balance(user_id, win, conn)
+    return win
+
 HOUSE_EDGE = 0.04
 MIN_BET    = 50
-MAX_BET    = 500_000
+MAX_BET    = 750_000
 
 def clamp_bet(v: float) -> float:
     return max(MIN_BET, min(MAX_BET, float(v)))
@@ -78,6 +91,12 @@ def mines_multiplier(total: int, mines: int, revealed: int) -> float:
 
 # Active mine sessions: user_id → state
 _mine_sessions: Dict[int, Dict] = {}
+_mine_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_mine_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _mine_locks:
+        _mine_locks[user_id] = asyncio.Lock()
+    return _mine_locks[user_id]
 
 class MinesStartRequest(BaseModel):
     amount:     float
@@ -100,7 +119,7 @@ async def mines_start(req: MinesStartRequest, request: Request):
                 raise HTTPException(400, "Insufficient balance")
 
     # Place mines randomly — hidden from player
-    positions = random.sample(range(MINES_GRID), mines)
+    positions = secure_shuffle(list(range(MINES_GRID)))[:mines]
     _mine_sessions[user_id] = {
         'bet':       bet,
         'mines':     mines,
@@ -184,7 +203,7 @@ async def mines_cashout(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await add_balance(user_id, win, conn)
+            win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'mines', bet, win, {
                 'mines': mines, 'revealed': n_safe, 'multiplier': mult,
             })
@@ -243,7 +262,7 @@ def simulate_plinko(rows: int = PLINKO_ROWS) -> tuple[int, list]:
     pos  = 0
     path = []
     for _ in range(rows):
-        go_right = random.random() < 0.5
+        go_right = secure_random() < 0.5
         path.append('R' if go_right else 'L')
         if go_right:
             pos += 1
@@ -271,7 +290,7 @@ async def plinko_drop(req: PlinkoRequest, request: Request):
             if not await deduct_balance(user_id, bet, conn):
                 raise HTTPException(400, "Insufficient balance")
             if win:
-                await add_balance(user_id, win, conn)
+                win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'plinko', bet, win, {
                 'risk': risk, 'bucket': bucket, 'mult': raw_mult,
             })
@@ -318,6 +337,12 @@ def tower_multiplier(floor: int, boxes: int, bombs: int) -> float:
     return round(apply_house(mult), 3)
 
 _tower_sessions: Dict[int, Dict] = {}
+_tower_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_tower_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _tower_locks:
+        _tower_locks[user_id] = asyncio.Lock()
+    return _tower_locks[user_id]
 
 class TowerStartRequest(BaseModel):
     amount:     float
@@ -343,7 +368,7 @@ async def tower_start(req: TowerStartRequest, request: Request):
     # Pre-generate bomb position for every floor
     floors_layout = []
     for _ in range(cfg['floors']):
-        bomb_positions = random.sample(range(cfg['boxes']), cfg['bombs'])
+        bomb_positions = secure_shuffle(list(range(cfg["boxes"])))[:cfg["bombs"]]
         floors_layout.append(bomb_positions)
 
     _tower_sessions[user_id] = {
@@ -414,7 +439,7 @@ async def tower_pick(req: TowerPickRequest, request: Request):
         pool = await get_db()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await add_balance(user_id, pot_win, conn)
+                pot_win = await _add_win(user_id, pot_win, conn)
                 await log_game(conn, user_id, 'tower', sess['bet'], pot_win, {
                     'difficulty': sess['difficulty'],
                     'floors_cleared': new_floor,
@@ -461,7 +486,7 @@ async def tower_cashout(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await add_balance(user_id, win, conn)
+            win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'tower', sess['bet'], win, {
                 'difficulty': sess['difficulty'],
                 'floors_cleared': sess['floor'],
@@ -500,6 +525,12 @@ def shotgun_multiplier(chambers: int, loaded: int, pulled: int) -> float:
     return round(apply_house(mult), 3)
 
 _shotgun_sessions: Dict[int, Dict] = {}
+_shotgun_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_shotgun_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _shotgun_locks:
+        _shotgun_locks[user_id] = asyncio.Lock()
+    return _shotgun_locks[user_id]
 
 class ShotgunStartRequest(BaseModel):
     amount:   float
@@ -519,7 +550,7 @@ async def shotgun_start(req: ShotgunStartRequest, request: Request):
                 raise HTTPException(400, "Insufficient balance")
 
     # Loaded chamber position (0-indexed), hidden from player
-    loaded_pos = random.randint(0, chambers - 1)
+    loaded_pos = secure_randint(0, chambers - 1)
     _shotgun_sessions[user_id] = {
         'bet':        bet,
         'chambers':   chambers,
@@ -577,7 +608,7 @@ async def shotgun_pull(request: Request):
         pool = await get_db()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await add_balance(user_id, pot_win, conn)
+                pot_win = await _add_win(user_id, pot_win, conn)
                 await log_game(conn, user_id, 'shotgun', sess['bet'], pot_win, {
                     'chambers': sess['chambers'],
                     'survived': sess['pulled'],
@@ -621,7 +652,7 @@ async def shotgun_cashout(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await add_balance(user_id, win, conn)
+            win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'shotgun', sess['bet'], win, {
                 'chambers': sess['chambers'],
                 'survived': sess['pulled'],
@@ -661,6 +692,12 @@ LADDER_RUNGS = [
 ]
 
 _ladder_sessions: Dict[int, Dict] = {}
+_ladder_locks:    Dict[int, asyncio.Lock] = {}   # Fix 5: per-user locks
+
+def _get_ladder_lock(user_id: int) -> asyncio.Lock:
+    if user_id not in _ladder_locks:
+        _ladder_locks[user_id] = asyncio.Lock()
+    return _ladder_locks[user_id]
 
 class LadderStartRequest(BaseModel):
     amount: float
@@ -704,7 +741,7 @@ async def ladder_climb(request: Request):
         raise HTTPException(400, "Already at the top")
 
     fail_chance, rung_mult = LADDER_RUNGS[rung_idx]
-    failed = random.random() < fail_chance
+    failed = secure_random() < fail_chance
 
     if failed:
         sess['active'] = False
@@ -736,7 +773,7 @@ async def ladder_climb(request: Request):
         pool = await get_db()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                await add_balance(user_id, pot_win, conn)
+                pot_win = await _add_win(user_id, pot_win, conn)
                 await log_game(conn, user_id, 'ladder', sess['bet'], pot_win, {
                     'rungs_climbed': new_rung, 'summit': True,
                     'multiplier': sess['mult'],
@@ -778,7 +815,7 @@ async def ladder_cashout(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await add_balance(user_id, win, conn)
+            win = await _add_win(user_id, win, conn)
             await log_game(conn, user_id, 'ladder', sess['bet'], win, {
                 'rungs_climbed': sess['rung'],
                 'multiplier':    sess['mult'],
@@ -807,7 +844,20 @@ ROULETTE_RED = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 ROULETTE_NUMBERS = list(range(37))  # 0-36
 
 def roulette_spin() -> int:
-    return random.choice(ROULETTE_NUMBERS)
+    return secure_choice(ROULETTE_NUMBERS)
+
+def _parse_multi_number_bet(bet_value: Any, expected_count: int) -> list:
+    """Parse 'n1,n2,...' and validate count and range. (Fix 27)"""
+    try:
+        nums = [int(x.strip()) for x in str(bet_value).split(',')]
+    except (ValueError, AttributeError):
+        raise HTTPException(400, f"bet_value must be comma-separated integers, got: {bet_value!r}")
+    if len(nums) != expected_count:
+        raise HTTPException(400, f"Expected {expected_count} numbers, got {len(nums)}")
+    for n in nums:
+        if not (0 <= n <= 36):
+            raise HTTPException(400, f"Roulette number {n} is out of range (0–36)")
+    return nums
 
 def evaluate_roulette_bet(bet_type: str, bet_value: Any, result: int) -> float:
     """
@@ -852,19 +902,19 @@ def evaluate_roulette_bet(bet_type: str, bet_value: Any, result: int) -> float:
             return 3.0
         return 0
 
-    # Split (2 adjacent numbers)
+    # Split (2 adjacent numbers) — Fix 27: validated parsing
     if bet_type == 'split':
-        nums = [int(x) for x in str(bet_value).split(',')]
+        nums = _parse_multi_number_bet(bet_value, 2)
         return 18.0 if r in nums else 0
 
-    # Street (3 numbers in a row)
+    # Street (3 numbers in a row) — Fix 27: validated parsing
     if bet_type == 'street':
-        first = int(bet_value)   # e.g. 1 → covers 1,2,3
-        return 12.0 if first <= r <= first + 2 else 0
+        nums = _parse_multi_number_bet(bet_value, 3)
+        return 12.0 if r in nums else 0
 
-    # Corner (4 numbers)
+    # Corner (4 numbers) — Fix 27: validated parsing
     if bet_type == 'corner':
-        nums = [int(x) for x in str(bet_value).split(',')]
+        nums = _parse_multi_number_bet(bet_value, 4)
         return 9.0 if r in nums else 0
 
     return 0
@@ -914,7 +964,7 @@ async def roulette_spin_endpoint(req: RouletteRequest, request: Request):
                 })
 
             if total_win:
-                await add_balance(user_id, total_win, conn)
+                total_win = await _add_win(user_id, total_win, conn)
 
             await log_game(conn, user_id, 'roulette', total_bet, total_win, {
                 'result': result,

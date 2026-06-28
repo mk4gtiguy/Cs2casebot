@@ -37,6 +37,7 @@
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Any
 
@@ -79,12 +80,25 @@ async def audit(conn, admin_id: int, action_type: str,
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
-# ── Settings helpers ─────────────────────────────────────────
-_settings_cache: dict = {}
+# ── Settings helpers (Fix 19: TTL cache + invalidation) ──────
+_settings_cache:    dict  = {}
+_settings_cache_ttl = 30   # seconds
+_settings_cache_at  = 0.0
 
-async def get_settings(conn) -> dict:
-    rows = await conn.fetch("SELECT key, value FROM admin_settings")
-    return {r["key"]: r["value"] for r in rows}
+async def get_settings(pool) -> dict:
+    global _settings_cache, _settings_cache_at
+    now = time.monotonic()
+    if now - _settings_cache_at < _settings_cache_ttl and _settings_cache:
+        return _settings_cache
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT key, value FROM admin_settings")
+        _settings_cache    = {r["key"]: r["value"] for r in rows}
+        _settings_cache_at = now
+        return _settings_cache
+
+def invalidate_settings_cache():
+    global _settings_cache_at
+    _settings_cache_at = 0.0   # force next read to hit DB
 
 async def set_setting(conn, key: str, value: str):
     await conn.execute("""
@@ -115,7 +129,7 @@ async def admin_stats(admin_id: int = Depends(require_admin)):
             "SELECT COALESCE(SUM(total_opens),0) FROM users"
         ) or 0
         opens_24h   = await conn.fetchval(
-            "SELECT COUNT(*) FROM case_open_log WHERE opened_at > NOW() - INTERVAL '24 hours'"
+            "SELECT COUNT(*) FROM live_feed WHERE created_at > NOW() - INTERVAL '24 hours'"
         ) or 0
 
         # Revenue (sum of all bets placed)
@@ -125,6 +139,22 @@ async def admin_stats(admin_id: int = Depends(require_admin)):
         rev_30d   = await conn.fetchval(
             "SELECT COALESCE(SUM(bet_amount),0) FROM game_logs "
             "WHERE created_at > NOW() - INTERVAL '30 days'"
+        ) or 0
+
+        # VIP subscribers
+        active_vip = await conn.fetchval(
+            "SELECT COUNT(*) FROM users WHERE vip_tier != 'none' AND vip_tier IS NOT NULL AND vip_expires_at > NOW()"
+        ) or 0
+        vip_by_tier = await conn.fetch(
+            "SELECT vip_tier, COUNT(*) as cnt FROM users WHERE vip_tier != 'none' AND vip_tier IS NOT NULL AND vip_expires_at > NOW() GROUP BY vip_tier"
+        )
+
+        # Ticket economy
+        tickets_in_circulation = await conn.fetchval(
+            "SELECT COALESCE(SUM(tickets),0) FROM users"
+        ) or 0
+        tickets_sold_30d = await conn.fetchval(
+            "SELECT COALESCE(SUM(amount),0) FROM ticket_transactions WHERE source='purchase' AND created_at > NOW() - INTERVAL '30 days'"
         ) or 0
 
     return {
@@ -140,6 +170,14 @@ async def admin_stats(admin_id: int = Depends(require_admin)):
         "revenue": {
             "total_revenue": float(total_rev),
             "revenue_30d":   float(rev_30d),
+        },
+        "vip": {
+            "active_subscribers": int(active_vip),
+            "by_tier": {r["vip_tier"]: int(r["cnt"]) for r in vip_by_tier},
+        },
+        "tickets": {
+            "in_circulation": int(tickets_in_circulation),
+            "sold_30d":       int(tickets_sold_30d),
         },
     }
 
@@ -157,7 +195,7 @@ async def admin_users(
         if search:
             rows = await conn.fetch("""
                 SELECT user_id, username, balance, total_opens,
-                       level, prestige, is_banned
+                       level, prestige, is_banned, vip_tier, tickets
                 FROM users
                 WHERE username ILIKE $1 OR user_id::text = $2
                 ORDER BY balance DESC LIMIT $3 OFFSET $4
@@ -169,7 +207,7 @@ async def admin_users(
         else:
             rows = await conn.fetch("""
                 SELECT user_id, username, balance, total_opens,
-                       level, prestige, is_banned
+                       level, prestige, is_banned, vip_tier, tickets
                 FROM users ORDER BY balance DESC LIMIT $1 OFFSET $2
             """, limit, offset)
             total = await conn.fetchval("SELECT COUNT(*) FROM users")
@@ -200,12 +238,30 @@ async def admin_user_detail(
             "SELECT COALESCE(SUM(price),0) FROM inventory WHERE user_id=$1", user_id
         ) or 0
 
+        # VIP perks row (may not exist for free users)
+        vip_perks = await conn.fetchrow(
+            "SELECT * FROM vip_perks WHERE user_id=$1", user_id
+        )
+
+        # Last 5 ticket transactions
+        ticket_history = await conn.fetch("""
+            SELECT amount, source, created_at FROM ticket_transactions
+            WHERE user_id=$1 ORDER BY created_at DESC LIMIT 5
+        """, user_id)
+
     return {
         "user": convert_decimals(dict(user)),
         "inventory_summary": {
             "total_items": int(inv_total),
             "total_value": float(inv_value),
         },
+        "vip": {
+            "tier":        user.get("vip_tier") or "none",
+            "expires_at":  user.get("vip_expires_at").isoformat() if user.get("vip_expires_at") else None,
+            "tickets":     int(user.get("tickets") or 0),
+            "perks":       convert_decimals(dict(vip_perks)) if vip_perks else {},
+        },
+        "ticket_history": [convert_decimals(dict(r)) for r in ticket_history],
     }
 
 class BalanceAdjust(BaseModel):
@@ -220,16 +276,15 @@ async def admin_adjust_balance(
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            if body.amount >= 0:
-                await add_balance(user_id, body.amount, conn)
-            else:
-                # Negative = deduction (ignore balance check for admin)
-                await conn.execute(
-                    "UPDATE users SET balance = GREATEST(0, balance + $1) WHERE user_id=$2",
-                    body.amount, user_id
-                )
+            # Fix 23: fetch new balance from the UPDATE itself, log it alongside delta
             new_bal = await conn.fetchval(
-                "SELECT balance FROM users WHERE user_id=$1", user_id
+                """
+                UPDATE users
+                SET balance = GREATEST(0, balance + $1), updated_at = NOW()
+                WHERE user_id = $2
+                RETURNING balance
+                """,
+                body.amount, user_id
             )
             user = await conn.fetchrow(
                 "SELECT username FROM users WHERE user_id=$1", user_id
@@ -237,7 +292,11 @@ async def admin_adjust_balance(
             await audit(conn, admin_id, "balance_adjust",
                        target_id=user_id,
                        target_username=user["username"] if user else None,
-                       details={"amount": body.amount, "reason": body.reason})
+                       details={
+                           "amount":      body.amount,
+                           "reason":      body.reason,
+                           "new_balance": float(new_bal or 0),
+                       })
     return {"success": True, "new_balance": float(new_bal or 0)}
 
 class BanBody(BaseModel):
@@ -283,9 +342,235 @@ async def admin_unban_user(
                        target_username=user["username"] if user else None)
     return {"success": True}
 
-# ============================================================
-# CASES
-# ============================================================
+# ── Admin VIP management ──────────────────────────────────────
+
+class GrantTicketsBody(BaseModel):
+    amount: int
+    reason: str = "Admin grant"
+
+@router.post("/users/{user_id}/tickets")
+async def admin_grant_tickets(
+    user_id: int, body: GrantTicketsBody,
+    request: Request, admin_id: int = Depends(require_admin)
+):
+    """Grant or deduct tickets from a user (use negative amount to deduct)."""
+    if body.amount == 0:
+        raise HTTPException(400, "Amount cannot be zero")
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if body.amount < 0:
+                # Check sufficient balance for deduction
+                current = await conn.fetchval(
+                    "SELECT tickets FROM users WHERE user_id=$1", user_id
+                ) or 0
+                if current + body.amount < 0:
+                    raise HTTPException(400, f"User only has {current} tickets")
+            new_tickets = await conn.fetchval("""
+                UPDATE users SET tickets = tickets + $1 WHERE user_id=$2 RETURNING tickets
+            """, body.amount, user_id)
+            await conn.execute("""
+                INSERT INTO ticket_transactions (user_id, amount, source, metadata)
+                VALUES ($1, $2, 'admin', $3)
+            """, user_id, body.amount, json.dumps({"reason": body.reason, "admin_id": admin_id}))
+            user = await conn.fetchrow("SELECT username FROM users WHERE user_id=$1", user_id)
+            await audit(conn, admin_id, "grant_tickets",
+                       target_id=user_id,
+                       target_username=user["username"] if user else None,
+                       details={"amount": body.amount, "reason": body.reason,
+                                "new_balance": int(new_tickets or 0)})
+    return {"success": True, "new_ticket_balance": int(new_tickets or 0)}
+
+class SetVIPBody(BaseModel):
+    tier:      str            # silver | gold | platinum | none
+    days:      int  = 30      # how long to grant
+
+@router.post("/users/{user_id}/vip")
+async def admin_set_vip(
+    user_id: int, body: SetVIPBody,
+    request: Request, admin_id: int = Depends(require_admin)
+):
+    """Manually grant, change, or revoke a user's VIP tier."""
+    valid_tiers = ("silver", "gold", "platinum", "none")
+    if body.tier not in valid_tiers:
+        raise HTTPException(400, f"tier must be one of: {valid_tiers}")
+
+    VIP_BOOSTS = {"silver": 1.05, "gold": 1.10, "platinum": 1.20, "none": 1.0}
+    boost = VIP_BOOSTS[body.tier]
+
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if body.tier == "none":
+                await conn.execute("""
+                    UPDATE users SET vip_tier='none', vip_expires_at=NOW(),
+                    vip_boost_multiplier=1.0 WHERE user_id=$1
+                """, user_id)
+            else:
+                from datetime import timedelta
+                expires = datetime.utcnow() + timedelta(days=body.days)
+                await conn.execute("""
+                    UPDATE users SET vip_tier=$1, vip_expires_at=$2,
+                    vip_boost_multiplier=$3 WHERE user_id=$4
+                """, body.tier, expires, boost, user_id)
+                # Upsert vip_perks
+                await conn.execute("""
+                    INSERT INTO vip_perks (user_id, private_rooms_enabled, tournament_access)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET private_rooms_enabled=$2, tournament_access=$3, updated_at=NOW()
+                """, user_id,
+                    body.tier in ("gold", "platinum"),
+                    body.tier == "platinum")
+
+            user = await conn.fetchrow("SELECT username FROM users WHERE user_id=$1", user_id)
+            await audit(conn, admin_id, "set_vip",
+                       target_id=user_id,
+                       target_username=user["username"] if user else None,
+                       details={"tier": body.tier, "days": body.days})
+    return {"success": True, "tier": body.tier}
+
+# ── VIP list, bulk grant/revoke, and revenue stats ────────────
+
+@router.get("/vip/users")
+async def admin_vip_users(
+    tier: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    admin_id: int = Depends(require_admin)
+):
+    """List all VIP users with tier, expiry, tickets, and total ticket spend."""
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        where = "WHERE vip_tier != 'none' AND vip_tier IS NOT NULL AND vip_expires_at > NOW()"
+        params: list = []
+        if tier in ("silver", "gold", "platinum"):
+            where += " AND vip_tier = $1"
+            params.append(tier)
+
+        idx = len(params)
+        rows = await conn.fetch(f"""
+            SELECT u.user_id, u.username, u.vip_tier, u.vip_expires_at,
+                   u.tickets, u.stripe_customer_id,
+                   COALESCE(SUM(CASE WHEN tt.amount > 0 THEN tt.amount ELSE 0 END), 0) AS tickets_received,
+                   COALESCE(SUM(CASE WHEN tt.source = 'purchase' THEN 1 ELSE 0 END), 0) AS purchases
+            FROM users u
+            LEFT JOIN ticket_transactions tt ON tt.user_id = u.user_id
+            {where}
+            GROUP BY u.user_id
+            ORDER BY u.vip_expires_at DESC
+            LIMIT ${idx+1} OFFSET ${idx+2}
+        """, *params, limit, offset)
+
+        total = await conn.fetchval(f"""
+            SELECT COUNT(*) FROM users {where}
+        """, *params)
+
+    return {
+        "users": [convert_decimals(dict(r)) for r in rows],
+        "total": int(total or 0),
+    }
+
+class VIPGrantBody(BaseModel):
+    user_id: str  # str to prevent JS BigInt truncation
+    tier:    str
+    days:    int = 30
+
+@router.post("/vip/grant")
+async def admin_vip_grant(
+    body: VIPGrantBody, request: Request,
+    admin_id: int = Depends(require_admin)
+):
+    """Grant a VIP tier to any user by user_id."""
+    uid = int(body.user_id)
+    valid = ("silver", "gold", "platinum")
+    if body.tier not in valid:
+        raise HTTPException(400, f"tier must be one of: {valid}")
+    VIP_BOOSTS = {"silver": 1.05, "gold": 1.10, "platinum": 1.20}
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            expires = datetime.utcnow() + timedelta(days=body.days)
+            await conn.execute("""
+                UPDATE users SET vip_tier=$1, vip_expires_at=$2, vip_boost_multiplier=$3
+                WHERE user_id=$4
+            """, body.tier, expires, VIP_BOOSTS[body.tier], uid)
+            await conn.execute("""
+                INSERT INTO vip_perks (user_id, private_rooms_enabled, tournament_access)
+                VALUES ($1,$2,$3)
+                ON CONFLICT (user_id) DO UPDATE
+                SET private_rooms_enabled=$2, tournament_access=$3, updated_at=NOW()
+            """, uid,
+                body.tier in ("gold", "platinum"),
+                body.tier == "platinum")
+            user = await conn.fetchrow("SELECT username FROM users WHERE user_id=$1", uid)
+            await audit(conn, admin_id, "vip_grant",
+                       target_id=uid,
+                       target_username=user["username"] if user else None,
+                       details={"tier": body.tier, "days": body.days})
+    return {"success": True, "tier": body.tier, "days": body.days}
+
+class VIPRevokeBody(BaseModel):
+    user_id: str  # str to prevent JS BigInt truncation
+    reason:  str = "Admin revoke"
+
+@router.post("/vip/revoke")
+async def admin_vip_revoke(
+    body: VIPRevokeBody, request: Request,
+    admin_id: int = Depends(require_admin)
+):
+    """Immediately revoke VIP from a user."""
+    uid = int(body.user_id)
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("""
+                UPDATE users SET vip_tier='none', vip_expires_at=NOW(),
+                vip_boost_multiplier=1.0 WHERE user_id=$1
+            """, uid)
+            user = await conn.fetchrow("SELECT username FROM users WHERE user_id=$1", uid)
+            await audit(conn, admin_id, "vip_revoke",
+                       target_id=uid,
+                       target_username=user["username"] if user else None,
+                       details={"reason": body.reason})
+    return {"success": True}
+
+@router.get("/vip/stats")
+async def admin_vip_stats(admin_id: int = Depends(require_admin)):
+    """Revenue and subscriber breakdown by VIP tier."""
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        # Active subscribers by tier
+        tier_counts = await conn.fetch("""
+            SELECT vip_tier, COUNT(*) AS subscribers
+            FROM users
+            WHERE vip_tier != 'none' AND vip_tier IS NOT NULL AND vip_expires_at > NOW()
+            GROUP BY vip_tier
+        """)
+        # Ticket purchases by source
+        ticket_revenue = await conn.fetch("""
+            SELECT source, SUM(amount) AS total_tickets, COUNT(*) AS transactions
+            FROM ticket_transactions
+            WHERE amount > 0
+            GROUP BY source
+        """)
+        # Tickets spent this month
+        spent_month = await conn.fetchval("""
+            SELECT COALESCE(ABS(SUM(amount)), 0)
+            FROM ticket_transactions
+            WHERE amount < 0 AND created_at > NOW() - INTERVAL '30 days'
+        """) or 0
+        # Total tickets ever granted
+        total_granted = await conn.fetchval(
+            "SELECT COALESCE(SUM(amount),0) FROM ticket_transactions WHERE amount > 0"
+        ) or 0
+
+    return {
+        "subscribers": {r["vip_tier"]: int(r["subscribers"]) for r in tier_counts},
+        "ticket_sources": [convert_decimals(dict(r)) for r in ticket_revenue],
+        "tickets_spent_30d": int(spent_month),
+        "tickets_granted_total": int(total_granted),
+    }
 
 @router.get("/cases")
 async def admin_cases(admin_id: int = Depends(require_admin)):
@@ -368,7 +653,7 @@ async def admin_economy(admin_id: int = Depends(require_admin)):
             "SELECT COALESCE(SUM(total_opens),0) FROM users"
         ) or 0
         total_golds = await conn.fetchval(
-            "SELECT COALESCE(SUM(gold_count),0) FROM users"
+            "SELECT COALESCE(SUM(total_golds),0) FROM users"
         ) or 0
     return {
         "total_balance":         float(total_bal),
@@ -493,10 +778,10 @@ async def admin_draw_giveaway(
         if not entries:
             return {"success": False, "error": "No entries yet"}
 
-        import random
+        from shared import secure_shuffle
         entry_ids = [e["user_id"] for e in entries]
         n_winners = min(giveaway["winner_count"], len(entry_ids))
-        winners   = random.sample(entry_ids, n_winners)
+        winners   = secure_shuffle(entry_ids)[:n_winners]
         prize_each = float(giveaway["prize_amount"]) / n_winners
 
         async with conn.transaction():
@@ -518,7 +803,7 @@ async def admin_draw_giveaway(
 # ============================================================
 
 class DepositBody(BaseModel):
-    user_id:          int
+    user_id:           str  # str to prevent JS BigInt truncation
     item_name:        str
     rarity:           str = "Blue"
     condition:        str = "Field-Tested"
@@ -532,6 +817,7 @@ async def admin_inventory_deposit(
     body: DepositBody,
     request: Request, admin_id: int = Depends(require_admin)
 ):
+    uid = int(body.user_id)
     RARITY_PRICES = {
         "Blue": 500, "Purple": 2000, "Pink": 5000,
         "Red": 15000, "Gold": 50000,
@@ -542,7 +828,7 @@ async def admin_inventory_deposit(
     async with pool.acquire() as conn:
         # Check user exists
         user = await conn.fetchrow(
-            "SELECT username FROM users WHERE user_id=$1", body.user_id
+            "SELECT username FROM users WHERE user_id=$1", uid
         )
         if not user:
             raise HTTPException(404, "User not found")
@@ -553,11 +839,11 @@ async def admin_inventory_deposit(
                     (user_id, item_name, rarity, condition,
                      is_stattrak, price, source, acquired_at)
                 VALUES ($1,$2,$3,$4,$5,$6,'admin_deposit',NOW())
-            """, body.user_id, body.item_name, body.rarity,
+            """, uid, body.item_name, body.rarity,
                 body.condition, body.is_stattrak, price)
 
             await audit(conn, admin_id, "inventory_deposit",
-                       target_id=body.user_id,
+                       target_id=uid,
                        target_username=user["username"],
                        details={
                            "item": body.item_name,
@@ -571,14 +857,14 @@ async def admin_inventory_deposit(
             # shared.bot_notify is set by main.py if the bot is running
             if hasattr(shared, 'bot_notify') and shared.bot_notify:
                 await shared.bot_notify(
-                    body.user_id,
+                    uid,
                     f"🎁 **Secret Gift!**\n"
                     f"An admin deposited **{body.item_name}** "
                     f"({body.rarity}) into your inventory!\n"
                     f"{body.custom_message}"
                 )
         except Exception as e:
-            logger.warning(f"Could not DM user {body.user_id}: {e}")
+            logger.warning(f"Could not DM user {uid}: {e}")
 
     return {
         "success": True,
@@ -626,8 +912,7 @@ async def admin_create_announcement(
 @router.get("/settings")
 async def admin_get_settings(admin_id: int = Depends(require_admin)):
     pool = await get_db()
-    async with pool.acquire() as conn:
-        settings = await get_settings(conn)
+    settings = await get_settings(pool)   # Fix 19: pass pool not conn
     # Defaults
     defaults = {
         "site_name": "CS2CaseBot",
@@ -651,6 +936,7 @@ async def admin_save_settings(
                 await set_setting(conn, key, str(value))
             await audit(conn, admin_id, "update_settings",
                        details={"keys": list(body.keys())})
+    invalidate_settings_cache()   # Fix 19: invalidate after save
     return {"success": True}
 
 # ============================================================
@@ -683,13 +969,27 @@ async def admin_audit_log(
 # ============================================================
 
 class BetaUserBody(BaseModel):
-    user_id: int
+    user_id: str  # str to prevent JS BigInt truncation
+
+@router.get("/beta/users")
+async def admin_list_beta(admin_id: int = Depends(require_admin)):
+    """List all beta testers."""
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT bt.user_id, u.username, bt.added_at
+            FROM beta_testers bt
+            LEFT JOIN users u ON u.user_id = bt.user_id
+            ORDER BY bt.added_at DESC
+        """)
+    return {"users": [convert_decimals(dict(r)) for r in rows]}
 
 @router.post("/beta/users")
 async def admin_add_beta(
     body: BetaUserBody,
     request: Request, admin_id: int = Depends(require_admin)
 ):
+    uid = int(body.user_id)
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -697,9 +997,29 @@ async def admin_add_beta(
                 INSERT INTO beta_testers (user_id, added_by)
                 VALUES ($1,$2)
                 ON CONFLICT (user_id) DO NOTHING
-            """, body.user_id, admin_id)
+            """, uid, admin_id)
+            await audit(conn, admin_id, "add_beta_tester", target_id=uid)
+    return {"success": True}
+
+@router.delete("/beta/users/{user_id}")
+async def admin_remove_beta(
+    user_id: int, admin_id: int = Depends(require_admin)
+):
+    """Remove a user from beta testers."""
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM beta_testers WHERE user_id=$1", user_id)
+        await audit(conn, admin_id, "remove_beta_tester", target_id=user_id)
+    return {"success": True}
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("""
+                INSERT INTO beta_testers (user_id, added_by)
+                VALUES ($1,$2)
+                ON CONFLICT (user_id) DO NOTHING
+            """, uid, admin_id)
             await audit(conn, admin_id, "add_beta_tester",
-                       target_id=body.user_id)
+                       target_id=uid)
     return {"success": True}
 
 # ============================================================
@@ -714,10 +1034,10 @@ async def admin_live_feed(
     pool = await get_db()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT l.*, u.username
-            FROM case_open_log l
-            JOIN users u ON u.user_id = l.user_id
-            ORDER BY l.opened_at DESC LIMIT $1
+            SELECT user_id, username, item_name, rarity, rarity_emoji,
+                   case_type, float_value, created_at
+            FROM live_feed
+            ORDER BY created_at DESC LIMIT $1
         """, limit)
     return {"feed": [convert_decimals(dict(r)) for r in rows]}
 
@@ -898,4 +1218,60 @@ async def init_admin_tables():
                 created_at       TIMESTAMPTZ DEFAULT NOW()
             );
         """)
+
+        # Fix 3: Jackpot persistence tables
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS jackpot_state (
+                id         INTEGER PRIMARY KEY DEFAULT 1,
+                pot        DECIMAL(15,2) DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS jackpot_entries (
+                id         SERIAL PRIMARY KEY,
+                jackpot_id INTEGER DEFAULT 1,
+                user_id    BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                amount     DECIMAL(15,2),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            INSERT INTO jackpot_state (id, pot) VALUES (1, 0)
+            ON CONFLICT (id) DO NOTHING
+        """)
+
+        # Fix 21: Blackjack session persistence table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS blackjack_sessions (
+                user_id      BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                player_cards TEXT[],
+                dealer_cards TEXT[],
+                bet          DECIMAL(15,2),
+                status       TEXT DEFAULT 'active',
+                split_hand   TEXT[],
+                created_at   TIMESTAMP DEFAULT NOW(),
+                updated_at   TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
+        # Fix 28: Performance indexes
+        index_statements = [
+            "CREATE INDEX IF NOT EXISTS idx_inventory_user_id    ON inventory (user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_rarity     ON inventory (user_id, rarity)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_status     ON inventory (user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_game_logs_user       ON game_logs (user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_game_logs_type       ON game_logs (game_type)",
+            "CREATE INDEX IF NOT EXISTS idx_game_logs_created    ON game_logs (created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_quests_user          ON quests (user_id, completed)",
+            "CREATE INDEX IF NOT EXISTS idx_jackpot_entries_user ON jackpot_entries (user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_live_feed_created    ON live_feed (created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_users_balance        ON users (balance DESC)",
+        ]
+        for stmt in index_statements:
+            try:
+                await conn.execute(stmt)
+            except Exception as e:
+                logger.warning(f"Index creation skipped (table may not exist yet): {e}")
+
     logger.info("✅ Admin tables ready")
