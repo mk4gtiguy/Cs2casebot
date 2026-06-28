@@ -1613,12 +1613,15 @@ async def get_quests(request: Request):
             user_id
         )
         if not last or last["created_at"].date() < datetime.now().date():
-            await conn.execute("DELETE FROM quests WHERE user_id=$1", user_id)
-            for qt, qi in QUEST_TYPES.items():
-                await conn.execute("""
-                    INSERT INTO quests (user_id, quest_type, progress, required, reward)
-                    VALUES ($1,$2,0,$3,$4)
-                """, user_id, qt, qi["base_required"], qi["base_reward"])
+            # Wrap DELETE + INSERT in a transaction so a crash can't leave the
+            # user with no quests (partial reset).
+            async with conn.transaction():
+                await conn.execute("DELETE FROM quests WHERE user_id=$1", user_id)
+                for qt, qi in QUEST_TYPES.items():
+                    await conn.execute("""
+                        INSERT INTO quests (user_id, quest_type, progress, required, reward)
+                        VALUES ($1,$2,0,$3,$4)
+                    """, user_id, qt, qi["base_required"], qi["base_reward"])
         rows = await conn.fetch(
             "SELECT * FROM quests WHERE user_id=$1 ORDER BY created_at", user_id
         )
@@ -1630,18 +1633,18 @@ async def claim_quests(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            quests = await conn.fetch(
-                "SELECT * FROM quests WHERE user_id=$1 AND completed=true AND claimed=false",
+            # Atomically claim and return rewards in one statement to prevent
+            # double-payout from concurrent requests (TOCTOU race).
+            claimed = await conn.fetch(
+                """UPDATE quests SET claimed=true
+                   WHERE user_id=$1 AND completed=true AND claimed=false
+                   RETURNING reward""",
                 user_id
             )
-            if not quests:
+            if not claimed:
                 raise HTTPException(400, "No quests ready to claim")
-            total = sum(q["reward"] for q in quests)
-            num_quests = len(quests)
-            await conn.execute(
-                "UPDATE quests SET claimed=true WHERE user_id=$1 AND completed=true AND claimed=false",
-                user_id
-            )
+            total      = sum(r["reward"] for r in claimed)
+            num_quests = len(claimed)
             await add_balance(user_id, total, conn)
             # Track quests completed and grant XP (50 XP per quest)
             await conn.execute(

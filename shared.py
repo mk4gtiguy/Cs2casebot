@@ -183,6 +183,26 @@ async def require_auth(request: Request) -> int:
     user_id = await get_user_id_from_session(request)
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT is_banned, ban_expires FROM users WHERE user_id=$1", user_id
+        )
+    if row and row["is_banned"]:
+        ban_expires = row["ban_expires"]
+        if ban_expires is None:
+            raise HTTPException(status_code=403, detail="Your account has been permanently banned.")
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        exp = ban_expires if ban_expires.tzinfo else ban_expires.replace(tzinfo=timezone.utc)
+        if now < exp:
+            raise HTTPException(status_code=403, detail=f"Your account is banned until {exp.isoformat()}.")
+        # Ban expired — auto-lift it
+        async with pool.acquire() as conn2:
+            await conn2.execute(
+                "UPDATE users SET is_banned=FALSE, ban_reason=NULL, ban_expires=NULL WHERE user_id=$1",
+                user_id
+            )
     return user_id
 
 # ============================================================
