@@ -139,66 +139,73 @@ async def mines_start(req: MinesStartRequest, request: Request):
 @router.post("/mines/reveal")
 async def mines_reveal(req: MinesRevealRequest, request: Request):
     user_id = await require_auth(request)
-    sess    = _mine_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Mines game — start one first")
+    async with _get_mine_lock(user_id):
+        sess = _mine_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Mines game — start one first")
 
-    tile = req.tile
-    if tile < 0 or tile >= MINES_GRID:
-        raise HTTPException(400, f"Tile must be 0–{MINES_GRID - 1}")
-    if tile in sess['revealed']:
-        raise HTTPException(400, "Tile already revealed")
+        tile = req.tile
+        if tile < 0 or tile >= MINES_GRID:
+            raise HTTPException(400, f"Tile must be 0–{MINES_GRID - 1}")
+        if tile in sess['revealed']:
+            raise HTTPException(400, "Tile already revealed")
 
-    sess['revealed'].append(tile)
+        sess['revealed'].append(tile)
 
-    if tile in sess['positions']:
-        # Hit a mine — game over, lose bet
-        sess['active'] = False
-        all_mines = sess['positions']
-        _mine_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            await log_game(conn, user_id, 'mines', sess['bet'], 0, {
-                'mines': sess['mines'], 'revealed': len(sess['revealed']),
-                'bust_tile': tile,
-            })
+        if tile in sess['positions']:
+            # Hit a mine — game over, lose bet
+            sess['active'] = False
+            all_mines = sess['positions']
+            bet = sess['bet']
+            mines_count = sess['mines']
+            revealed_count = len(sess['revealed'])
+            _mine_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                await log_game(conn, user_id, 'mines', bet, 0, {
+                    'mines': mines_count, 'revealed': revealed_count,
+                    'bust_tile': tile,
+                })
+            return {
+                "success":   True,
+                "hit_mine":  True,
+                "tile":      tile,
+                "all_mines": all_mines,
+                "revealed":  sess['revealed'],
+            }
+
+        # Safe tile
+        mult = mines_multiplier(MINES_GRID, sess['mines'], len(sess['revealed']))
+        potential_win = round(sess['bet'] * mult, 2)
+
         return {
-            "success":   True,
-            "hit_mine":  True,
-            "tile":      tile,
-            "all_mines": all_mines,
-            "revealed":  sess['revealed'],
+            "success":     True,
+            "hit_mine":    False,
+            "tile":        tile,
+            "multiplier":  mult,
+            "potential_win": potential_win,
+            "revealed":    sess['revealed'],
         }
-
-    # Safe tile
-    mult = mines_multiplier(MINES_GRID, sess['mines'], len(sess['revealed']))
-    potential_win = round(sess['bet'] * mult, 2)
-
-    return {
-        "success":     True,
-        "hit_mine":    False,
-        "tile":        tile,
-        "multiplier":  mult,
-        "potential_win": potential_win,
-        "revealed":    sess['revealed'],
-    }
 
 @router.post("/mines/cashout")
 async def mines_cashout(request: Request):
     user_id = await require_auth(request)
-    sess    = _mine_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Mines game")
-    if not sess['revealed']:
-        raise HTTPException(400, "Reveal at least one tile before cashing out")
+    async with _get_mine_lock(user_id):
+        sess = _mine_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Mines game")
+        if not sess['revealed']:
+            raise HTTPException(400, "Reveal at least one tile before cashing out")
 
-    bet    = sess['bet']
-    mines  = sess['mines']
-    n_safe = len(sess['revealed'])
-    mult   = mines_multiplier(MINES_GRID, mines, n_safe)
-    win    = round(bet * mult, 2)
-    sess['active'] = False
-    _mine_sessions.pop(user_id, None)
+        bet    = sess['bet']
+        mines  = sess['mines']
+        n_safe = len(sess['revealed'])
+        mult   = mines_multiplier(MINES_GRID, mines, n_safe)
+        win    = round(bet * mult, 2)
+        revealed_tiles = list(sess['revealed'])
+        mine_positions = list(sess['positions'])
+        sess['active'] = False
+        _mine_sessions.pop(user_id, None)
 
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -212,8 +219,8 @@ async def mines_cashout(request: Request):
         "success":     True,
         "win":         win,
         "multiplier":  mult,
-        "revealed":    sess['revealed'],
-        "mines":       sess['positions'],
+        "revealed":    revealed_tiles,
+        "mines":       mine_positions,
     }
 
 @router.get("/mines/state")

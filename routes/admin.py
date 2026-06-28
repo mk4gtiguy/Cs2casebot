@@ -1011,16 +1011,6 @@ async def admin_remove_beta(
         await conn.execute("DELETE FROM beta_testers WHERE user_id=$1", user_id)
         await audit(conn, admin_id, "remove_beta_tester", target_id=user_id)
     return {"success": True}
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("""
-                INSERT INTO beta_testers (user_id, added_by)
-                VALUES ($1,$2)
-                ON CONFLICT (user_id) DO NOTHING
-            """, uid, admin_id)
-            await audit(conn, admin_id, "add_beta_tester",
-                       target_id=uid)
-    return {"success": True}
 
 # ============================================================
 # LIVE FEED
