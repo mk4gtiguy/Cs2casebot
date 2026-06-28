@@ -1500,24 +1500,27 @@ async def add_xp(user_id: int, amount: int, conn=None):
         
         new_xp = (user['xp'] or 0) + amount
         current_level = user['level'] or 1
+        # Track prestige locally so each milestone in the same call sees the
+        # running total (not the stale value from the initial SELECT).
+        prestige = user['prestige'] or 0
         leveled_up = False
-        
+
         xp_needed = current_level * 50 + 100
-        
+
         while new_xp >= xp_needed:
             new_xp -= xp_needed
             current_level += 1
             xp_needed = current_level * 50 + 100
             leveled_up = True
-            
+
             reward = current_level * 50
             await conn.execute(
                 "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
                 reward, user_id
             )
-            
+
             if current_level % 50 == 0:
-                prestige = (user['prestige'] or 0) + 1
+                prestige += 1
                 await conn.execute(
                     "UPDATE users SET prestige = $1 WHERE user_id = $2",
                     prestige, user_id
@@ -2084,7 +2087,10 @@ async def sell_item(interaction: discord.Interaction, item_id: int):
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
                 
-                item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND status = 'kept'", item_id, interaction.user.id)
+                item = await conn.fetchrow(
+                    "UPDATE inventory SET status='sold' WHERE id=$1 AND user_id=$2 AND status='kept' RETURNING *",
+                    item_id, interaction.user.id
+                )
 
                 if not item:
                     await interaction.followup.send(f"❌ Item ID {item_id} not found in your inventory! Use `/inventory` to see your items.", ephemeral=True)
@@ -2095,7 +2101,6 @@ async def sell_item(interaction: discord.Interaction, item_id: int):
 
                 old_balance = await get_balance(interaction.user.id, conn)
 
-                await conn.execute("DELETE FROM inventory WHERE id = $1", item_id)
                 await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", sell_price, interaction.user.id)
 
                 await update_quest_progress(interaction.user.id, "sell_items", 1, conn)
@@ -2591,15 +2596,14 @@ async def sticker_tradeup(interaction: discord.Interaction, item_ids: str):
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
                 
-                items = []
-                rarities = []
-                for item_id in ids:
-                    item = await conn.fetchrow("SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND item_type = 'sticker' AND status = 'kept'", item_id, interaction.user.id)
-                    if not item:
-                        await interaction.followup.send(f"❌ Item ID {item_id} not found or not a sticker!", ephemeral=True)
-                        return
-                    items.append(item)
-                    rarities.append(item['rarity'])
+                items = await conn.fetch(
+                    "SELECT * FROM inventory WHERE id = ANY($1::int[]) AND user_id = $2 AND item_type = 'sticker' AND status = 'kept' FOR UPDATE",
+                    ids, interaction.user.id
+                )
+                if len(items) != len(ids):
+                    await interaction.followup.send("❌ One or more items not found or not a sticker in your inventory!", ephemeral=True)
+                    return
+                rarities = [item['rarity'] for item in items]
 
                 rarity_order = list(STICKER_TRADE_PROGRESSION.keys())
                 current_rarity = None
@@ -2665,7 +2669,10 @@ async def quick_tradeup(interaction: discord.Interaction, rarity: str):
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
                 
-                items = await conn.fetch("SELECT id, item_name FROM inventory WHERE user_id = $1 AND rarity = $2 AND item_type = 'weapon' AND status = 'kept'", interaction.user.id, config['rarity'])
+                items = await conn.fetch(
+                    "SELECT id, item_name FROM inventory WHERE user_id = $1 AND rarity = $2 AND item_type = 'weapon' AND status = 'kept' FOR UPDATE",
+                    interaction.user.id, config['rarity']
+                )
 
                 if len(items) < config['count']:
                     await interaction.followup.send(f"❌ You need {config['count']} {config['rarity']} items for trade-up! You have {len(items)}.", ephemeral=True)

@@ -1684,17 +1684,14 @@ async def quick_trade(req: TradeRequest, request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Verify ownership and capture gold tier before deletion
-            current_gold_tier = None
-            for iid in req.item_ids:
-                row = await conn.fetchrow(
-                    "SELECT id, tier FROM inventory WHERE id=$1 AND user_id=$2 AND rarity=$3 AND status='kept'",
-                    iid, user_id, req.rarity
-                )
-                if not row:
-                    raise HTTPException(400, f"Item {iid} not valid")
-                if current_gold_tier is None and row.get("tier"):
-                    current_gold_tier = row["tier"]
+            # Verify ownership and lock all rows before deletion
+            rows = await conn.fetch(
+                "SELECT id, tier FROM inventory WHERE id = ANY($1::int[]) AND user_id=$2 AND rarity=$3 AND status='kept' FOR UPDATE",
+                req.item_ids, user_id, req.rarity
+            )
+            if len(rows) != len(req.item_ids):
+                raise HTTPException(400, "One or more items not valid or not owned")
+            current_gold_tier = next((r["tier"] for r in rows if r.get("tier")), None)
             # Delete traded items
             await conn.execute(
                 "DELETE FROM inventory WHERE id = ANY($1::int[])", req.item_ids
