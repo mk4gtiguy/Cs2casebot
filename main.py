@@ -1988,22 +1988,16 @@ async def open_sticker(interaction: discord.Interaction, capsule: str):
         async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-                
-                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
 
-                if not user:
-                    await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
-                    await create_daily_quests(interaction.user.id, conn)
-                    user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-
-                old_balance = user['balance']
-
-                if old_balance < capsule_data['price']:
+                # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+                deducted = await conn.fetchval(
+                    "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
+                    capsule_data['price'], interaction.user.id
+                )
+                if deducted is None:
                     embed = discord.Embed(title="❌ Insufficient Balance", description=f"You need ${capsule_data['price']:.2f} to open this capsule!", color=discord.Color.red())
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
-
-                await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", capsule_data['price'], interaction.user.id)
 
                 sticker = get_random_sticker(capsule_id)
 
@@ -3029,23 +3023,22 @@ async def create_coinflip_game(user_id: int, amount: float) -> dict:
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+
+            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+            deducted = await conn.fetchval(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
                 amount, user_id
             )
-            
+            if deducted is None:
+                return {'success': False, 'error': 'Insufficient balance'}
+
             result = await conn.fetchrow(
-                """INSERT INTO coinflip_games (creator_id, amount, status) 
+                """INSERT INTO coinflip_games (creator_id, amount, status)
                    VALUES ($1, $2, 'waiting') RETURNING id""",
                 user_id, amount
             )
             game_id = result['id']
-            
+
             return {'success': True, 'game_id': game_id, 'amount': amount}
 
 async def join_coinflip_game(game_id: int, user_id: int) -> dict:
@@ -3053,25 +3046,26 @@ async def join_coinflip_game(game_id: int, user_id: int) -> dict:
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await ensure_user_exists(user_id, conn=conn)
-            
+
+            # FOR UPDATE locks the game row so two concurrent join requests can't
+            # both see status='waiting' and both proceed to deduct + update the game.
             game = await conn.fetchrow(
-                "SELECT * FROM coinflip_games WHERE id = $1 AND status = 'waiting'",
+                "SELECT * FROM coinflip_games WHERE id = $1 AND status = 'waiting' FOR UPDATE",
                 game_id
             )
             if not game:
                 return {'success': False, 'error': 'Game not found or already active'}
-            
+
             if game['creator_id'] == user_id:
                 return {'success': False, 'error': "You can't join your own game!"}
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < game['amount']:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+
+            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+            deducted = await conn.fetchval(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
                 game['amount'], user_id
             )
+            if deducted is None:
+                return {'success': False, 'error': 'Insufficient balance'}
             
             await conn.execute(
                 """UPDATE coinflip_games SET opponent_id = $1, status = 'active' WHERE id = $2""",

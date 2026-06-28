@@ -1556,15 +1556,15 @@ async def sell_item(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Accept 'kept' or 'pending' (item just opened, not explicitly kept yet)
+            # Atomic ownership check + status transition in one statement so
+            # concurrent sell requests can't both pass and double-credit balance.
             item = await conn.fetchrow(
-                "SELECT * FROM inventory WHERE id=$1 AND user_id=$2 AND status IN ('kept','pending')",
+                "UPDATE inventory SET status='sold' WHERE id=$1 AND user_id=$2 AND status IN ('kept','pending') RETURNING price",
                 item_id, user_id
             )
             if not item:
                 raise HTTPException(404, "Item not found or already sold")
             sell_price = round(float(item["price"]) * 0.70, 2)
-            await conn.execute("UPDATE inventory SET status='sold' WHERE id=$1", item_id)
             await add_balance(user_id, sell_price, conn)
             # Update quest progress for selling
             await conn.execute("""
@@ -1910,6 +1910,8 @@ async def leaderboard(board_type: str, limit: int = 10):
     }
     if board_type not in col_map:
         raise HTTPException(400, "Invalid leaderboard type")
+    # Cap limit to prevent full-table-scan DoS from unauthenticated callers.
+    limit = max(1, min(limit, 100))
     col, _ = col_map[board_type]
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -1981,6 +1983,7 @@ async def update_streak(request: Request):
 
 @app.get("/api/live-feed")
 async def live_feed(limit: int = 20):
+    limit = max(1, min(limit, 100))  # Cap to prevent table-scan DoS
     pool = await get_db()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
