@@ -1638,40 +1638,49 @@ async def daily(interaction: discord.Interaction):
         return
     await interaction.response.defer()
     async with db_pool.acquire() as conn:
-        await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-        
-        user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", interaction.user.id)
-        if not user:
-            await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
-            await create_daily_quests(interaction.user.id, conn)
-            user = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", interaction.user.id)
+        async with conn.transaction():
+            await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
 
-        now = datetime.now()
-        last_daily = user['last_daily']
-        streak = user['daily_streak'] or 0
+            # SELECT FOR UPDATE locks the row so concurrent daily claims queue up
+            # rather than both passing the date check simultaneously.
+            user = await conn.fetchrow(
+                "SELECT daily_streak, last_daily, balance FROM users WHERE user_id = $1 FOR UPDATE",
+                interaction.user.id
+            )
+            if not user:
+                await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
+                await create_daily_quests(interaction.user.id, conn)
+                user = await conn.fetchrow(
+                    "SELECT daily_streak, last_daily, balance FROM users WHERE user_id = $1 FOR UPDATE",
+                    interaction.user.id
+                )
 
-        if last_daily and last_daily.date() == now.date():
-            embed = discord.Embed(title="⏰ Already Claimed", description="You've already claimed today's daily reward!", color=discord.Color.red())
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
+            now = datetime.now()
+            last_daily = user['last_daily']
+            streak = user['daily_streak'] or 0
 
-        if last_daily and (now - last_daily).days == 1:
-            streak += 1
-        else:
-            streak = 1
+            if last_daily and last_daily.date() == now.date():
+                embed = discord.Embed(title="⏰ Already Claimed", description="You've already claimed today's daily reward!", color=discord.Color.red())
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
 
-        reward = 500 + (streak * 100)
-        jackpot_hit = secure_randint(1, 1000000) == 1
+            if last_daily and (now - last_daily).days == 1:
+                streak += 1
+            else:
+                streak = 1
 
-        if jackpot_hit:
-            reward += 50000
-            embed2 = discord.Embed(title="🎰🎰🎰 JACKPOT! 🎰🎰🎰", description=f"You won an additional **$50,000**!", color=discord.Color.gold())
-            await interaction.followup.send(embed2)
+            reward = 500 + (streak * 100)
+            jackpot_hit = secure_randint(1, 1000000) == 1
 
-        await conn.execute("UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4", reward, streak, now, interaction.user.id)
+            if jackpot_hit:
+                reward += 50000
+                embed2 = discord.Embed(title="🎰🎰🎰 JACKPOT! 🎰🎰🎰", description=f"You won an additional **$50,000**!", color=discord.Color.gold())
+                await interaction.followup.send(embed2)
 
-        updated_user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-        new_balance = updated_user['balance'] if updated_user else reward
+            await conn.execute("UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4", reward, streak, now, interaction.user.id)
+
+            updated_user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
+            new_balance = updated_user['balance'] if updated_user else reward
 
         embed = discord.Embed(title="🎁 Daily Reward Claimed!", color=discord.Color.green())
         embed.add_field(name="Reward", value=f"${reward:,.2f}", inline=True)
@@ -1696,16 +1705,20 @@ async def transfer(interaction: discord.Interaction, user: discord.User, amount:
         await interaction.followup.send("Amount must be positive!", ephemeral=True)
         return
     async with db_pool.acquire() as conn:
-        await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-        await ensure_user_exists(user.id, user.display_name, conn)
-        
-        sender = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-        if not sender or sender['balance'] < amount:
-            await interaction.followup.send("Insufficient balance!", ephemeral=True)
-            return
-        await conn.execute("UPDATE users SET balance = balance - $1 WHERE user_id = $2", amount, interaction.user.id)
-        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user.id)
-        new_balance = await get_balance(interaction.user.id, conn)
+        async with conn.transaction():
+            await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
+            await ensure_user_exists(user.id, user.display_name, conn)
+
+            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency
+            updated = await conn.fetchrow(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
+                amount, interaction.user.id
+            )
+            if not updated:
+                await interaction.followup.send("Insufficient balance!", ephemeral=True)
+                return
+            await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user.id)
+            new_balance = float(updated['balance'])
         embed = discord.Embed(title="💸 Transfer Complete", color=discord.Color.green())
         embed.add_field(name="Sender", value=interaction.user.display_name, inline=True)
         embed.add_field(name="Receiver", value=user.display_name, inline=True)
@@ -2183,17 +2196,18 @@ async def claim_quests(interaction: discord.Interaction):
         async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await ensure_user_exists(user_id, interaction.user.display_name, conn)
-                
-                completed_quests = await conn.fetch("SELECT * FROM quests WHERE user_id = $1 AND completed = true AND claimed = false", user_id)
-                if not completed_quests:
+
+                # Atomic claim: UPDATE ... RETURNING prevents double-payout from
+                # concurrent requests (same TOCTOU fix as the web /api/claim endpoint).
+                claimed = await conn.fetch(
+                    "UPDATE quests SET claimed = true WHERE user_id = $1 AND completed = true AND claimed = false RETURNING reward",
+                    user_id
+                )
+                if not claimed:
                     await interaction.followup.send("❌ No completed quests to claim!", ephemeral=True)
                     return
 
-                total_reward = 0
-                for quest in completed_quests:
-                    total_reward += quest['reward']
-                    await conn.execute("UPDATE quests SET claimed = true WHERE id = $1", quest['id'])
-
+                total_reward = sum(r['reward'] for r in claimed)
                 await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", total_reward, user_id)
 
                 new_balance = await get_balance(user_id, conn)
@@ -3818,67 +3832,71 @@ async def cmd_profile(interaction: discord.Interaction):
 
 async def claim_hourly(user_id: int) -> dict:
     async with db_pool.acquire() as conn:
-        await ensure_user_exists(user_id, conn=conn)
-        user = await conn.fetchrow(
-            "SELECT last_hourly, total_hourly_claimed FROM users WHERE user_id = $1",
-            user_id
-        )
-        if not user:
-            return {'success': False, 'error': 'User not found'}
-        
-        now = datetime.now()
-        last_hourly = user['last_hourly']
-        
-        if last_hourly and (now - last_hourly).total_seconds() < 3600:
-            remaining = 3600 - (now - last_hourly).total_seconds()
-            minutes = int(remaining // 60)
-            return {'success': False, 'error': f'Already claimed! Next claim in {minutes} minutes'}
-        
-        reward = 75
-        total_claimed = (user['total_hourly_claimed'] or 0) + 1
-        
-        if total_claimed % 10 == 0:
-            reward += 250
-        
-        await conn.execute(
-            """UPDATE users 
-               SET balance = balance + $1, last_hourly = $2, total_hourly_claimed = $3 
-               WHERE user_id = $4""",
-            reward, now, total_claimed, user_id
-        )
-        
-        return {'success': True, 'reward': reward, 'total_claimed': total_claimed}
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            # FOR UPDATE locks the row so concurrent claims queue up
+            user = await conn.fetchrow(
+                "SELECT last_hourly, total_hourly_claimed FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id
+            )
+            if not user:
+                return {'success': False, 'error': 'User not found'}
+
+            now = datetime.now()
+            last_hourly = user['last_hourly']
+
+            if last_hourly and (now - last_hourly).total_seconds() < 3600:
+                remaining = 3600 - (now - last_hourly).total_seconds()
+                minutes = int(remaining // 60)
+                return {'success': False, 'error': f'Already claimed! Next claim in {minutes} minutes'}
+
+            reward = 75
+            total_claimed = (user['total_hourly_claimed'] or 0) + 1
+
+            if total_claimed % 10 == 0:
+                reward += 250
+
+            await conn.execute(
+                """UPDATE users
+                   SET balance = balance + $1, last_hourly = $2, total_hourly_claimed = $3
+                   WHERE user_id = $4""",
+                reward, now, total_claimed, user_id
+            )
+
+            return {'success': True, 'reward': reward, 'total_claimed': total_claimed}
 
 async def claim_weekly(user_id: int) -> dict:
     async with db_pool.acquire() as conn:
-        await ensure_user_exists(user_id, conn=conn)
-        user = await conn.fetchrow(
-            "SELECT last_weekly, total_weekly_claimed FROM users WHERE user_id = $1",
-            user_id
-        )
-        if not user:
-            return {'success': False, 'error': 'User not found'}
-        
-        now = datetime.now()
-        last_weekly = user['last_weekly']
-        
-        if last_weekly and (now - last_weekly).total_seconds() < 604800:
-            remaining = 604800 - (now - last_weekly).total_seconds()
-            days = int(remaining // 86400)
-            hours = int((remaining % 86400) // 3600)
-            return {'success': False, 'error': f'Already claimed! Next claim in {days}d {hours}h'}
-        
-        reward = 5000
-        total_claimed = (user['total_weekly_claimed'] or 0) + 1
-        
-        await conn.execute(
-            """UPDATE users 
-               SET balance = balance + $1, last_weekly = $2, total_weekly_claimed = $3 
-               WHERE user_id = $4""",
-            reward, now, total_claimed, user_id
-        )
-        
-        return {'success': True, 'reward': reward, 'total_claimed': total_claimed}
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+            # FOR UPDATE locks the row so concurrent claims queue up
+            user = await conn.fetchrow(
+                "SELECT last_weekly, total_weekly_claimed FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id
+            )
+            if not user:
+                return {'success': False, 'error': 'User not found'}
+
+            now = datetime.now()
+            last_weekly = user['last_weekly']
+
+            if last_weekly and (now - last_weekly).total_seconds() < 604800:
+                remaining = 604800 - (now - last_weekly).total_seconds()
+                days = int(remaining // 86400)
+                hours = int((remaining % 86400) // 3600)
+                return {'success': False, 'error': f'Already claimed! Next claim in {days}d {hours}h'}
+
+            reward = 5000
+            total_claimed = (user['total_weekly_claimed'] or 0) + 1
+
+            await conn.execute(
+                """UPDATE users
+                   SET balance = balance + $1, last_weekly = $2, total_weekly_claimed = $3
+                   WHERE user_id = $4""",
+                reward, now, total_claimed, user_id
+            )
+
+            return {'success': True, 'reward': reward, 'total_claimed': total_claimed}
 
 # ============================================
 # SKIN UPGRADE
