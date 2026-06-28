@@ -58,6 +58,14 @@ async def log_game(conn, user_id: int, game_type: str,
         'win' if win >= bet else 'loss',
         json.dumps(meta or {}))
 
+SESSION_TTL = 3600   # seconds before an abandoned in-memory session auto-expires
+
+def _is_session_expired(sess: dict) -> bool:
+    created = sess.get('created_at')
+    if not created:
+        return False
+    return (datetime.utcnow() - created).total_seconds() > SESSION_TTL
+
 # ============================================================
 # ══════════════════════════════════════════════════════════
 #  SLIDE  —  Launch a puck, land in a multiplier zone
@@ -219,8 +227,12 @@ async def mystery_start(req: MysteryStartRequest, request: Request):
     cfg        = MYSTERY_DIFFICULTIES[difficulty]
 
     async with _get_mystery_lock(user_id):
-        if _mystery_sessions.get(user_id, {}).get('active'):
-            raise HTTPException(400, "You already have an active Mystery Box game — cashout or finish first")
+        existing_m = _mystery_sessions.get(user_id)
+        if existing_m and existing_m.get('active'):
+            if _is_session_expired(existing_m):
+                _mystery_sessions.pop(user_id, None)
+            else:
+                raise HTTPException(400, "You already have an active Mystery Box game — cashout or finish first")
 
         pool = await get_db()
         async with pool.acquire() as conn:
@@ -494,8 +506,12 @@ async def rr_start(req: RRStartRequest, request: Request):
     bot         = BOT_PERSONALITIES[personality]
 
     async with _get_rr_lock(user_id):
-        if _rr_sessions.get(user_id, {}).get('active'):
-            raise HTTPException(400, "You already have an active Russian Roulette game — cashout or finish first")
+        existing_rr = _rr_sessions.get(user_id)
+        if existing_rr and existing_rr.get('active'):
+            if _is_session_expired(existing_rr):
+                _rr_sessions.pop(user_id, None)
+            else:
+                raise HTTPException(400, "You already have an active Russian Roulette game — cashout or finish first")
 
         pool = await get_db()
         async with pool.acquire() as conn:
@@ -942,8 +958,12 @@ async def bj_deal(req: BJStartRequest, request: Request):
     bet     = clamp_bet(req.amount)
 
     async with _get_bj_lock(user_id):
-        if _bj_sessions.get(user_id, {}).get('active'):
-            raise HTTPException(400, "You already have an active Blackjack game — finish or abandon it first")
+        existing_bj = _bj_sessions.get(user_id)
+        if existing_bj and existing_bj.get('active'):
+            if _is_session_expired(existing_bj):
+                _bj_sessions.pop(user_id, None)
+            else:
+                raise HTTPException(400, "You already have an active Blackjack game — finish or abandon it first")
 
         shoe   = new_bj_shoe()
         p_hand = [shoe.pop(), shoe.pop()]
@@ -1048,7 +1068,7 @@ async def bj_action(req: BJActionRequest, request: Request):
         hand_idx = req.hand_idx
         shoe     = sess['shoe']
 
-        if hand_idx >= len(sess['hands']):
+        if hand_idx < 0 or hand_idx >= len(sess['hands']):
             raise HTTPException(400, "Invalid hand index")
 
         hand = sess['hands'][hand_idx]

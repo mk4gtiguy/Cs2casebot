@@ -322,6 +322,7 @@ class HoldemRoom:
         self.task:       Optional[asyncio.Task] = None
         self.created_at  = time.time()
         self.waiting_for_human = False  # pause bot logic for human action
+        self._real_pot   = 0.0          # sum of real-player contributions only (not bot virtual chips)
 
     # ── WS helpers ────────────────────────────────────────
     def add_ws(self, user_id: int, ws: WebSocket):
@@ -403,8 +404,9 @@ class HoldemRoom:
         _holdem_rooms.pop(self.room_code, None)
 
     async def _play_round(self):
-        self.phase    = 'pre-flop'
-        self.pot      = 0.0
+        self.phase     = 'pre-flop'
+        self.pot       = 0.0
+        self._real_pot = 0.0
         self.community = []
         self.deck     = new_deck()
         self.current_bet = self.big_blind
@@ -500,6 +502,8 @@ class HoldemRoom:
         p.bet_this_street = actual
         p.total_bet      += actual
         self.pot         += actual
+        if not p.is_bot:
+            self._real_pot += actual
         if p.chips == 0:
             p.status = 'allin'
 
@@ -614,6 +618,8 @@ class HoldemRoom:
             p.bet_this_street += actual
             p.total_bet      += actual
             self.pot         += actual
+            if not p.is_bot:
+                self._real_pot += actual
             if p.chips == 0:
                 p.status = 'allin'
 
@@ -630,6 +636,8 @@ class HoldemRoom:
             p.bet_this_street += total_raise
             p.total_bet      += total_raise
             self.pot         += total_raise
+            if not p.is_bot:
+                self._real_pot += total_raise
             self.current_bet  = p.bet_this_street
             if p.chips == 0:
                 p.status = 'allin'
@@ -643,7 +651,11 @@ class HoldemRoom:
         player = self.players.get(uid)
         if not player or player.status != 'active':
             return
-        await self._apply_action(uid, action, amount)
+        try:
+            await self._apply_action(uid, action, amount)
+        except ValueError as e:
+            await self.send_to(uid, {'type': 'action_error', 'message': str(e)})
+            return   # keep waiting_for_human=True so player can retry
         await self.broadcast({
             'type':    'player_action',
             'user_id': uid,
@@ -664,7 +676,7 @@ class HoldemRoom:
 
         if len(alive) == 1:
             winner = alive[0]
-            win    = round(self.pot * (1 - HOUSE_EDGE_POKER), 2)
+            win    = round(self._real_pot * (1 - HOUSE_EDGE_POKER), 2)
             if not winner.is_bot:
                 winner.chips += win
                 pool = await get_db()
@@ -695,15 +707,20 @@ class HoldemRoom:
 
         ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-        # Fix 25: side pot calculation for all-in players
+        # Include ALL players (folded too) so their contributions reach winners;
+        # _calculate_side_pots excludes folded players from the eligible-to-win lists.
         pot_players = [
             {'user_id': p.user_id, 'total_contributed': p.total_bet, 'status': p.status}
-            for p in alive
+            for p in self.players.values()
+            if p.total_bet > 0
         ]
         side_pots = _calculate_side_pots(pot_players)
 
         # Build hand-rank lookup
         hand_lookup = {r[2].user_id: (r[0], r[1], r[2], r[3]) for r in ranked}
+
+        # Scale pot amounts down to real-player money only — bot chips are virtual.
+        real_scale = self._real_pot / max(self.pot, 0.01)
 
         pool    = await get_db()
         winner_dicts = []
@@ -712,7 +729,7 @@ class HoldemRoom:
             async with conn.transaction():
                 for pot_info in side_pots:
                     eligible_ids = pot_info['eligible']
-                    pot_amount   = pot_info['amount']
+                    pot_amount   = round(pot_info['amount'] * real_scale, 2)
 
                     # Among eligible players, find the best hand
                     eligible_ranked = [
@@ -783,7 +800,7 @@ def _calculate_side_pots(players: list) -> list:
         if level <= prev_level:
             continue
         pot_slice = (level - prev_level) * len(remaining)
-        eligible  = [p['user_id'] for p in remaining]
+        eligible  = [p['user_id'] for p in remaining if p.get('status') != 'folded']
         pots.append({'amount': pot_slice, 'eligible': eligible})
         prev_level = level
         remaining  = [p for p in remaining if p['total_contributed'] > level]
