@@ -220,6 +220,7 @@
     <div class="nav-item" data-tab="games">🎮 Games</div>
     <div class="nav-item" data-tab="battles">⚔️ Battles</div>
     <div class="nav-item" data-tab="giveaways">🎁 Giveaways</div>
+    <div class="nav-item" data-tab="vip">👑 VIP</div>
     <div class="nav-item" data-tab="inventory">🎨 Inventory</div>
     <span class="nav-section">SYSTEM</span>
     <div class="nav-item" data-tab="announcements">📢 Announcements</div>
@@ -250,6 +251,8 @@
             <div class="kpi"><div class="label">ECONOMY BALANCE</div><div class="value" id="kpiEconomy">—</div><div class="sub">In circulation</div></div>
             <div class="kpi"><div class="label">CASES OPENED</div><div class="value" id="kpiOpens">—</div><div class="sub" id="kpiOpens24h"></div></div>
             <div class="kpi"><div class="label">REVENUE</div><div class="value" id="kpiRevenue">—</div><div class="sub" id="kpiRevenue30"></div></div>
+            <div class="kpi"><div class="label">VIP SUBSCRIBERS</div><div class="value" id="kpiVIP">—</div><div class="sub" id="kpiVIPSub"></div></div>
+            <div class="kpi"><div class="label">TICKETS IN CIRC.</div><div class="value" id="kpiTickets">—</div><div class="sub" id="kpiTicketsSold"></div></div>
         </div>
         <div class="panel">
             <div class="panel-head"><h3>⚡ Quick Actions</h3></div>
@@ -469,6 +472,81 @@
         </div>
     </div>
 
+    <!-- ─── TAB: VIP ─── -->
+    <div id="tab-vip" class="tab-content">
+
+        <!-- Revenue stats row -->
+        <div class="panel" style="margin-bottom:14px;">
+            <div class="panel-head"><h3>👑 VIP Revenue Stats</h3>
+                <button class="btn btn-ghost btn-sm" onclick="loadVIPAdmin()">🔄 Refresh</button>
+            </div>
+            <div class="panel-body">
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px;" id="vipStatsCards">
+                    <span class="text-muted">Loading...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Grant VIP to user -->
+        <div class="panel" style="margin-bottom:14px;">
+            <div class="panel-head"><h3>🎁 Grant / Revoke VIP</h3></div>
+            <div class="panel-body">
+                <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+                    <div>
+                        <div class="input-label">User ID</div>
+                        <input type="text" id="vipGrantUserId" placeholder="Discord user_id" style="width:180px;">
+                    </div>
+                    <div>
+                        <div class="input-label">Tier</div>
+                        <select id="vipGrantTier" style="width:120px;">
+                            <option value="silver">🔰 Silver</option>
+                            <option value="gold">🥇 Gold</option>
+                            <option value="platinum">👑 Platinum</option>
+                        </select>
+                    </div>
+                    <div>
+                        <div class="input-label">Days</div>
+                        <input type="number" id="vipGrantDays" value="30" style="width:70px;">
+                    </div>
+                    <button class="btn btn-gold" onclick="adminGrantVIP()">✅ Grant VIP</button>
+                    <button class="btn btn-red" onclick="adminRevokeVIP()">🚫 Revoke VIP</button>
+                </div>
+                <div id="vipGrantResult" style="margin-top:10px;font-size:12px;"></div>
+            </div>
+        </div>
+
+        <!-- Active VIP users table -->
+        <div class="panel">
+            <div class="panel-head"><h3>👥 Active VIP Users</h3>
+                <div style="display:flex;gap:8px;">
+                    <select id="vipTierFilter" onchange="loadVIPUsers()" style="font-size:11px;padding:4px 8px;">
+                        <option value="">All Tiers</option>
+                        <option value="silver">🔰 Silver</option>
+                        <option value="gold">🥇 Gold</option>
+                        <option value="platinum">👑 Platinum</option>
+                    </select>
+                    <button class="btn btn-ghost btn-sm" onclick="loadVIPUsers()">Refresh</button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="color:#888;border-bottom:1px solid rgba(255,255,255,0.06);">
+                            <th style="padding:8px;text-align:left;">User</th>
+                            <th style="padding:8px;text-align:left;">Tier</th>
+                            <th style="padding:8px;text-align:left;">Expires</th>
+                            <th style="padding:8px;text-align:right;">Tickets</th>
+                            <th style="padding:8px;text-align:right;">Received</th>
+                            <th style="padding:8px;text-align:center;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="vipUsersBody"><tr><td colspan="6" style="color:#555;padding:20px;text-align:center;">Loading...</td></tr></tbody>
+                </table>
+                <div class="pagination" id="vipPagination"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- ─── TAB: ANALYTICS ─── -->
     <div id="tab-analytics" class="tab-content">
         <div class="panel">
@@ -569,7 +647,8 @@ async function api(path, opts = {}) {
                 giveaways: loadGiveaways, announcements: loadAnnouncements,
                 settings: loadSettings, audit: loadAuditLog,
                 analytics: loadAnalytics, beta: loadBeta, live: loadLiveFeed,
-                dashboard: loadDashboard, battles: loadBattleSettingsAdmin
+                dashboard: loadDashboard, battles: loadBattleSettingsAdmin,
+                vip: loadVIPAdmin, inventory: function() {} // static tab, no load needed
             };
             if (loaders[tab]) loaders[tab]();
         });
@@ -586,7 +665,25 @@ async function api(path, opts = {}) {
         document.getElementById('kpiOpens24h').textContent = `${data.case_opens.opens_24h} today`;
         document.getElementById('kpiRevenue').textContent = '$' + Number(data.revenue.total_revenue).toFixed(2);
         document.getElementById('kpiRevenue30').textContent = `$${Number(data.revenue.revenue_30d).toFixed(2)} last 30d`;
-        
+
+        // VIP & Ticket KPIs
+        if (data.vip) {
+            const vipEl = document.getElementById('kpiVIP');
+            if (vipEl) {
+                const byTier = data.vip.by_tier || {};
+                vipEl.textContent = data.vip.active_subscribers;
+                const subEl = document.getElementById('kpiVIPSub');
+                if (subEl) subEl.textContent =
+                    `🔰${byTier.silver||0} 🥇${byTier.gold||0} 👑${byTier.platinum||0}`;
+            }
+        }
+        if (data.tickets) {
+            const tkEl = document.getElementById('kpiTickets');
+            if (tkEl) tkEl.textContent = Number(data.tickets.in_circulation).toLocaleString();
+            const tkSoldEl = document.getElementById('kpiTicketsSold');
+            if (tkSoldEl) tkSoldEl.textContent = `+${data.tickets.sold_30d} sold (30d)`;
+        }
+
         // Load recent actions
         const logs = await api('/audit-log?limit=10');
         const container = document.getElementById('recentActions');
@@ -647,6 +744,9 @@ async function api(path, opts = {}) {
         if (!data) return;
         const body = document.getElementById('userModalBody');
         const u = data.user;
+        const vip = data.vip || {};
+        const vipColors = { none:'#555', silver:'#c0c0c0', gold:'#ffd700', platinum:'#8cd2ff' };
+        const vipColor = vipColors[vip.tier] || '#555';
         body.innerHTML = `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:15px;">
                 <div><strong>Username:</strong> ${u.username}</div>
@@ -657,25 +757,50 @@ async function api(path, opts = {}) {
                 <div><strong>Prestige:</strong> ${u.prestige || 0}</div>
                 <div><strong>Inventory Items:</strong> ${data.inventory_summary.total_items || 0}</div>
                 <div><strong>Inventory Value:</strong> $${Number(data.inventory_summary.total_value).toFixed(2)}</div>
+                <div><strong style="color:${vipColor};">VIP Tier:</strong> <span style="color:${vipColor};">${vip.tier || 'none'}</span></div>
+                <div><strong>Tickets:</strong> 🎟️ ${vip.tickets || 0}</div>
+                ${vip.expires_at ? `<div colspan="2" style="font-size:11px;color:#888;">VIP Expires: ${new Date(vip.expires_at).toLocaleDateString()}</div>` : ''}
             </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <div style="flex:1;min-width:200px;">
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+                <div>
                     <div class="input-label">Adjust Balance</div>
                     <div class="input-row">
                         <input type="number" id="adjBalanceAmount" placeholder="e.g. 500 or -200" style="flex:1;">
                         <button class="btn btn-gold btn-sm" onclick="adjustBalance('${user_id}')">Apply</button>
                     </div>
                 </div>
-                <div style="flex:1;min-width:200px;">
+                <div>
+                    <div class="input-label">Grant/Deduct Tickets</div>
+                    <div class="input-row">
+                        <input type="number" id="adjTicketAmount" placeholder="e.g. 10 or -5" style="flex:1;">
+                        <button class="btn btn-gold btn-sm" onclick="grantTickets('${user_id}')">Apply</button>
+                    </div>
+                </div>
+                <div>
+                    <div class="input-label">Set VIP Tier</div>
+                    <div class="input-row">
+                        <select id="vipTierSelect" style="flex:1;">
+                            <option value="none">none</option>
+                            <option value="silver">🔰 Silver</option>
+                            <option value="gold">🥇 Gold</option>
+                            <option value="platinum">👑 Platinum</option>
+                        </select>
+                        <input type="number" id="vipDays" placeholder="Days" value="30" style="width:60px;">
+                        <button class="btn btn-gold btn-sm" onclick="setVIP('${user_id}')">Grant</button>
+                    </div>
+                </div>
+                <div>
                     <div class="input-label">Ban Duration (days)</div>
                     <div class="input-row">
-                        <input type="number" id="banDuration" placeholder="Leave empty for permanent" style="flex:1;">
+                        <input type="number" id="banDuration" placeholder="Empty = permanent" style="flex:1;">
                         <button class="btn btn-red btn-sm" onclick="banUserModal('${user_id}')">Ban</button>
                         <button class="btn btn-green btn-sm" onclick="unbanUser('${user_id}')">Unban</button>
                     </div>
                 </div>
             </div>
-            <div style="margin-top:10px;">
+
+            <div style="margin-bottom:12px;">
                 <div class="input-label">Secret Deposit Item</div>
                 <div class="input-row">
                     <input type="text" id="depositItemNameModal" placeholder="Item name" style="flex:1;">
@@ -689,6 +814,19 @@ async function api(path, opts = {}) {
                     <button class="btn btn-gold btn-sm" onclick="depositItemModal('${user_id}')">Deposit</button>
                 </div>
             </div>
+
+            ${data.ticket_history && data.ticket_history.length ? `
+            <div style="margin-top:10px;">
+                <div class="input-label">Recent Ticket Activity</div>
+                <div style="font-size:11px;color:#888;">${data.ticket_history.map(t =>
+                    `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.03);">
+                        <span>${t.source}</span>
+                        <span style="color:${t.amount>0?'#4caf50':'#ff6b6b'}">${t.amount>0?'+':''}${t.amount} 🎟️</span>
+                        <span>${new Date(t.created_at).toLocaleDateString()}</span>
+                    </div>`
+                ).join('')}</div>
+            </div>` : ''}
+
             <div id="userModalResult" style="margin-top:10px;"></div>
         `;
         document.getElementById('userModalTitle').textContent = `👤 ${u.username}`;
@@ -700,7 +838,7 @@ async function api(path, opts = {}) {
         if (isNaN(amount)) { toast('Enter a valid amount', 'error'); return; }
         const data = await api(`/users/${user_id}/balance`, {
             method: 'POST',
-            body: JSON.stringify({ user_id: parseInt(user_id), amount, reason: 'Admin adjustment' })
+            body: JSON.stringify({ user_id: String(user_id), amount, reason: 'Admin adjustment' })
         });
         if (data) {
             toast(`✅ New balance: $${data.new_balance.toFixed(2)}`, 'success');
@@ -716,7 +854,7 @@ async function api(path, opts = {}) {
         if (reason === null) return;
         const data = await api(`/users/${user_id}/ban`, {
             method: 'POST',
-            body: JSON.stringify({ user_id: parseInt(user_id), reason, duration_days: duration })
+            body: JSON.stringify({ user_id: String(user_id), reason, duration_days: duration })
         });
         if (data) { toast('🔴 User banned', 'success'); loadUsers(); viewUser(user_id); }
     }
@@ -726,7 +864,7 @@ async function api(path, opts = {}) {
         if (reason === null) return;
         const data = await api(`/users/${user_id}/ban`, {
             method: 'POST',
-            body: JSON.stringify({ user_id: parseInt(user_id), reason, duration_days: null })
+            body: JSON.stringify({ user_id: String(user_id), reason, duration_days: null })
         });
         if (data) { toast('🔴 User banned', 'success'); loadUsers(); }
     }
@@ -736,6 +874,127 @@ async function api(path, opts = {}) {
         if (data) { toast('🟢 User unbanned', 'success'); loadUsers(); }
     }
 
+    async function grantTickets(user_id) {
+        const amount = parseInt(document.getElementById('adjTicketAmount').value);
+        if (isNaN(amount) || amount === 0) { toast('Enter a valid ticket amount', 'error'); return; }
+        const data = await api(`/users/${user_id}/tickets`, {
+            method: 'POST',
+            body: JSON.stringify({ amount, reason: 'Admin grant' })
+        });
+        if (data) {
+            toast(`✅ Tickets adjusted. New balance: ${data.new_ticket_balance} 🎟️`, 'success');
+            document.getElementById('adjTicketAmount').value = '';
+            viewUser(user_id);
+        }
+    }
+
+    async function setVIP(user_id) {
+        const tier = document.getElementById('vipTierSelect').value;
+        const days = parseInt(document.getElementById('vipDays').value) || 30;
+        const data = await api(`/users/${user_id}/vip`, {
+            method: 'POST',
+            body: JSON.stringify({ tier, days })
+        });
+        if (data) {
+            toast(`✅ VIP set to ${tier} for ${days} days`, 'success');
+            viewUser(user_id);
+            loadUsers();
+        }
+    }
+
+    // ── VIP Tab ────────────────────────────────────────────────
+    let vipPage = 0;
+    const VIP_PAGE = 20;
+
+    async function loadVIPAdmin() {
+        await Promise.all([loadVIPStats(), loadVIPUsers()]);
+    }
+
+    async function loadVIPStats() {
+        const data = await api('/vip/stats');
+        if (!data) return;
+        const el = document.getElementById('vipStatsCards');
+        if (!el) return;
+        const subs = data.subscribers || {};
+        const tierColors = { silver:'#c0c0c0', gold:'#ffd700', platinum:'#8cd2ff' };
+        el.innerHTML = `
+            ${['silver','gold','platinum'].map(t => `
+                <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:14px;text-align:center;">
+                    <div style="font-size:11px;color:#666;margin-bottom:4px;">${t.toUpperCase()}</div>
+                    <div style="font-size:24px;font-weight:bold;color:${tierColors[t]};">${subs[t]||0}</div>
+                    <div style="font-size:10px;color:#555;">subscribers</div>
+                </div>`).join('')}
+            <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:11px;color:#666;margin-bottom:4px;">TICKETS GRANTED</div>
+                <div style="font-size:24px;font-weight:bold;color:#ffd700;">${Number(data.tickets_granted_total||0).toLocaleString()}</div>
+                <div style="font-size:10px;color:#555;">all time</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:14px;text-align:center;">
+                <div style="font-size:11px;color:#666;margin-bottom:4px;">TICKETS SPENT (30D)</div>
+                <div style="font-size:24px;font-weight:bold;color:#ff6b6b;">${Number(data.tickets_spent_30d||0).toLocaleString()}</div>
+                <div style="font-size:10px;color:#555;">this month</div>
+            </div>
+        `;
+    }
+
+    async function loadVIPUsers() {
+        const tier = document.getElementById('vipTierFilter')?.value || '';
+        const data = await api(`/vip/users?limit=${VIP_PAGE}&offset=${vipPage*VIP_PAGE}${tier?'&tier='+tier:''}`);
+        if (!data) return;
+        const tbody = document.getElementById('vipUsersBody');
+        if (!tbody) return;
+        const tierLabels = { silver:'🔰 Silver', gold:'🥇 Gold', platinum:'👑 Platinum', none:'—' };
+        tbody.innerHTML = data.users.length ? data.users.map(u => {
+            const expires = u.vip_expires_at ? new Date(u.vip_expires_at) : null;
+            const daysLeft = expires ? Math.max(0, Math.ceil((expires - Date.now()) / 86400000)) : 0;
+            return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+                <td style="padding:8px;"><strong>${u.username}</strong><br><span style="color:#555;font-size:10px;">${u.user_id}</span></td>
+                <td style="padding:8px;">${tierLabels[u.vip_tier]||u.vip_tier}</td>
+                <td style="padding:8px;">${daysLeft}d left</td>
+                <td style="padding:8px;text-align:right;">🎟️ ${u.tickets||0}</td>
+                <td style="padding:8px;text-align:right;">+${u.tickets_received||0}</td>
+                <td style="padding:8px;text-align:center;">
+                    <button class="btn btn-red btn-sm" style="font-size:9px;padding:3px 8px;" onclick="quickRevoke(${u.user_id})">Revoke</button>
+                </td>
+            </tr>`;
+        }).join('') : '<tr><td colspan="6" style="color:#555;padding:20px;text-align:center;">No active VIP users</td></tr>';
+
+        document.getElementById('vipPagination').innerHTML = `
+            <button class="btn btn-ghost btn-sm" onclick="vipPage--;loadVIPUsers()" ${vipPage===0?'disabled':''}>‹ Prev</button>
+            <span>Page ${vipPage+1}</span>
+            <button class="btn btn-ghost btn-sm" onclick="vipPage++;loadVIPUsers()" ${(vipPage+1)*VIP_PAGE>=data.total?'disabled':''}>Next ›</button>
+        `;
+    }
+
+    async function adminGrantVIP() {
+        const user_id = parseInt(document.getElementById('vipGrantUserId').value);
+        const tier    = document.getElementById('vipGrantTier').value;
+        const days    = parseInt(document.getElementById('vipGrantDays').value) || 30;
+        if (!user_id) { toast('Enter a valid user ID', 'error'); return; }
+        const data = await api('/vip/grant', {
+            method: 'POST', body: JSON.stringify({ user_id, tier, days })
+        });
+        if (data) {
+            document.getElementById('vipGrantResult').innerHTML =
+                `<span style="color:#4caf50;">✅ Granted ${tier} VIP to ${user_id} for ${days} days</span>`;
+            loadVIPAdmin();
+        }
+    }
+
+    async function adminRevokeVIP() {
+        const user_id = parseInt(document.getElementById('vipGrantUserId').value);
+        if (!user_id) { toast('Enter a valid user ID', 'error'); return; }
+        if (!confirm(`Revoke VIP from user ${user_id}?`)) return;
+        await quickRevoke(user_id);
+    }
+
+    async function quickRevoke(user_id) {
+        const data = await api('/vip/revoke', {
+            method: 'POST', body: JSON.stringify({ user_id, reason: 'Admin revoke' })
+        });
+        if (data) { toast('✅ VIP revoked', 'success'); loadVIPAdmin(); }
+    }
+
     async function depositItemModal(user_id) {
         const name = document.getElementById('depositItemNameModal').value;
         const rarity = document.getElementById('depositRarityModal').value;
@@ -743,7 +1002,7 @@ async function api(path, opts = {}) {
         const data = await api('/inventory/deposit', {
             method: 'POST',
             body: JSON.stringify({
-                user_id: parseInt(user_id),
+                user_id: String(user_id),
                 item_name: name,
                 rarity,
                 condition: 'Field-Tested',
@@ -842,7 +1101,7 @@ async function api(path, opts = {}) {
 
 // ─── Battle Admin ─────────────────────────────────────────
 async function loadBattleSettingsAdmin() {
-  const data = await api('/api/battles/admin/settings');
+  const data = await api('/battles/settings');
   if (!data) return;
 
   document.getElementById('battleEnabledAdmin').value = data.enabled ? 'true' : 'false';
@@ -871,7 +1130,7 @@ async function saveBattleSettingsAdmin() {
     .map(Number)
     .filter(n => n > 0);
 
-  const data = await api('/api/battles/admin/settings', {
+  const data = await api('/battles/settings', {
     method: 'POST',
     body: JSON.stringify({ enabled, fee_tiers, round_options })
   });
@@ -942,7 +1201,7 @@ async function saveBattleSettingsAdmin() {
         const data = await api('/inventory/deposit', {
             method: 'POST',
             body: JSON.stringify({
-                user_id: parseInt(user_id),
+                user_id: String(user_id),
                 item_name, rarity, condition,
                 is_stattrak, custom_price, custom_message,
                 send_notification: true
@@ -1058,8 +1317,28 @@ async function saveBattleSettingsAdmin() {
 
     // ─── Beta ───────────────────────────────────────────────
     async function loadBeta() {
-        // just a placeholder for now
-        document.getElementById('betaResult').innerHTML = '';
+        const data = await api('/beta/users');
+        if (!data) return;
+        const el = document.getElementById('betaResult');
+        if (!el) return;
+        if (!data.users || !data.users.length) {
+            el.innerHTML = '<span class="text-muted">No beta testers yet.</span>';
+            return;
+        }
+        el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:10px;">
+            <tr style="color:#555;border-bottom:1px solid rgba(255,255,255,0.05);">
+                <th style="padding:6px;text-align:left;">User ID</th>
+                <th style="padding:6px;text-align:left;">Username</th>
+                <th style="padding:6px;text-align:left;">Added</th>
+                <th style="padding:6px;"></th>
+            </tr>
+            ${data.users.map(u => `<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+                <td style="padding:6px;color:#555;font-size:10px;">${u.user_id}</td>
+                <td style="padding:6px;font-weight:700;">${u.username || '—'}</td>
+                <td style="padding:6px;color:#555;">${u.added_at ? new Date(u.added_at).toLocaleDateString() : '—'}</td>
+                <td style="padding:6px;"><button class="btn btn-red btn-sm" onclick="removeBetaTester('${u.user_id}')">Remove</button></td>
+            </tr>`).join('')}
+        </table>`;
     }
 
     async function addBetaTester() {
@@ -1067,9 +1346,18 @@ async function saveBattleSettingsAdmin() {
         if (!user_id) { toast('Enter a User ID', 'error'); return; }
         const data = await api('/beta/users', {
             method: 'POST',
-            body: JSON.stringify({ user_id: parseInt(user_id) })
+            body: JSON.stringify({ user_id: String(user_id) })
         });
-        if (data) toast('✅ Beta tester added!', 'success');
+        if (data) { toast('✅ Beta tester added!', 'success'); loadBeta(); }
+    }
+
+    async function removeBetaTester(user_id) {
+        if (!confirm(`Remove user ${user_id} from beta?`)) return;
+        const res = await fetch(`/api/admin/beta/users/${user_id}`, {
+            method: 'DELETE', credentials: 'include'
+        });
+        if (res.ok) { toast('✅ Beta tester removed', 'success'); loadBeta(); }
+        else { toast('❌ Failed to remove', 'error'); }
     }
 
     // ─── Live Feed ──────────────────────────────────────────
@@ -1155,7 +1443,7 @@ async function saveBattleSettingsAdmin() {
     // ─── Admin User Badge ────────────────────────────────────
     async function getMe() {
         try {
-            const res = await fetch('/api/me', { credentials: 'include' });
+            const res = await fetch('/api/user/me', { credentials: 'include' });
             if (res.ok) {
                 const data = await res.json();
                 document.getElementById('adminUserBadge').textContent = `👋 ${data.username}`;

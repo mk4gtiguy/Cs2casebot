@@ -4,6 +4,11 @@
     <title>CS2CaseBot Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+    <!-- Auth functions defined early so onclick handlers never throw ReferenceError -->
+    <script>
+        function loginDiscord() { window.location.href = '/auth/discord'; }
+        function loginGoogle()  { window.location.href = '/auth/google';  }
+    </script>
     <style>
         /* ============================================
            ALL YOUR ORIGINAL STYLES (unchanged)
@@ -208,31 +213,112 @@
         .tab-content { display: none; animation: fadeIn 0.5s ease; }
         .tab-content.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .inventory-item {
+        /* ── Inventory Grid ── */
+        #inventory {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+            gap: 12px;
+            margin-top: 4px;
+        }
+        .inv-card {
+            background: linear-gradient(135deg, rgba(20,20,46,0.95), rgba(10,10,28,0.95));
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.07);
+            overflow: hidden;
             display: flex;
-            align-items: center;
-            gap: 15px;
-            padding: 12px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            flex-wrap: wrap;
-            transition: all 0.3s;
-            border-radius: 8px;
+            flex-direction: column;
+            transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+            position: relative;
+            cursor: default;
         }
-        .inventory-item:hover { background: rgba(255, 215, 0, 0.05); }
-        .inventory-item img {
-            width: 50px;
-            height: 50px;
+        .inv-card:hover {
+            transform: translateY(-3px);
+            border-color: rgba(255,215,0,0.3);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+        }
+        .inv-card.rarity-Gold  { border-color: rgba(255,215,0,0.35); box-shadow: 0 0 20px rgba(255,215,0,0.12); }
+        .inv-card.rarity-Red   { border-color: rgba(255,68,68,0.35);  box-shadow: 0 0 16px rgba(255,68,68,0.10); }
+        .inv-card.rarity-Pink  { border-color: rgba(255,105,180,0.3); box-shadow: 0 0 14px rgba(255,105,180,0.08); }
+        .inv-card.rarity-Purple{ border-color: rgba(170,0,255,0.3);   box-shadow: 0 0 12px rgba(170,0,255,0.08); }
+        .inv-img-wrap {
+            width: 100%; aspect-ratio: 1/1;
+            background: rgba(8,8,20,0.7);
+            display: flex; align-items: center; justify-content: center;
+            position: relative; overflow: hidden;
+        }
+        .inv-img-wrap img {
+            width: 90%; height: 90%;
             object-fit: contain;
-            background: rgba(17, 17, 34, 0.8);
-            border-radius: 8px;
-            padding: 4px;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+            filter: drop-shadow(0 4px 12px rgba(0,0,0,0.6));
+            transition: transform 0.3s;
         }
-        .inventory-item .info { flex: 1; min-width: 150px; }
-        .inventory-item .info .name { font-weight: bold; }
-        .inventory-item .info .details { font-size: 12px; color: #888; }
-        .inventory-item .checkbox { width: 20px; height: 20px; accent-color: #ffd700; cursor: pointer; }
-        .inventory-item .checkbox:checked { box-shadow: 0 0 20px rgba(255, 215, 0, 0.3); }
+        .inv-card:hover .inv-img-wrap img { transform: scale(1.06); }
+        .inv-img-emoji { font-size: 54px; line-height: 1; filter: drop-shadow(0 4px 12px rgba(0,0,0,0.5)); }
+        .inv-rarity-stripe { height: 3px; width: 100%; }
+        .inv-type-badge {
+            position: absolute; top: 6px; left: 6px;
+            background: rgba(0,0,0,0.75); border-radius: 4px;
+            padding: 2px 6px; font-size: 9px; font-weight: 800;
+            letter-spacing: 0.5px; text-transform: uppercase; color: #ccc;
+            backdrop-filter: blur(4px);
+        }
+        .inv-st-badge {
+            position: absolute; top: 6px; right: 6px;
+            background: rgba(255,107,0,0.85); border-radius: 4px;
+            padding: 2px 5px; font-size: 8px; font-weight: 900;
+            color: white; letter-spacing: 0.5px;
+        }
+        .inv-info { padding: 8px 10px 6px; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+        .inv-name {
+            font-size: 12px; font-weight: 800; line-height: 1.3;
+            display: -webkit-box; -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical; overflow: hidden;
+        }
+        .inv-sub { font-size: 10px; color: #888; display: flex; align-items: center; gap: 4px; margin-top: 1px; }
+        .inv-price { font-size: 11px; font-weight: 700; color: #4caf50; margin-top: 3px; }
+        .inv-condition { font-size: 9px; color: #666; margin-top: 1px; }
+        .inv-actions { padding: 6px 8px 8px; display: flex; gap: 5px; }
+        .inv-btn {
+            flex: 1; padding: 5px 0; border: none; border-radius: 6px;
+            font-size: 10px; font-weight: 800; cursor: pointer;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            font-family: 'Orbitron', sans-serif; transition: all 0.2s;
+        }
+        .inv-btn:hover { transform: scale(1.05); }
+        .inv-btn-sell { background: linear-gradient(135deg,#ff4444,#cc0000); color: white; box-shadow: 0 2px 8px rgba(255,68,68,0.3); }
+        .inv-btn-upgrade { background: linear-gradient(135deg,#7b2fbe,#4a148c); color: white; box-shadow: 0 2px 8px rgba(123,47,190,0.3); }
+        @keyframes goldCardPulse {
+            0%,100% { box-shadow: 0 0 20px rgba(255,215,0,0.15); }
+            50%      { box-shadow: 0 0 40px rgba(255,215,0,0.35); }
+        }
+        .inv-card.rarity-Gold { animation: goldCardPulse 3s ease-in-out infinite; }
+        .inv-empty { grid-column: 1/-1; text-align: center; padding: 40px 20px; color: #555; font-size: 14px; }
+        .inv-filter-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+        .inv-filter-bar input, .inv-filter-bar select {
+            padding: 8px 12px; border-radius: 8px;
+            background: rgba(20,20,40,0.9); color: white;
+            border: 1px solid rgba(255,215,0,0.12);
+            font-family: 'Orbitron', sans-serif; font-size: 11px;
+        }
+        .inv-filter-bar input { flex: 1; min-width: 130px; }
+        .inv-type-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+        .inv-type-tab {
+            padding: 4px 12px; border-radius: 20px; font-size: 10px; font-weight: 700;
+            cursor: pointer; border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.04); color: #aaa;
+            transition: all 0.2s; font-family: 'Orbitron', sans-serif;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .inv-type-tab.active { background: rgba(255,215,0,0.15); border-color: rgba(255,215,0,0.5); color: #ffd700; }
+        /* keep old rarity colors for other uses */
+        /* trade-up list rows still use old inventory-item class */
+        .inventory-item { display:flex; align-items:center; gap:12px; padding:10px; border-bottom:1px solid rgba(255,255,255,0.05); border-radius:6px; transition:background 0.2s; }
+        .inventory-item:hover { background:rgba(255,215,0,0.04); }
+        .inventory-item img { width:44px; height:44px; object-fit:contain; background:rgba(17,17,34,0.8); border-radius:6px; padding:3px; border:1px solid rgba(255,255,255,0.05); }
+        .inventory-item .info { flex:1; }
+        .inventory-item .info .name { font-weight:bold; font-size:13px; }
+        .inventory-item .info .details { font-size:11px; color:#888; }
+        .inventory-item .checkbox { width:18px; height:18px; accent-color:#ffd700; cursor:pointer; }
         .rarity-Gold { color: #ffd700 !important; text-shadow: 0 0 30px rgba(255, 215, 0, 0.3); }
         .rarity-Red { color: #ff4444 !important; text-shadow: 0 0 30px rgba(255, 68, 68, 0.3); }
         .rarity-Pink { color: #ff69b4 !important; text-shadow: 0 0 30px rgba(255, 105, 180, 0.3); }
@@ -1400,9 +1486,9 @@
         <div id="tab-inventory" class="tab-content">
             <div class="card">
                 <h3>📋 Inventory</h3>
-                <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
-                    <input type="text" id="searchInput" placeholder="Search items..." onkeyup="filterInventory()" style="flex:1;min-width:150px;padding:8px 12px;border-radius:8px;background:rgba(20,20,40,0.8);color:white;border:1px solid rgba(255,215,0,0.1);font-family:'Orbitron',sans-serif;">
-                    <select id="rarityFilter" onchange="filterInventory()" style="padding:8px 12px;border-radius:8px;background:rgba(20,20,40,0.8);color:white;border:1px solid rgba(255,215,0,0.1);font-family:'Orbitron',sans-serif;">
+                <div class="inv-filter-bar">
+                    <input type="text" id="searchInput" placeholder="Search items..." onkeyup="filterInventory()">
+                    <select id="rarityFilter" onchange="filterInventory()">
                         <option value="all">All Rarities</option>
                         <option value="Gold">⭐ Gold</option>
                         <option value="Red">🔴 Red</option>
@@ -1410,11 +1496,17 @@
                         <option value="Purple">🟪 Purple</option>
                         <option value="Blue">🟦 Blue</option>
                     </select>
-                    <button class="btn btn-primary btn-sm" onclick="loadInventory()" title="Refresh Inventory">🔄 Refresh</button>
+                    <button class="btn btn-primary btn-sm" onclick="loadInventory()" title="Refresh">🔄 Refresh</button>
+                </div>
+                <div class="inv-type-tabs" id="invTypeTabs">
+                    <div class="inv-type-tab active" onclick="setInvTypeFilter('all',this)">All</div>
+                    <div class="inv-type-tab" onclick="setInvTypeFilter('weapon',this)">🔫 Weapons</div>
+                    <div class="inv-type-tab" onclick="setInvTypeFilter('sticker',this)">🏷️ Stickers</div>
+                    <div class="inv-type-tab" onclick="setInvTypeFilter('gold',this)">⭐ Gold / Knives</div>
                 </div>
                 <div id="inventory"></div>
-                <div id="inventoryPagination" style="margin-top:10px;display:flex;gap:10px;justify-content:center;"></div>
-                <div class="disclaimer-inline">⚠️ <strong>Disclaimer:</strong> All items in your inventory are virtual and have no real-world value.</div>
+                <div id="inventoryPagination" style="margin-top:12px;display:flex;gap:10px;justify-content:center;align-items:center;"></div>
+                <div class="disclaimer-inline" style="margin-top:12px;">⚠️ <strong>Disclaimer:</strong> All items are virtual with no real-world value.</div>
             </div>
         </div>
 
@@ -1444,25 +1536,44 @@
 
         <!-- TAB: PREMIUM -->
         <div id="tab-premium" class="tab-content">
-            <div class="card">
-                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-                    <h3 style="margin-bottom:0;">🎟️ Premium Cases</h3>
-                    <button class="btn btn-sm btn-outline" onclick="refreshPremium()" title="Refresh Premium">🔄 Refresh</button>
+
+            <!-- VIP STATUS BANNER -->
+            <div id="vipStatusBanner" style="margin-bottom:16px;"></div>
+
+            <!-- SUBSCRIPTION TIERS -->
+            <div class="card" style="margin-bottom:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+                    <h3 style="margin:0;">👑 VIP Subscription</h3>
+                    <button class="btn btn-sm btn-outline" onclick="loadVIPStatus()">🔄 Refresh</button>
                 </div>
-                <div id="premiumStatusBanner" style="margin-bottom:15px;"></div>
-                <div style="background:rgba(255,215,0,0.05);border:1px solid rgba(255,215,0,0.1);border-radius:12px;padding:20px;margin-bottom:15px;">
-                    <h4 style="color:#ffd700;text-align:center;margin-bottom:10px;">🎯 Premium Launch Goals</h4>
-                    <div class="goal-container">
-                        <div class="goal-box"><div class="goal-value" id="goalDonations">$0 / $500</div><div class="goal-label">💰 Ko-fi Donations</div><div class="goal-bar"><div class="goal-fill" id="goalDonationsBar" style="width:0%;"></div></div><div class="goal-progress" id="goalDonationsProgress">0%</div></div>
-                        <div class="goal-box"><div class="goal-value" id="goalUsers">0 / 1000</div><div class="goal-label">👥 Active Users</div><div class="goal-bar"><div class="goal-fill" id="goalUsersBar" style="width:0%;"></div></div><div class="goal-progress" id="goalUsersProgress">0%</div></div>
-                    </div>
-                    <div style="text-align:center;color:#888;font-size:12px;margin-top:5px;">When either goal is reached, Premium Cases will unlock for all early donors! 🎉</div>
-                    <div style="text-align:center;margin-top:10px;"><a href="https://ko-fi.com/mk4gtiguy" target="_blank" class="btn btn-gold" style="display:inline-block;text-decoration:none;">☕ Donate on Ko-fi</a><div style="color:#888;font-size:10px;margin-top:5px;">Donors get early access to Premium when it launches!<br>DM your receipt to an admin to be added to the early access list.</div></div>
-                </div>
-                <p style="color:#888;font-size:13px;margin-bottom:15px;">Use tickets to open premium cases with better odds and exclusive items.</p>
-                <div class="premium-grid" id="premiumGrid"></div>
-                <div class="disclaimer-inline">⚠️ <strong>Disclaimer:</strong> Premium cases are for entertainment purposes only. Tickets and items have no real-world value.</div>
+                <div id="vipTiersGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;"></div>
             </div>
+
+            <!-- PREMIUM BATCH OPENER -->
+            <div class="card" style="margin-bottom:16px;">
+                <h3 style="margin-bottom:8px;">⚡ Premium Case Batch</h3>
+                <p style="color:#888;font-size:13px;margin-bottom:14px;">Spend <strong style="color:#ffd700;">1 Ticket</strong> to open the 5 most expensive cases simultaneously. All items go straight to your inventory.</p>
+                <div id="batchCaseList" style="color:#555;font-size:12px;margin-bottom:14px;"></div>
+                <button class="btn btn-gold" id="batchOpenBtn" onclick="openPremiumBatchNew()" style="width:100%;padding:14px;font-size:15px;">
+                    🎰 Use 1 Ticket — Open 5 Premium Cases
+                </button>
+                <div id="batchResult" style="margin-top:12px;"></div>
+            </div>
+
+            <!-- TICKET STORE -->
+            <div class="card" style="margin-bottom:16px;">
+                <h3 style="margin-bottom:4px;">🎟️ Ticket Store</h3>
+                <p style="color:#888;font-size:13px;margin-bottom:14px;">One-time purchases. Tickets never expire and work across all premium features.</p>
+                <div id="ticketPacksGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;"></div>
+            </div>
+
+            <!-- TRANSACTION HISTORY -->
+            <div class="card">
+                <h3 style="margin-bottom:12px;">📋 Ticket History</h3>
+                <div id="ticketHistory" style="color:#888;font-size:13px;">Loading...</div>
+            </div>
+
+            <div class="disclaimer-inline">⚠️ <strong>Disclaimer:</strong> VIP and Tickets are for entertainment purposes only. All in-platform currency has no real-world value.</div>
         </div>
 
         <!-- TAB: ACHIEVEMENTS -->
@@ -1779,7 +1890,7 @@
             try { await loadTicketBalance(); } catch(e) { console.warn('Tickets:', e); }
             try { await loadQuests(); } catch(e) { console.warn('Quests:', e); }
             try { await loadCapsules(); } catch(e) { console.warn('Capsules:', e); }
-            try { await loadPremiumCases(); } catch(e) { console.warn('Premium:', e); }
+            try { await loadVIPStatus(); } catch(e) { console.warn('Premium:', e); }
             try { await loadAchievements(); } catch(e) { console.warn('Achievements:', e); }
             try { await loadProfile(); } catch(e) { console.warn('Profile:', e); }
             try { await loadGameStats(); } catch(e) { console.warn('GameStats:', e); }
@@ -1883,7 +1994,7 @@
         if (tab === 'inventory') loadInventory();
         if (tab === 'leaderboard') loadLeaderboard();
         if (tab === 'trade') loadTradeTab();
-        if (tab === 'premium') { loadPremiumCases(); loadTicketBalance(); loadGoalData(); }
+        if (tab === 'premium') { loadVIPStatus(); loadTicketBalance(); }
         if (tab === 'quests') loadQuests();
         if (tab === 'capsules') loadCapsules();
         if (tab === 'achievements') loadAchievements();
@@ -1904,9 +2015,10 @@
     }
     async function loadTicketBalance() {
         try {
-            const data = await apiCall('/api/user/me/tickets');
+            const data = await apiCall('/api/tickets/balance');
             state.tickets = data.tickets || 0;
-            document.getElementById('ticketBalance').textContent = state.tickets;
+            const el = document.getElementById('ticketBalance');
+            if (el) el.textContent = state.tickets;
         } catch (e) { console.error('Load ticket balance error:', e); }
     }
     async function loadStreak() {
@@ -2149,11 +2261,16 @@
                 <div class="reel-overlay-right"></div>
                 <div class="reel-track" id="reelTrack">
                     ${reelItems.map((ri, i) => {
-                        // Use display_name for text, and name for the image URL (like the original popup)
-                        const imageName = ri.display_name || ri.name;
-                        const displayText = ri.display_name || ri.name;
+                        // For image: always use the clean name (no emoji, no category prefix)
+                        // ri.name is the clean "Weapon | Skin" name; ri.image_url is direct path if available
+                        const cleanName = (ri.name || '').replace(/^[\p{Emoji}\s🟦🟪🟥🩷⭐👑💛🔥]+/gu, '').trim();
+                        const imgSrc = ri.image_url
+                            ? ri.image_url
+                            : `/api/skin-image?name=${encodeURIComponent(cleanName)}&t=${Date.now()}`;
+                        // For display: show the clean name only (no emoji prefix)
+                        const displayText = cleanName || ri.name || '';
                         return `<div class="reel-item" data-index="${i}" data-role="${ri.role || ''}" data-rarity="${ri.rarity || ''}">
-                            <img class="reel-img" src="/api/skin-image?name=${encodeURIComponent(imageName)}&t=${Date.now()}" alt="${displayText}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
+                            <img class="reel-img" src="${imgSrc}" alt="${displayText}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
                             <div class="reel-name">${displayText}</div>
                             <div class="reel-rarity-label">${ri.rarity || 'Common'}</div>
                         </div>`;
@@ -2271,15 +2388,20 @@
         const rarity = item.rarity || 'Blue';
         const color = RARITY_COLORS[rarity] || '#888';
         const emoji = RARITY_EMOJIS[rarity] || '🎯';
-        const imgUrl = `/api/skin-image?name=${encodeURIComponent(item.name)}&t=${Date.now()}`;
+        // Use stored image_url directly when available; fall back to API with clean name
+        const cleanName = (item.name || '').replace(/^[\u{1F300}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}🟦🟪🟥🟨🟩⬛⬜🟫🔥⭐💫👑✨\s]+/gu, '').trim();
+        const imgUrl = item.image_url
+            ? item.image_url
+            : `/api/skin-image?name=${encodeURIComponent(cleanName)}&t=${Date.now()}`;
+        const displayLabel = item.display_name || cleanName || item.name;
         const isSingle = total === 1;
         const isLast = index === total - 1;
         status.innerHTML = '';
         const html = `
             <div class="inspect-screen">
                 <div class="inspect-card" style="border-color:${color};box-shadow:0 0 60px ${color}22;">
-                    <img class="inspect-weapon" src="${imgUrl}" alt="${item.display_name || item.name}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
-                    <div class="inspect-name" style="color:${color};">${item.display_name || item.name}</div>
+                    <img class="inspect-weapon" src="${imgUrl}" alt="${displayLabel}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
+                    <div class="inspect-name" style="color:${color};">${displayLabel}</div>
                     <div class="inspect-rarity" style="color:${color};">${emoji} ${rarity}</div>
                     <div class="inspect-details">
                         <div><span class="label">💰 Value</span><br><span class="value">$${item.price.toFixed(2)}</span></div>
@@ -2504,129 +2626,347 @@
     }
 
     // ============================================
-    // SECTION 9: STICKER CAPSULES (unchanged)
+    // SECTION 9: STICKER CAPSULES — CINEMATIC REVEAL
     // ============================================
+
+    // ── Capsule-specific sounds ──────────────────
+    function playCapsuleRattle() {
+        [0, 80, 160, 220, 280].forEach((t, i) => {
+            setTimeout(() => playTone(120 + Math.random() * 60, 0.06, 'sawtooth', 0.08 + i * 0.01), t);
+        });
+    }
+    function playCapsuleCrack() {
+        playTone(80, 0.12, 'square', 0.25);
+        setTimeout(() => playTone(160, 0.08, 'square', 0.18), 40);
+        setTimeout(() => playTone(60,  0.20, 'sawtooth', 0.15), 60);
+        setTimeout(() => playTone(40,  0.30, 'square', 0.10), 100);
+    }
+    function playCapsuleFlash() {
+        playTone(1800, 0.05, 'sine', 0.20);
+        setTimeout(() => playTone(2400, 0.04, 'sine', 0.15), 30);
+        setTimeout(() => playTone(3000, 0.03, 'sine', 0.10), 60);
+    }
+    function playStickerEject() {
+        [0, 30, 60, 90, 120].forEach((t, i) => {
+            setTimeout(() => playTone(300 + i * 120, 0.07, 'sine', 0.12 - i * 0.01), t);
+        });
+        setTimeout(() => playTone(800, 0.15, 'sine', 0.18), 180);
+    }
+    function playStickerRevealRarity(rarity) {
+        if (rarity.includes('Legendary')) {
+            playRevealGold();
+            setTimeout(() => playTone(2000, 0.4, 'sine', 0.12), 600);
+        } else if (rarity.includes('Epic')) {
+            playRevealRed();
+            setTimeout(() => playTone(1600, 0.3, 'sine', 0.10), 400);
+        } else if (rarity.includes('Rare') || rarity === '🔥') {
+            playRevealPink();
+        } else if (rarity === '💫') {
+            playRevealPurple();
+        } else {
+            playRevealBlue();
+        }
+    }
+
+    // ── CSS injected once ────────────────────────
+    (function injectCapsuleStyles() {
+        if (document.getElementById('capsule-styles')) return;
+        const s = document.createElement('style');
+        s.id = 'capsule-styles';
+        s.textContent = `
+            @keyframes capsuleSpin3D {
+                0%   { transform: perspective(400px) rotateY(0deg) rotateX(0deg) scale(1); }
+                20%  { transform: perspective(400px) rotateY(72deg) rotateX(15deg) scale(1.05); }
+                40%  { transform: perspective(400px) rotateY(144deg) rotateX(-10deg) scale(1.08); }
+                60%  { transform: perspective(400px) rotateY(216deg) rotateX(20deg) scale(1.05); }
+                80%  { transform: perspective(400px) rotateY(288deg) rotateX(-5deg) scale(1.02); }
+                100% { transform: perspective(400px) rotateY(360deg) rotateX(0deg) scale(1); }
+            }
+            @keyframes capsuleShake {
+                0%,100% { transform: perspective(400px) rotateY(0deg) translateX(0); }
+                15%  { transform: perspective(400px) rotateY(20deg) translateX(-6px); }
+                30%  { transform: perspective(400px) rotateY(-25deg) translateX(8px); }
+                45%  { transform: perspective(400px) rotateY(15deg) translateX(-10px); }
+                60%  { transform: perspective(400px) rotateY(-30deg) translateX(7px); }
+                75%  { transform: perspective(400px) rotateY(10deg) translateX(-4px); }
+            }
+            @keyframes capsuleCrack {
+                0%   { transform: perspective(400px) rotateY(0deg) scale(1); filter: brightness(1); }
+                20%  { transform: perspective(400px) rotateY(-15deg) scale(1.1); filter: brightness(1.5); }
+                40%  { transform: perspective(400px) rotateY(20deg) scale(0.95); filter: brightness(2) saturate(2); }
+                60%  { transform: perspective(400px) rotateY(-10deg) scale(1.08); filter: brightness(3) saturate(3); }
+                80%  { transform: perspective(400px) rotateY(5deg) scale(1.12); filter: brightness(4); }
+                100% { transform: perspective(400px) rotateY(0deg) scale(0); filter: brightness(10); opacity: 0; }
+            }
+            @keyframes stickerEjectUp {
+                0%   { transform: translateY(0px) scale(0.3) rotate(-5deg); opacity: 0; filter: brightness(3); }
+                30%  { transform: translateY(-60px) scale(1.3) rotate(3deg); opacity: 1; filter: brightness(2); }
+                55%  { transform: translateY(-90px) scale(1.15) rotate(-2deg); opacity: 1; filter: brightness(1.5); }
+                75%  { transform: translateY(-70px) scale(1.05) rotate(1deg); opacity: 1; filter: brightness(1.2); }
+                100% { transform: translateY(-70px) scale(1) rotate(0deg); opacity: 1; filter: brightness(1); }
+            }
+            @keyframes holoShimmer {
+                0%   { background-position: 0% 50%; filter: hue-rotate(0deg) brightness(1.2); }
+                50%  { background-position: 100% 50%; filter: hue-rotate(180deg) brightness(1.6); }
+                100% { background-position: 0% 50%; filter: hue-rotate(360deg) brightness(1.2); }
+            }
+            @keyframes crackLineGrow {
+                0%   { opacity: 0; transform: scaleX(0) scaleY(0); }
+                60%  { opacity: 1; transform: scaleX(1) scaleY(1); }
+                100% { opacity: 0; transform: scaleX(1.2) scaleY(1.2); }
+            }
+            @keyframes flashWhite { 0%,100% { opacity: 0; } 50% { opacity: 1; } }
+            @keyframes rarityBadgePop {
+                0%   { transform: translateX(-50%) scale(0) rotate(-20deg); opacity: 0; }
+                60%  { transform: translateX(-50%) scale(1.2) rotate(5deg); opacity: 1; }
+                80%  { transform: translateX(-50%) scale(0.95) rotate(-2deg); }
+                100% { transform: translateX(-50%) scale(1) rotate(0deg); opacity: 1; }
+            }
+            @keyframes stickerFloat {
+                0%,100% { transform: translateY(-70px) scale(1) rotate(0deg); }
+                50%      { transform: translateY(-78px) scale(1.02) rotate(1deg); }
+            }
+            @keyframes holoBorder {
+                0%   { border-color: #ff0080; box-shadow: 0 0 20px #ff0080, 0 0 60px #ff008055; }
+                16%  { border-color: #ff8800; box-shadow: 0 0 20px #ff8800, 0 0 60px #ff880055; }
+                33%  { border-color: #ffff00; box-shadow: 0 0 20px #ffff00, 0 0 60px #ffff0055; }
+                50%  { border-color: #00ff88; box-shadow: 0 0 20px #00ff88, 0 0 60px #00ff8855; }
+                66%  { border-color: #00aaff; box-shadow: 0 0 20px #00aaff, 0 0 60px #00aaff55; }
+                83%  { border-color: #aa00ff; box-shadow: 0 0 20px #aa00ff, 0 0 60px #aa00ff55; }
+                100% { border-color: #ff0080; box-shadow: 0 0 20px #ff0080, 0 0 60px #ff008055; }
+            }
+            .capsule-3d-wrap { width:160px; height:160px; margin:0 auto; position:relative; display:flex; align-items:center; justify-content:center; }
+            .capsule-img-el { width:140px; height:140px; object-fit:contain; filter:drop-shadow(0 0 20px rgba(255,200,50,0.5)); will-change:transform; }
+            .capsule-crack-overlay { position:absolute; inset:0; pointer-events:none; display:flex; align-items:center; justify-content:center; }
+            .crack-line { position:absolute; background:white; border-radius:2px; transform-origin:center; animation:crackLineGrow 0.35s ease forwards; }
+            .flash-overlay { position:fixed; inset:0; background:white; pointer-events:none; z-index:9999; opacity:0; }
+            .sticker-reveal-wrap { position:relative; width:180px; height:220px; margin:0 auto; display:flex; align-items:flex-end; justify-content:center; }
+            .sticker-reveal-img { width:140px; height:140px; object-fit:contain; border-radius:50%; border:4px solid #ffd700; position:absolute; bottom:40px; left:50%; transform:translateX(-50%); opacity:0; will-change:transform,opacity; }
+            .sticker-rarity-badge { position:absolute; bottom:0; left:50%; transform:translateX(-50%) scale(0); background:rgba(0,0,0,0.85); border:2px solid currentColor; border-radius:20px; padding:4px 14px; font-size:13px; font-weight:900; letter-spacing:1px; white-space:nowrap; opacity:0; z-index:5; }
+            .sticker-name-reveal { font-size:20px; font-weight:900; text-align:center; margin:10px 0 4px; opacity:0; transform:translateY(10px); transition:opacity 0.5s ease, transform 0.5s ease; }
+            .sticker-details-reveal { text-align:center; opacity:0; transform:translateY(8px); transition:opacity 0.4s ease 0.1s, transform 0.4s ease 0.1s; }
+            .capsule-opening-stage { text-align:center; padding:10px 0 0; min-height:340px; position:relative; overflow:visible; }
+        `;
+        document.head.appendChild(s);
+    })();
+
     async function loadCapsules() {
         const grid = document.getElementById('capsuleGrid');
         grid.innerHTML = STICKER_CAPSULES.map(c => {
-            // Use container image from API if available, else emoji fallback
-            const imgSrc = c.image ? `/static/images/containers/${c.image.replace('assets/containers/','').replace('.webp','.png')}` : null;
+            const imgSrc = c.image ? `/static/images/containers/${c.image.replace('assets/containers/','')}` : null;
             const imgHtml = imgSrc
-                ? `<img src="${imgSrc}" alt="${c.name}" style="width:100px;height:80px;object-fit:contain;margin:8px 0;" onerror="this.style.display='none';this.nextElementSibling.style.display='block'"><div style="font-size:40px;display:none;">${c.emoji}</div>`
+                ? `<img src="${imgSrc}" alt="${c.name}" style="width:100px;height:80px;object-fit:contain;margin:8px 0;filter:drop-shadow(0 0 10px rgba(255,200,50,0.3));transition:filter 0.3s;">`
                 : `<div style="font-size:40px;margin:10px 0;">${c.emoji}</div>`;
             return `
-            <div class="case-btn" onclick="openStickerCapsule('${c.id}')">
-                ${imgHtml}
-                <div class="name" style="font-size:10px;">${c.name}</div>
-                <div class="price">$${c.price.toFixed(2)}</div>
-                <div style="font-size:9px;color:#666;margin:2px 0;">${c.sticker_count || ''} stickers</div>
-                <button class="btn btn-primary btn-sm" style="margin-top:6px;font-size:9px;padding:4px 10px;">Open</button>
-            </div>`;
+                <div class="capsule-card" onclick="openStickerCapsule('${c.id}')"
+                     style="cursor:pointer;border:1px solid rgba(255,215,0,0.25);border-radius:10px;padding:14px;text-align:center;
+                            background:linear-gradient(135deg,#1a1a2e,#0f0f1a);transition:all 0.25s;position:relative;overflow:hidden;"
+                     onmouseenter="this.style.borderColor='rgba(255,215,0,0.6)';this.style.transform='translateY(-3px)';this.style.boxShadow='0 8px 30px rgba(255,215,0,0.15)'"
+                     onmouseleave="this.style.borderColor='rgba(255,215,0,0.25)';this.style.transform='';this.style.boxShadow=''">
+                    ${imgHtml}
+                    <div style="font-weight:bold;color:#fff;font-size:12px;margin-top:4px;">${c.name}</div>
+                    <div style="color:#ffd700;font-size:13px;font-weight:700;margin-top:3px;">$${c.price.toFixed(2)}</div>
+                </div>
+            `;
         }).join('');
     }
+
     async function openStickerCapsule(capsuleId) {
         lastCapsuleId = capsuleId;
         const overlay = document.getElementById('popupOverlay');
         overlay.classList.add('show');
-        document.getElementById('popupBody').innerHTML = `<div class="loading" style="font-size:18px;padding:40px;">Opening sticker capsule...</div>`;
-        try {
-            const data = await apiCall('/api/sticker', { method: 'POST', body: JSON.stringify({ capsule: capsuleId }) });
-            if (data.success) showStickerResult(data.item);
-            else {
-                document.getElementById('popupBody').innerHTML = `<div class="error" style="font-size:18px;padding:20px;">❌ ${data.error || 'Failed to open sticker'}<br><br><button class="btn btn-primary" onclick="closePopup()">Close</button></div>`;
-            }
-        } catch (e) {
-            document.getElementById('popupBody').innerHTML = `<div class="error" style="font-size:18px;padding:20px;">❌ Error opening sticker capsule: ${e.message || 'Unknown error'}<br><br><button class="btn btn-primary" onclick="closePopup()">Close</button></div>`;
-        }
-    }
-    function showStickerResult(sticker) {
-        currentSticker = sticker;
-        const color = STICKER_COLORS[sticker.rarity] || '#888';
-        const glow = `0 0 60px ${color}`;
-        const html = `
-            <div style="display:flex;gap:8px;justify-content:center;margin:20px 0;padding:20px;background:rgba(0,0,0,0.3);border-radius:12px;border:1px solid rgba(255,255,255,0.05);min-height:120px;align-items:center;position:relative;overflow:visible;">
-                ${[0,1,2,3,4].map(i => `<div style="width:80px;height:80px;border:2px solid ${STICKER_COLORS[STICKER_RARITIES[i % STICKER_RARITIES.length]] || '#888'};border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;background:rgba(20,20,40,0.5);margin:0 auto;line-height:1.1;text-align:center;word-break:break-word;padding:4px;font-weight:bold;box-shadow:${glow};" class="sticker-slot spinning" id="stickerSlot${i}">${STICKER_RARITIES[i % STICKER_RARITIES.length]}</div>`).join('')}
-                <div style="position:absolute;width:100%;height:100%;top:0;left:0;pointer-events:none;border-radius:12px;background:radial-gradient(ellipse at center, ${color}22, transparent 70%);"></div>
+
+        const capsuleInfo = STICKER_CAPSULES.find(c => c.id === capsuleId);
+        const capsuleImgSrc = capsuleInfo && capsuleInfo.image
+            ? `/static/images/containers/${capsuleInfo.image.replace('assets/containers/', '')}`
+            : null;
+
+        document.getElementById('popupBody').innerHTML = `
+            <div class="capsule-opening-stage" id="capsuleStage">
+                <div style="color:#aaa;font-size:13px;margin-bottom:12px;letter-spacing:2px;text-transform:uppercase;">Opening capsule...</div>
+                <div class="capsule-3d-wrap" id="capsuleWrap">
+                    ${capsuleImgSrc
+                        ? `<img class="capsule-img-el" id="capsuleImg" src="${capsuleImgSrc}" alt="capsule">`
+                        : `<div style="font-size:80px;line-height:1;" id="capsuleImg">${capsuleInfo ? capsuleInfo.emoji : '📦'}</div>`}
+                    <div class="capsule-crack-overlay" id="capsuleCracks"></div>
+                </div>
+                <div style="margin-top:14px;color:#ffd700;font-size:13px;font-weight:700;letter-spacing:1px;" id="capsuleStatus">Spinning...</div>
             </div>
-            <div style="background:radial-gradient(ellipse at center, ${color}33, transparent 70%);width:200px;height:200px;margin:0 auto 20px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;transition:all 0.5s;"><div style="font-size:60px;border:3px solid ${color};box-shadow:${glow};border-radius:50%;width:120px;height:120px;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.3);" id="stickerResultIcon">${sticker.rarity}</div></div>
-            <div class="item-name" id="stickerResultName" style="opacity:0;transition:all 0.5s ease;font-size:24px;font-weight:700;margin:10px 0;">${sticker.name}</div>
-            <div id="stickerDetails" style="opacity:0;transition:all 0.5s ease;"><div class="item-details">💰 Value: $${sticker.price.toFixed(2)}</div><div class="item-details">📊 Rarity: ${sticker.rarity}</div>${sticker.is_stattrak ? '<div class="item-details" style="color:#ff6b00;">🔥 StatTrak™</div>' : ''}</div>
-            <div class="popup-buttons"><button class="btn btn-success" onclick="handleStickerAction('keep')">💾 Keep</button><button class="btn btn-danger" onclick="handleStickerAction('sell')">💰 Sell (70%)</button><button class="btn btn-primary" onclick="handleStickerAction('spin_again')">🎰 Spin Again</button></div>
         `;
-        document.getElementById('popupBody').innerHTML = html;
-        const slotItems = document.querySelectorAll('.sticker-slot');
-        const resultIcon = document.getElementById('stickerResultIcon');
-        const resultName = document.getElementById('stickerResultName');
-        const details = document.getElementById('stickerDetails');
-        if (resultIcon) resultIcon.style.opacity = '0';
-        if (resultName) resultName.style.opacity = '0';
-        if (details) details.style.opacity = '0';
+
+        const capsuleImg = document.getElementById('capsuleImg');
+        capsuleImg.style.animation = 'capsuleSpin3D 0.7s ease-in-out infinite';
+        playCapsuleRattle();
+
+        let data;
+        try {
+            data = await apiCall('/api/sticker', { method: 'POST', body: JSON.stringify({ capsule: capsuleId }) });
+        } catch (e) {
+            document.getElementById('popupBody').innerHTML = `<div class="error" style="font-size:18px;padding:20px;">❌ Error: ${e.message || 'Unknown error'}<br><br><button class="btn btn-primary" onclick="closePopup()">Close</button></div>`;
+            return;
+        }
+        if (!data.success) {
+            document.getElementById('popupBody').innerHTML = `<div class="error" style="font-size:18px;padding:20px;">❌ ${data.error || 'Failed to open capsule'}<br><br><button class="btn btn-primary" onclick="closePopup()">Close</button></div>`;
+            return;
+        }
+
+        const sticker = data.item;
         const speedKey = state.userSettings.spin_speed || 'normal';
-        const speedConfig = SPIN_SPEEDS[speedKey] || SPIN_SPEEDS.normal;
-        const spinDuration = speedConfig.duration + (Math.random() * 600 - 300);
-        const startTime = Date.now();
-        function animateStickerSpin() {
-            const elapsed = Date.now() - startTime;
-            const progress = elapsed / spinDuration;
-            if (progress < 0.7) {
-                slotItems.forEach(el => { const randomSticker = STICKER_RARITIES[Math.floor(Math.random() * STICKER_RARITIES.length)]; el.textContent = randomSticker; el.style.borderColor = STICKER_COLORS[randomSticker] || '#888'; });
-                requestAnimationFrame(animateStickerSpin);
-            } else if (progress < 1) {
-                slotItems.forEach(el => { const randomSticker = STICKER_RARITIES[Math.floor(Math.random() * STICKER_RARITIES.length)]; el.textContent = randomSticker; el.style.borderColor = STICKER_COLORS[randomSticker] || '#888'; });
-                setTimeout(() => { if (Date.now() - startTime < spinDuration) { requestAnimationFrame(animateStickerSpin); } else { finishStickerSpin(sticker, slotItems, resultIcon, resultName, details); } }, 100);
-            } else {
-                finishStickerSpin(sticker, slotItems, resultIcon, resultName, details);
-            }
-        }
-        animateStickerSpin();
-    }
-    function finishStickerSpin(sticker, slotItems, resultIcon, resultName, details) {
-        slotItems.forEach((el, i) => { el.classList.remove('spinning'); el.classList.add('landing'); if (i === 2) { el.textContent = sticker.rarity; el.style.borderColor = '#ffd700'; el.style.boxShadow = '0 0 40px rgba(255,215,0,0.5)'; } else { const randomSticker = STICKER_RARITIES[Math.floor(Math.random() * STICKER_RARITIES.length)]; el.textContent = randomSticker; el.style.borderColor = STICKER_COLORS[randomSticker] || '#888'; } });
-        if (resultIcon) { resultIcon.style.opacity = '1'; resultIcon.style.transition = 'all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)'; resultIcon.style.transform = 'scale(1.2)'; setTimeout(() => { resultIcon.style.transform = 'scale(1)'; }, 300); }
-        if (resultName) { resultName.style.opacity = '1'; resultName.style.transition = 'all 0.5s ease'; }
-        if (details) { details.style.opacity = '1'; details.style.transition = 'all 0.5s ease'; }
-        if (sticker.rarity.includes('Legendary') || sticker.rarity.includes('Epic')) { spawnConfetti(sticker.rarity); spawnParticles(sticker.rarity); }
-        const buttons = document.querySelectorAll('.popup-buttons .btn');
-        buttons.forEach(b => { b.style.opacity = '1'; b.style.transform = 'scale(1)'; });
-    }
-    async function handleStickerAction(action) {
-        const sticker = currentSticker;
-        if (!sticker) { showToast('❌ Error: No sticker data found'); return; }
-        if (action === 'keep') {
-            try {
-                await apiCall('/api/keep-item', { method: 'POST', body: JSON.stringify({ item_id: sticker.id }) });
-                closePopup();
-                await loadBalance();
-                await loadStats();
-                await loadInventory();
-                showToast('💾 Sticker kept successfully!');
-            } catch (e) {
-                closePopup();
-                showToast('❌ Error keeping sticker');
-            }
-        } else if (action === 'sell') {
-            try {
-                const data = await apiCall('/api/sell-item', { method: 'POST', body: JSON.stringify({ item_id: sticker.id }) });
-                closePopup();
-                if (data.success) {
-                    await loadBalance();
-                    await loadStats();
-                    await loadInventory();
-                    showToast(`💰 Sold sticker for $${data.sell_price.toFixed(2)}`);
-                }
-            } catch (e) {
-                closePopup();
-                showToast('❌ Error selling sticker');
-            }
-        } else if (action === 'spin_again') {
-            closePopup();
-            setTimeout(() => { const capsuleId = lastCapsuleId || 'recoil'; openStickerCapsule(capsuleId); }, 300);
-        }
+        const spinMs = { chill: 2200, normal: 1500, fast: 800 }[speedKey] || 1500;
+
+        await new Promise(r => setTimeout(r, spinMs));
+
+        // Phase 2: shake
+        const statusEl = document.getElementById('capsuleStatus');
+        if (statusEl) statusEl.textContent = '🔥 Breaking...';
+        capsuleImg.style.animation = 'capsuleShake 0.5s ease-in-out';
+        playCapsuleRattle();
+        await new Promise(r => setTimeout(r, 500));
+
+        // Phase 3: cracks
+        const cracksEl = document.getElementById('capsuleCracks');
+        if (cracksEl) cracksEl.innerHTML = `
+            <div class="crack-line" style="width:3px;height:70px;top:20px;left:50%;transform-origin:bottom center;transform:translateX(-50%) rotate(-30deg);"></div>
+            <div class="crack-line" style="width:2px;height:50px;top:35px;left:45%;transform-origin:bottom center;transform:translateX(-50%) rotate(15deg);animation-delay:0.05s;"></div>
+            <div class="crack-line" style="width:2px;height:40px;top:45px;left:57%;transform-origin:bottom center;transform:translateX(-50%) rotate(-10deg);animation-delay:0.1s;"></div>
+        `;
+        playCapsuleCrack();
+        await new Promise(r => setTimeout(r, 350));
+
+        // Phase 4: flash + explode
+        const flashDiv = document.createElement('div');
+        flashDiv.className = 'flash-overlay';
+        document.body.appendChild(flashDiv);
+        flashDiv.style.animation = 'flashWhite 0.25s ease forwards';
+        playCapsuleFlash();
+        capsuleImg.style.animation = 'capsuleCrack 0.4s ease-in forwards';
+        await new Promise(r => setTimeout(r, 250));
+        flashDiv.remove();
+        await new Promise(r => setTimeout(r, 200));
+
+        // Phase 5: sticker reveal
+        await showCapsuleStickerReveal(sticker);
     }
 
+    async function showCapsuleStickerReveal(sticker) {
+        currentSticker = sticker;
+        const color = STICKER_COLORS[sticker.rarity] || '#888';
+        const isHolo = sticker.rarity.includes('Legendary') || sticker.rarity.includes('Epic') || sticker.rarity === '🔥';
+        const isRare = sticker.rarity.includes('Rare') || sticker.rarity === '💫';
+        const stickerImgSrc = sticker.image ? `/static/images/stickers/${sticker.image.split('/').pop()}` : null;
+
+        const stage = document.getElementById('capsuleStage');
+        if (!stage) return;
+
+        stage.innerHTML = `
+            <div style="color:${color};font-size:12px;letter-spacing:2px;text-transform:uppercase;margin-bottom:16px;font-weight:700;">Sticker Revealed!</div>
+            <div class="sticker-reveal-wrap" id="stickerRevealWrap">
+                ${stickerImgSrc
+                    ? `<img class="sticker-reveal-img" id="stickerRevealImg" src="${stickerImgSrc}" alt="${sticker.name}">`
+                    : `<div class="sticker-reveal-img" id="stickerRevealImg" style="display:flex;align-items:center;justify-content:center;font-size:48px;background:rgba(0,0,0,0.4);">${sticker.rarity}</div>`}
+                <div class="sticker-rarity-badge" id="stickerBadge" style="color:${color};border-color:${color};">${sticker.rarity}</div>
+            </div>
+            <div class="sticker-name-reveal" id="stickerNameReveal" style="color:${color};">${sticker.name}</div>
+            <div class="sticker-details-reveal" id="stickerDetailsReveal">
+                <div style="color:#aaa;font-size:13px;margin-bottom:2px;">💰 $${sticker.price.toFixed(2)} &nbsp;|&nbsp; ${sticker.rarity}</div>
+                ${sticker.is_stattrak ? '<div style="color:#ff6b00;font-size:12px;font-weight:700;">🔥 StatTrak™</div>' : ''}
+            </div>
+            <div class="popup-buttons" id="stickerActBtns" style="margin-top:18px;opacity:0;transition:opacity 0.4s;">
+                <button class="btn btn-success" onclick="handleStickerAction('keep')">💾 Keep</button>
+                <button class="btn btn-danger" onclick="handleStickerAction('sell')">💰 Sell (70%)</button>
+                <button class="btn btn-primary" onclick="handleStickerAction('spin_again')">🎰 Open Again</button>
+            </div>
+        `;
+
+        playStickerEject();
+        const revealImg = document.getElementById('stickerRevealImg');
+        if (revealImg) {
+            revealImg.style.animation = 'stickerEjectUp 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards';
+            if (isHolo) {
+                setTimeout(() => {
+                    revealImg.style.background = 'linear-gradient(135deg,#ff0080,#ff8800,#ffff00,#00ff88,#00aaff,#aa00ff,#ff0080)';
+                    revealImg.style.backgroundSize = '400% 400%';
+                    revealImg.style.animation = 'stickerFloat 2.5s ease-in-out infinite, holoBorder 1.5s linear infinite';
+                }, 700);
+            } else {
+                setTimeout(() => {
+                    revealImg.style.animation = 'stickerFloat 2.5s ease-in-out infinite';
+                    revealImg.style.borderColor = color;
+                    revealImg.style.boxShadow = `0 0 30px ${color}88`;
+                }, 700);
+            }
+        }
+
+        await new Promise(r => setTimeout(r, 500));
+        const badge = document.getElementById('stickerBadge');
+        if (badge) badge.style.animation = 'rarityBadgePop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards';
+
+        playStickerRevealRarity(sticker.rarity);
+
+        if (isHolo) { spawnConfettiExplosion(); spawnParticles('Gold', 50); }
+        else if (isRare) { spawnConfetti(sticker.rarity, 60); spawnParticles(sticker.rarity, 20); }
+        else { spawnConfetti(sticker.rarity, 30); }
+
+        await new Promise(r => setTimeout(r, 200));
+        const nameEl = document.getElementById('stickerNameReveal');
+        if (nameEl) { nameEl.style.opacity = '1'; nameEl.style.transform = 'translateY(0)'; }
+
+        await new Promise(r => setTimeout(r, 150));
+        const detailsEl = document.getElementById('stickerDetailsReveal');
+        if (detailsEl) { detailsEl.style.opacity = '1'; detailsEl.style.transform = 'translateY(0)'; }
+
+        await new Promise(r => setTimeout(r, 200));
+        const btns = document.getElementById('stickerActBtns');
+        if (btns) btns.style.opacity = '1';
+    }
+
+// ============================================
+// Handle sticker actions (Keep, Sell, Spin Again)
+// ============================================
+async function handleStickerAction(action) {
+    const sticker = currentSticker;
+    if (!sticker) { showToast('❌ Error: No sticker data found'); return; }
+
+    if (action === 'keep') {
+        try {
+            await apiCall('/api/keep-item', { method: 'POST', body: JSON.stringify({ item_id: sticker.id }) });
+            closePopup();
+            await loadBalance(); await loadStats(); await loadInventory();
+            showToast('💾 Sticker kept successfully!');
+        } catch (e) { closePopup(); showToast('❌ Error keeping sticker'); }
+    } else if (action === 'sell') {
+        try {
+            const data = await apiCall('/api/sell-item', { method: 'POST', body: JSON.stringify({ item_id: sticker.id }) });
+            closePopup();
+            if (data.success) {
+                await loadBalance(); await loadStats(); await loadInventory();
+                showToast(`💰 Sold sticker for $${data.sell_price.toFixed(2)}`);
+            }
+        } catch (e) { closePopup(); showToast('❌ Error selling sticker'); }
+    } else if (action === 'spin_again') {
+        closePopup();
+        setTimeout(() => openStickerCapsule(lastCapsuleId || 'recoil'), 300);
+    }
+}
+
+// Make it globally accessible for inline onclick handlers
+window.handleStickerAction = handleStickerAction;
+window.openStickerCapsule = openStickerCapsule;
+window.setInvTypeFilter = setInvTypeFilter;
+    
+	// ============================================
+    // SECTION 10: INVENTORY — Card Grid
     // ============================================
-    // SECTION 10: INVENTORY (unchanged)
-    // ============================================
+
+    let _invTypeFilter = 'all';
+
+    function setInvTypeFilter(type, el) {
+        _invTypeFilter = type;
+        document.querySelectorAll('.inv-type-tab').forEach(t => t.classList.remove('active'));
+        if (el) el.classList.add('active');
+        renderInventory();
+    }
+
     async function loadInventory(page = 0) {
         state.currentPage = page;
         try {
@@ -2637,36 +2977,209 @@
             renderPagination();
         } catch (e) { console.error('Load inventory error:', e); }
     }
+
+    // ── Item classification helpers ───────────────
+    function classifyItem(item) {
+        const type  = (item.item_type || '').toLowerCase();
+        const name  = (item.item_name || '').trim();
+        const rar   = (item.rarity || '').trim();
+
+        // Sticker / capsule
+        if (type === 'sticker') return 'sticker';
+
+        // Gold tier items (knives / gloves / special)
+        if (rar === 'Gold' || type === 'gold') return 'gold';
+
+        // Items whose name starts with a known weapon-category prefix that's wrong
+        // e.g. "RIFLE | Big Iron" → should show as weapon with cleaned name
+        return 'weapon';
+    }
+
+    // Strip leading rarity emoji or generic weapon-category prefix from stored names.
+    // e.g. "🟪 SHOTGUN | Red Quartz"  → "SHOTGUN | Red Quartz"  (category still shows)
+    // We map generic weapon categories to nicer display labels if the real name isn't known.
+    const GENERIC_WEAPON_CATEGORY_MAP = {
+        'RIFLE':   'Rifle',
+        'PISTOL':  'Pistol',
+        'SMG':     'SMG',
+        'SHOTGUN': 'Shotgun',
+        'SNIPER':  'Sniper Rifle',
+        'MACHINE GUN': 'Machine Gun',
+        'KNIFE':   'Knife',
+    };
+    function cleanItemName(raw) {
+        // Strip leading emoji chars (covers unicode emoji + text emoji sequences)
+        let name = (raw || '').replace(/^[\u{1F300}-\u{1FFFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FEFF}🟦🟪🟥🟨🟩⬛⬜🟫🔥⭐💫👑✨\s]+/gu, '').trim();
+        // Also strip leading "Mystery " prefix
+        name = name.replace(/^Mystery\s+/i, '').trim();
+        return name || raw;
+    }
+
+    const STICKER_RARITY_LABELS = {
+        '⭐': { label: 'Common',    color: '#4488ff' },
+        '✨': { label: 'Uncommon',  color: '#aa00ff' },
+        '💫': { label: 'Rare',      color: '#ff69b4' },
+        '🔥': { label: 'Foil',      color: '#ff4444' },
+        '👑 Common':    { label: 'Holo Common',   color: '#4caf50' },
+        '👑 Rare':      { label: 'Holo Rare',     color: '#00aaff' },
+        '👑 Epic':      { label: 'Holo Epic',     color: '#aa00ff' },
+        '👑 Legendary': { label: 'Holo Legendary',color: '#ffd700' },
+    };
+
+    const SKIN_RARITY_COLORS = {
+        Gold: '#ffd700', Red: '#ff4444', Pink: '#ff69b4',
+        Purple: '#aa00ff', Blue: '#4488ff'
+    };
+
+    const CONDITION_SHORT = {
+        'Factory New': 'FN', 'Minimal Wear': 'MW', 'Field-Tested': 'FT',
+        'Well-Worn': 'WW', 'Battle-Scarred': 'BS'
+    };
+
+    // Gold / knife emoji lookup
+    function goldKnifeEmoji(name) {
+        const n = (name || '').toLowerCase();
+        if (n.includes('bayonet'))      return '🗡️';
+        if (n.includes('karambit'))     return '🌀';
+        if (n.includes('butterfly'))    return '🦋';
+        if (n.includes('m9'))           return '🔪';
+        if (n.includes('flip'))         return '🔄';
+        if (n.includes('gut'))          return '🍖';
+        if (n.includes('falchion'))     return '⚔️';
+        if (n.includes('shadow'))       return '👥';
+        if (n.includes('bowie'))        return '🏕️';
+        if (n.includes('huntsman'))     return '🏹';
+        if (n.includes('glove') || n.includes('wraps') || n.includes('hand')) return '🧤';
+        if (n.includes('navaja'))       return '🔱';
+        if (n.includes('stiletto'))     return '💎';
+        if (n.includes('talon'))        return '🦅';
+        if (n.includes('ursus'))        return '🐻';
+        if (n.includes('skeleton'))     return '💀';
+        if (n.includes('nomad'))        return '🌍';
+        if (n.includes('survival'))     return '🏕️';
+        if (n.includes('paracord'))     return '🪢';
+        if (n.includes('classic'))      return '🗡️';
+        return '⭐';
+    }
+
     function renderInventory() {
         const invDiv = document.getElementById('inventory');
-        const search = document.getElementById('searchInput').value.toLowerCase();
-        const rarity = document.getElementById('rarityFilter').value;
-        let filtered = state.inventory;
-        if (search) filtered = filtered.filter(i => i.item_name.toLowerCase().includes(search));
-        if (rarity !== 'all') filtered = filtered.filter(i => i.rarity === rarity);
+        if (!invDiv) return;
+        const search = (document.getElementById('searchInput')?.value || '').toLowerCase();
+        const rarF   = document.getElementById('rarityFilter')?.value || 'all';
+
+        let filtered = state.inventory || [];
+        if (search) filtered = filtered.filter(i => (i.item_name || '').toLowerCase().includes(search));
+        if (rarF !== 'all') filtered = filtered.filter(i => i.rarity === rarF);
+
+        // Type filter
+        if (_invTypeFilter !== 'all') {
+            filtered = filtered.filter(i => {
+                const cat = classifyItem(i);
+                if (_invTypeFilter === 'sticker') return cat === 'sticker';
+                if (_invTypeFilter === 'gold')    return cat === 'gold';
+                if (_invTypeFilter === 'weapon')  return cat === 'weapon';
+                return true;
+            });
+        }
+
         if (filtered.length === 0) {
-            invDiv.innerHTML = '<p style="color:#888;">No items found. Open some cases!</p>';
+            invDiv.innerHTML = '<div class="inv-empty">No items found.<br><span style="font-size:11px;">Open some cases to fill your inventory!</span></div>';
             return;
         }
-        invDiv.innerHTML = filtered.map(i => {
-            const rarityClass = `rarity-${i.rarity}`;
-            const imgUrl = `/api/skin-image?name=${encodeURIComponent(i.item_name)}&t=${Date.now()}`;
-            const stattrak = i.is_stattrak ? '🔥 ' : '';
-            const isGold = i.rarity === 'Gold';
-            const upgradeButton = isGold ? '' : `<button class="btn btn-purple btn-sm" onclick="upgradeItem('${i.id}')">⬆️ Upgrade</button>`;
-            return `
-                <div class="inventory-item">
-                    <img src="${imgUrl}" alt="${i.item_name}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
-                    <div class="info">
-                        <div class="name ${rarityClass}">${stattrak}${i.item_name}</div>
-                        <div class="details">${i.rarity} - $${i.price.toFixed(2)}</div>
-                        <div class="details">ID: ${i.id}</div>
-                    </div>
-                    ${upgradeButton}
-                    <button class="btn btn-danger btn-sm" onclick="sellItem('${i.id}')">Sell</button>
+
+        invDiv.innerHTML = filtered.map(item => buildInvCard(item)).join('');
+    }
+
+    function buildInvCard(item) {
+        const cat     = classifyItem(item);
+        const rawName = (item.item_name || '').trim();
+        // Always show a clean name (no leading emoji, no "Mystery" prefix)
+        const cleanName = cleanItemName(rawName);
+        const rar     = (item.rarity || 'Blue').trim();
+        const price   = typeof item.price === 'number' ? item.price : parseFloat(item.price || 0);
+        const isST    = item.is_stattrak;
+        const cond    = item.condition || '';
+        const condShort = CONDITION_SHORT[cond] || '';
+        const itemId  = item.id || item.item_id || null;
+
+        // ── Rarity stripe color ──
+        const rarColor = SKIN_RARITY_COLORS[rar] || '#4488ff';
+
+        // ── Per-type display logic ──
+        let displayName, subLine, imgHtml, typeBadge, rarLabel, rarLabelColor;
+        const canUpgrade = (rar !== 'Gold') && (cat !== 'sticker');
+
+        if (cat === 'sticker') {
+            // Sticker: name is already clean (e.g. "CS20 Classic (Holo)")
+            displayName = cleanName;
+            // Parse rarity — could be emoji-based
+            const stickerRar = STICKER_RARITY_LABELS[rar];
+            rarLabel      = stickerRar ? stickerRar.label : rar;
+            rarLabelColor = stickerRar ? stickerRar.color : '#4488ff';
+            // Use image_url from server (persisted on insert); fallback to emoji
+            const stickerImgUrl = item.image_url || null;
+            if (stickerImgUrl) {
+                imgHtml = `<img src="${stickerImgUrl}" alt="${displayName}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                           <div class="inv-img-emoji" style="display:none;">🏷️</div>`;
+            } else {
+                imgHtml = `<div class="inv-img-emoji">🏷️</div>`;
+            }
+            typeBadge = `<div class="inv-type-badge">Sticker</div>`;
+            subLine   = `<span style="color:${rarLabelColor};">${rar} ${rarLabel}</span>`;
+
+        } else if (cat === 'gold') {
+            // Gold / knife: strip emoji and "★ " prefix for display
+            displayName = cleanName.replace(/^★\s*/, '').trim();
+            rarLabel      = 'Gold';
+            rarLabelColor = '#ffd700';
+            const emoji   = goldKnifeEmoji(rawName);
+            // Use image_url from server when available, fall back to /api/skin-image with clean name
+            const goldImgUrl = item.image_url || `/api/skin-image?name=${encodeURIComponent(cleanName)}&t=${Date.now()}`;
+            imgHtml = `<img src="${goldImgUrl}" alt="${displayName}"
+                           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                       <div class="inv-img-emoji" style="display:none;">${emoji}</div>`;
+            typeBadge = `<div class="inv-type-badge" style="background:rgba(255,215,0,0.25);color:#ffd700;">⭐ Gold</div>`;
+            subLine   = `<span style="color:#ffd700;">Gold</span>${condShort ? `<span style="color:#555;">· ${condShort}</span>` : ''}`;
+
+        } else {
+            // Weapon skin — use cleanName for display and image lookup (strips leading emoji/category prefix)
+            displayName = cleanName;
+            rarLabel      = rar;
+            rarLabelColor = rarColor;
+            const skinImgUrl = item.image_url || `/api/skin-image?name=${encodeURIComponent(cleanName)}&t=${Date.now()}`;
+            imgHtml = `<img src="${skinImgUrl}" alt="${displayName}"
+                           onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">`;
+            typeBadge = `<div class="inv-type-badge">Skin</div>`;
+            subLine   = `<span style="color:${rarColor};">${rar}</span>${condShort ? `<span style="color:#555;">· ${condShort}</span>` : ''}`;
+        }
+
+        const stBadge   = isST ? `<div class="inv-st-badge">ST™</div>` : '';
+        const stPrefix  = isST ? `<span style="color:#ff6b00;font-size:9px;">🔥 StatTrak™ </span><br>` : '';
+        const upgradeBtn = canUpgrade
+            ? `<button class="inv-btn inv-btn-upgrade" onclick="upgradeItem('${itemId}')">⬆ UP</button>`
+            : '';
+
+        return `
+            <div class="inv-card rarity-${rar}">
+                <div class="inv-rarity-stripe" style="background:${rarLabelColor};"></div>
+                <div class="inv-img-wrap">
+                    ${imgHtml}
+                    ${typeBadge}
+                    ${stBadge}
                 </div>
-            `;
-        }).join('');
+                <div class="inv-info">
+                    <div class="inv-name" style="color:${rarLabelColor};">${stPrefix}${displayName}</div>
+                    <div class="inv-sub">${subLine}</div>
+                    ${condShort && cat !== 'sticker' ? `<div class="inv-condition">${cond}</div>` : ''}
+                    <div class="inv-price">$${price.toFixed(2)}</div>
+                </div>
+                <div class="inv-actions">
+                    ${upgradeBtn}
+                    ${itemId ? `<button class="inv-btn inv-btn-sell" onclick="sellItem('${itemId}')">Sell</button>` : ''}
+                </div>
+            </div>
+        `;
     }
     function renderPagination() {
         const div = document.getElementById('inventoryPagination');
@@ -2679,13 +3192,28 @@
     }
     function filterInventory() { renderInventory(); }
     async function sellItem(itemId) {
+        // Guard: itemId must be a valid integer
+        const id = parseInt(itemId);
+        if (!itemId || isNaN(id) || id <= 0) {
+            showToast('❌ Invalid item — please refresh inventory', 'error');
+            return;
+        }
         if (!confirm('Sell this item for 70% of its value?')) return;
         try {
-            const res = await fetch('/api/sell-item', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ item_id: parseInt(itemId) }) });
-            if (!res.ok) { const text = await res.text(); throw new Error(`HTTP ${res.status}: ${text}`); }
+            const res = await fetch('/api/sell-item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ item_id: id })
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                showToast(`❌ ${data.error || data.detail || `Error ${res.status}`}`, 'error');
+                return;
+            }
             const data = await res.json();
             if (data.success) {
-                showToast(`✅ Sold for $${data.sell_price.toFixed(2)}`);
+                showToast(`✅ Sold for $${Number(data.sell_price).toFixed(2)}`);
                 await loadBalance();
                 await loadInventory();
                 await loadStats();
@@ -2832,95 +3360,207 @@
     // ============================================
     // SECTION 13: PREMIUM CASES (modified for new reel)
     // ============================================
-    async function loadPremiumCases() {
+    // ============================================
+    // SECTION: VIP / PREMIUM SYSTEM
+    // ============================================
+
+    const VIP_COLORS = {
+        none:     { bg: 'rgba(255,255,255,0.04)', border: 'rgba(255,255,255,0.1)', text: '#888' },
+        silver:   { bg: 'rgba(192,192,192,0.08)', border: 'rgba(192,192,192,0.4)', text: '#c0c0c0' },
+        gold:     { bg: 'rgba(255,215,0,0.08)',   border: 'rgba(255,215,0,0.5)',   text: '#ffd700' },
+        platinum: { bg: 'rgba(140,210,255,0.08)', border: 'rgba(140,210,255,0.5)', text: '#8cd2ff' },
+    };
+
+    async function loadVIPStatus() {
         try {
-            const data = await apiCall('/api/premium-cases');
-            const grid = document.getElementById('premiumGrid');
-            const banner = document.getElementById('premiumStatusBanner');
-            if (!data.enabled) {
-                banner.innerHTML = `
-                    <div style="padding:15px;background:rgba(255,215,0,0.1);border-radius:8px;border:1px solid #ffd700;text-align:center;">
-                        <div style="color:#ffd700;font-size:16px;">🔒 ${data.message || 'Premium cases are coming soon!'}</div>
-                        <div style="color:#888;font-size:12px;margin-top:5px;">Support us on <a href="https://ko-fi.com/mk4gtiguy" target="_blank" style="color:#ffd700;">Ko-fi</a> to help us launch premium features!</div>
-                    </div>
-                `;
-            } else {
-                banner.innerHTML = '';
-            }
-            if (!data.cases || data.cases.length === 0) {
-                grid.innerHTML = '<p style="color:#888;">No premium cases available yet.</p>';
-                return;
-            }
-            grid.innerHTML = data.cases.map(c => {
-                const tierLabels = { 'ticket_1': '🎟️ Common Cache', 'ticket_2': '🎟️ Uncommon Crate', 'ticket_3': '🎟️ Rare Reserve', 'ticket_4': '🎟️ Epic Arsenal', 'ticket_5': '🎟️ Legendary Loot' };
-                const tierLabel = tierLabels[c.tier] || c.tier;
-                const isLocked = c.locked || !data.enabled;
-                return `
-                    <div class="premium-card ${isLocked ? 'locked' : ''}" onclick="${isLocked ? '' : `openPremiumPopup('${c.id}', 1)`}">
-                        ${isLocked ? `<div class="lock-overlay"><div class="lock-icon">🔒</div><div class="lock-text">Coming Soon</div></div>` : ''}
-                        <div class="tier-badge">${tierLabel}</div>
-                        <div style="font-size:20px;margin:10px 0;">🎯</div>
-                        <div class="name" style="font-weight:bold;font-size:14px;">${c.name}</div>
-                        <div class="ticket-cost">${c.price_tickets} tickets</div>
-                        <div class="price">$${c.price_usd.toFixed(2)} <span>per open</span></div>
-                        <button class="btn btn-primary btn-sm" style="margin-top:10px;font-size:9px;padding:4px 12px;" ${isLocked ? 'disabled' : ''}>${isLocked ? '🔒 Locked' : 'Open'}</button>
-                    </div>
-                `;
-            }).join('');
-        } catch (e) { console.error('Load premium cases error:', e); }
+            const [status, packs] = await Promise.all([
+                apiCall('/api/vip/status'),
+                apiCall('/api/tickets/packs'),
+            ]);
+            _renderVIPBanner(status);
+            _renderTiers(status);
+            _renderTicketPacks(packs.packs || []);
+            _loadBatchCaseList();
+            _loadTicketHistory();
+        } catch(e) { console.error('VIP load error:', e); }
     }
 
-    function openPremiumPopup(caseId, quantity = 1) {
-        apiCall('/api/premium-status').then(data => {
-            if (!data.enabled) {
-                showToast('🔒 ' + data.message);
-                return;
-            }
-            state.popupCaseId = caseId;
-            state.popupIndex = 0;
-            state.popupItems = [];
-            const overlay = document.getElementById('popupOverlay');
-            overlay.classList.add('show');
-            document.getElementById('popupBody').innerHTML = `<div class="loading" style="font-size:18px;padding:40px;">Opening premium case${quantity > 1 ? 'es' : ''}...</div>`;
-            openPremiumBatch(caseId, quantity);
-        }).catch(() => showToast('❌ Error checking premium status'));
+    function _renderVIPBanner(s) {
+        const el = document.getElementById('vipStatusBanner');
+        if (!el) return;
+        if (!s.active || s.tier === 'none') {
+            el.innerHTML = `
+                <div style="padding:14px 18px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+                    <div style="color:#888;font-size:13px;">You don't have an active VIP subscription.</div>
+                    <div style="color:#ffd700;font-size:13px;">🎟️ Tickets: <strong>${s.tickets || 0}</strong></div>
+                </div>`;
+            return;
+        }
+        const c = VIP_COLORS[s.tier] || VIP_COLORS.none;
+        const expires = s.expires_at ? new Date(s.expires_at) : null;
+        const daysLeft = expires ? Math.max(0, Math.ceil((expires - Date.now()) / 86400000)) : 0;
+        el.innerHTML = `
+            <div style="padding:16px 20px;background:${c.bg};border:2px solid ${c.border};border-radius:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+                <div>
+                    <div style="font-size:18px;font-weight:bold;color:${c.text};">${s.label || s.tier.toUpperCase()} Member</div>
+                    <div style="font-size:12px;color:#888;margin-top:2px;">Expires in <strong style="color:${c.text};">${daysLeft} days</strong> · Win Boost: <strong style="color:#4caf50;">+${Math.round((s.boost-1)*100)}%</strong></div>
+                </div>
+                <div style="text-align:right;">
+                    <div style="font-size:24px;font-weight:bold;color:#ffd700;">${s.tickets} 🎟️</div>
+                    <div style="font-size:11px;color:#888;">Tickets Available</div>
+                </div>
+                <button class="btn btn-sm" style="background:rgba(255,50,50,0.15);border:1px solid rgba(255,50,50,0.3);color:#ff6b6b;" onclick="cancelVIP()">Cancel VIP</button>
+            </div>`;
     }
 
-    async function openPremiumBatch(caseId, quantity) {
+    async function _renderTiers(currentStatus) {
+        const grid = document.getElementById('vipTiersGrid');
+        if (!grid) return;
+        let tiers;
         try {
-            const data = await apiCall('/api/open-premium-case', {
+            const data = await apiCall('/api/vip/tiers');
+            tiers = data.tiers || [];
+        } catch(e) { grid.innerHTML = '<p style="color:#888;">Unable to load tiers.</p>'; return; }
+
+        const tierIcons = { silver: '🔰', gold: '🥇', platinum: '👑' };
+        grid.innerHTML = tiers.map(t => {
+            const c = VIP_COLORS[t.id] || VIP_COLORS.none;
+            const isCurrent = currentStatus.active && currentStatus.tier === t.id;
+            return `
+                <div style="background:${c.bg};border:2px solid ${isCurrent ? c.border : 'rgba(255,255,255,0.08)'};border-radius:12px;padding:18px;position:relative;transition:border-color 0.2s;">
+                    ${isCurrent ? `<div style="position:absolute;top:10px;right:10px;background:${c.border};color:#0a0a0f;font-size:9px;font-weight:bold;padding:2px 8px;border-radius:20px;">ACTIVE</div>` : ''}
+                    <div style="font-size:28px;margin-bottom:8px;">${tierIcons[t.id] || '⭐'}</div>
+                    <div style="font-weight:bold;font-size:16px;color:${c.text};margin-bottom:4px;">${t.label}</div>
+                    <div style="font-size:22px;font-weight:bold;color:#ffd700;margin-bottom:10px;">$${t.price.toFixed(2)}<span style="font-size:11px;color:#888;">/mo</span></div>
+                    <div style="font-size:12px;color:#aaa;margin-bottom:12px;line-height:1.6;">
+                        ${t.perks.map(p => `✅ ${p}`).join('<br>')}
+                        <br>🎟️ <strong style="color:#ffd700;">${t.daily_tickets} tickets/day</strong>
+                        <br>📈 <strong style="color:#4caf50;">+${t.boost_pct}% win boost</strong>
+                    </div>
+                    <button class="btn btn-gold" style="width:100%;font-size:12px;" onclick="subscribeVIP('${t.id}')" ${isCurrent ? 'disabled' : ''}>
+                        ${isCurrent ? '✅ Current Plan' : `Subscribe — $${t.price.toFixed(2)}/mo`}
+                    </button>
+                </div>`;
+        }).join('');
+    }
+
+    function _renderTicketPacks(packs) {
+        const grid = document.getElementById('ticketPacksGrid');
+        if (!grid) return;
+        grid.innerHTML = packs.map(p => `
+            <div style="background:rgba(255,215,0,0.04);border:1px solid rgba(255,215,0,0.15);border-radius:10px;padding:14px;text-align:center;">
+                <div style="font-size:22px;font-weight:bold;color:#ffd700;">${p.tickets} 🎟️</div>
+                <div style="font-size:18px;font-weight:bold;margin:6px 0;">$${p.price.toFixed(2)}</div>
+                ${p.discount ? `<div style="background:rgba(76,175,80,0.2);color:#4caf50;font-size:10px;padding:2px 8px;border-radius:20px;margin-bottom:8px;display:inline-block;">${p.discount}% OFF</div>` : '<div style="margin-bottom:8px;height:18px;"></div>'}
+                <button class="btn btn-sm btn-gold" style="width:100%;" onclick="buyTicketPack('${p.id}')">Buy Now</button>
+            </div>`).join('');
+    }
+
+    async function _loadBatchCaseList() {
+        const el = document.getElementById('batchCaseList');
+        if (!el) return;
+        try {
+            const data = await apiCall('/api/cases');
+            const top5 = (data.cases || [])
+                .sort((a,b) => b.price - a.price)
+                .slice(0, 5);
+            el.innerHTML = `<span style="color:#888;">Cases included: </span>${top5.map(c => `<strong style="color:#ffd700;">${c.emoji||'📦'} ${c.name}</strong>`).join(' · ')}`;
+        } catch(e) { el.textContent = ''; }
+    }
+
+    async function _loadTicketHistory() {
+        const el = document.getElementById('ticketHistory');
+        if (!el) return;
+        try {
+            const data = await apiCall('/api/tickets/history?limit=10');
+            const rows = data.history || [];
+            if (!rows.length) { el.innerHTML = '<span style="color:#555;">No ticket transactions yet.</span>'; return; }
+            const sourceLabel = { subscription:'🎁 Subscription', purchase:'💳 Purchase', daily:'📅 Daily Award', spend_case:'🎰 Case Batch', spend_game:'🎮 High Roller Game' };
+            el.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px;">${rows.map(r => `
+                <div style="display:flex;justify-content:space-between;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:6px;font-size:12px;">
+                    <span>${sourceLabel[r.source] || r.source}</span>
+                    <span style="color:${r.amount>0?'#4caf50':'#ff6b6b'};font-weight:bold;">${r.amount>0?'+':''}${r.amount} 🎟️</span>
+                    <span style="color:#555;">${new Date(r.created_at).toLocaleDateString()}</span>
+                </div>`).join('')}</div>`;
+        } catch(e) { el.innerHTML = '<span style="color:#555;">Unable to load history.</span>'; }
+    }
+
+    async function subscribeVIP(tier) {
+        try {
+            showToast('🔄 Creating checkout...', 'info');
+            const data = await apiCall('/api/vip/subscribe', {
                 method: 'POST',
-                body: JSON.stringify({ case_id: caseId, quantity: quantity })
+                body: JSON.stringify({ tier })
             });
-            if (data.success) {
-                state.popupItems = data.items;
-                state.popupCaseId = caseId;
-                const hasGold = state.popupItems.some(item => item.rarity === 'Gold' || item.rarity_display === 'Gold');
-                try {
-                    await apiCall('/api/user/streak/update', {
-                        method: 'POST',
-                        body: JSON.stringify({ case_id: caseId, rarity: hasGold ? 'Gold' : 'Blue', is_gold: hasGold })
-                    });
-                } catch (e) {}
-                if (quantity > 1) {
-                    bulkItems = data.items;
-                    bulkIndex = 0;
-                    showBulkReel();
-                } else {
-                    showReelForItem(data.items[0], 0, data.items.length);
-                }
-                await loadTicketBalance();
-                await loadStats();
-                await loadInventory();
-            } else if (data.locked) {
-                document.getElementById('popupBody').innerHTML = `<div class="error" style="font-size:18px;padding:20px;">🔒 ${data.error || 'Premium is locked'}<br><br><button class="btn btn-primary" onclick="closePopup()">Close</button></div>`;
+            if (data.checkout_url) {
+                window.location.href = data.checkout_url;
             } else {
-                document.getElementById('popupBody').innerHTML = `<div class="error" style="font-size:18px;padding:20px;">❌ ${data.error || 'Failed to open premium case'}${data.tickets_have !== undefined ? `<br><br>You have ${data.tickets_have} tickets, need ${data.tickets_needed} more` : ''}<br><br><button class="btn btn-primary" onclick="closePopup()">Close</button>${data.tickets_have !== undefined ? `<button class="btn btn-gold" onclick="closePopup(); openTicketShop();">🛒 Buy More</button>` : ''}</div>`;
+                showToast('❌ Could not create checkout', 'error');
             }
-        } catch (e) {
-            document.getElementById('popupBody').innerHTML = `<div class="error" style="font-size:18px;padding:20px;">❌ Error opening premium case: ${e.message || 'Unknown error'}<br><br><button class="btn btn-primary" onclick="closePopup()">Close</button></div>`;
+        } catch(e) {
+            showToast('❌ Payment setup failed: ' + (e.message || 'Unknown error'), 'error');
         }
     }
+
+    async function cancelVIP() {
+        if (!confirm('Cancel your VIP subscription? You keep access until the end of your current billing period.')) return;
+        try {
+            await apiCall('/api/vip/cancel', { method: 'POST' });
+            showToast('✅ VIP cancelled. Access remains until expiry.', 'success');
+            loadVIPStatus();
+        } catch(e) { showToast('❌ Error cancelling VIP', 'error'); }
+    }
+
+    async function buyTicketPack(packId) {
+        try {
+            showToast('🔄 Creating checkout...', 'info');
+            const data = await apiCall('/api/tickets/buy', {
+                method: 'POST',
+                body: JSON.stringify({ pack_id: packId })
+            });
+            if (data.checkout_url) {
+                window.location.href = data.checkout_url;
+            } else {
+                showToast('❌ Could not create checkout', 'error');
+            }
+        } catch(e) { showToast('❌ Payment failed: ' + (e.message || 'Unknown error'), 'error'); }
+    }
+
+    async function openPremiumBatchNew() {
+        const btn = document.getElementById('batchOpenBtn');
+        const result = document.getElementById('batchResult');
+        if (!state.tickets || state.tickets < 1) {
+            showToast('❌ You need at least 1 ticket', 'error');
+            return;
+        }
+        btn.disabled = true;
+        btn.textContent = '⏳ Opening...';
+        result.innerHTML = '';
+        try {
+            const data = await apiCall('/api/vip/premium-batch-open', { method: 'POST' });
+            if (data.success) {
+                await loadTicketBalance();
+                await loadInventory();
+                await loadStats();
+                // Show items using bulk reel
+                bulkItems = data.items;
+                bulkIndex = 0;
+                showBulkReel();
+                result.innerHTML = `<div style="color:#4caf50;font-size:13px;text-align:center;margin-top:8px;">✅ Opened ${data.items.length} cases! Cost: $${data.total_cost.toFixed(2)} · Tickets remaining: ${state.tickets}</div>`;
+            } else {
+                result.innerHTML = `<div style="color:#ff6b6b;font-size:13px;text-align:center;margin-top:8px;">❌ ${data.error || 'Failed to open'}</div>`;
+            }
+        } catch(e) {
+            result.innerHTML = `<div style="color:#ff6b6b;font-size:13px;text-align:center;margin-top:8px;">❌ ${e.message || 'Error opening cases'}</div>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🎰 Use 1 Ticket — Open 5 Premium Cases';
+        }
+    }
+
+    // Keep old function names as aliases so any other code that calls them doesn't break
+    async function loadPremiumCases() { return loadVIPStatus(); }
+    async function refreshPremium()   { return loadVIPStatus(); }
 
 
     // ============================================
@@ -3039,17 +3679,22 @@ async function loadTradeInventory(rarity) {
                 ${rarity === 'Gold' ? ' (Gold tier progression)' : ''}
             </div>
             <div style="max-height:300px;overflow-y:auto;">
-                ${data.items.map(item => `
+                ${data.items.map(item => {
+                    const cleanItemN = (item.item_name || '').replace(/^[\u{1F300}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}🟦🟪🟥🟨🟩⬛⬜🟫🔥⭐💫👑✨\s]+/gu, '').trim();
+                    const tradeImgSrc = item.image_url
+                        ? item.image_url
+                        : `/api/skin-image?name=${encodeURIComponent(cleanItemN)}&t=${Date.now()}`;
+                    return `
                     <div class="inventory-item">
                         <input type="checkbox" class="checkbox trade-checkbox" value="${item.id}">
-                        <img src="/api/skin-image?name=${encodeURIComponent(item.item_name)}&t=${Date.now()}" 
-                             alt="${item.item_name}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
+                        <img src="${tradeImgSrc}"
+                             alt="${cleanItemN}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
                         <div class="info">
-                            <div class="name rarity-${item.rarity}">${item.is_stattrak ? '🔥 ' : ''}${item.item_name}</div>
+                            <div class="name rarity-${item.rarity}">${item.is_stattrak ? '🔥 ' : ''}${cleanItemN}</div>
                             <div class="details">${item.rarity} - $${item.price.toFixed(2)}</div>
                         </div>
-                    </div>
-                `).join('')}
+                    </div>`;
+                }).join('')}
             </div>
             <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;">
                 <button class="btn btn-sm btn-primary" onclick="autoSelectTradeItems()">🤖 Auto-Fill</button>
@@ -3163,7 +3808,11 @@ async function executeTrade() {
         const color = RARITY_COLORS[item.rarity] || '#888';
         const glow = RARITY_GLOWS[item.rarity] || '0 0 60px rgba(255,255,255,0.1)';
         const emoji = RARITY_EMOJIS[item.rarity] || '🎯';
-        const imgUrl = `/api/skin-image?name=${encodeURIComponent(item.name)}&t=${Date.now()}`;
+        const cleanName = (item.name || '').replace(/^[\u{1F300}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}🟦🟪🟥🟨🟩⬛⬜🟫🔥⭐💫👑✨\s]+/gu, '').trim();
+        const displayLabel = item.display_name || cleanName || item.name;
+        const imgUrl = item.image_url
+            ? item.image_url
+            : `/api/skin-image?name=${encodeURIComponent(cleanName)}&t=${Date.now()}`;
         const overlay = document.getElementById('popupOverlay');
         overlay.classList.add('show');
         document.getElementById('popupBody').innerHTML = `
@@ -3172,15 +3821,15 @@ async function executeTrade() {
                 ${[0,1,2,3,4].map(i => `
                     <div style="width:80px;height:80px;object-fit:contain;background:rgba(0,0,0,0.3);border-radius:8px;padding:8px;transition:all 0.1s;filter:drop-shadow(0 4px 20px rgba(0,0,0,0.5));display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:24px;position:relative;border:2px solid ${color};box-shadow:${glow};">
                         <div style="font-size:28px;line-height:1;">${emoji}</div>
-                        <div style="font-size:8px;color:#888;margin-top:2px;text-align:center;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${i === 2 ? item.name : ALL_WEAPONS[Math.floor(Math.random() * ALL_WEAPONS.length)]}</div>
+                        <div style="font-size:8px;color:#888;margin-top:2px;text-align:center;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${i === 2 ? displayLabel : ALL_WEAPONS[Math.floor(Math.random() * ALL_WEAPONS.length)]}</div>
                     </div>
                 `).join('')}
                 <div style="position:absolute;width:100%;height:100%;top:0;left:0;pointer-events:none;border-radius:12px;background:radial-gradient(ellipse at center, ${color}22, transparent 70%);"></div>
             </div>
             <div style="background:radial-gradient(ellipse at center, ${color}33, transparent 70%);width:200px;height:200px;margin:0 auto 20px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;transition:all 0.5s;">
-                <img src="${imgUrl}" alt="${item.display_name || item.name}" style="width:150px;height:150px;object-fit:contain;border-radius:12px;position:relative;z-index:2;filter:drop-shadow(0 8px 30px rgba(0,0,0,0.5));border:3px solid ${color};box-shadow:${glow};">
+                <img src="${imgUrl}" alt="${displayLabel}" style="width:150px;height:150px;object-fit:contain;border-radius:12px;position:relative;z-index:2;filter:drop-shadow(0 8px 30px rgba(0,0,0,0.5));border:3px solid ${color};box-shadow:${glow};">
             </div>
-            <div class="item-name rarity-${item.rarity}">${item.display_name || item.name}</div>
+            <div class="item-name rarity-${item.rarity}">${displayLabel}</div>
             <div class="item-details">💰 Value: $${item.price.toFixed(2)}</div>
             ${item.is_stattrak ? '<div class="item-details" style="color:#ff6b00;">🔥 StatTrak™</div>' : ''}
             <div class="popup-buttons">
