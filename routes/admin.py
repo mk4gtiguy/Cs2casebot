@@ -359,16 +359,17 @@ async def admin_grant_tickets(
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            if body.amount < 0:
-                # Check sufficient balance for deduction
+            # Atomic: only deduct when tickets won't go negative; no TOCTOU window
+            new_tickets = await conn.fetchval("""
+                UPDATE users SET tickets = tickets + $1
+                WHERE user_id = $2 AND (tickets + $1 >= 0 OR $1 > 0)
+                RETURNING tickets
+            """, body.amount, user_id)
+            if new_tickets is None:
                 current = await conn.fetchval(
                     "SELECT tickets FROM users WHERE user_id=$1", user_id
                 ) or 0
-                if current + body.amount < 0:
-                    raise HTTPException(400, f"User only has {current} tickets")
-            new_tickets = await conn.fetchval("""
-                UPDATE users SET tickets = tickets + $1 WHERE user_id=$2 RETURNING tickets
-            """, body.amount, user_id)
+                raise HTTPException(400, f"User only has {current} tickets")
             await conn.execute("""
                 INSERT INTO ticket_transactions (user_id, amount, source, metadata)
                 VALUES ($1, $2, 'admin', $3)

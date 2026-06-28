@@ -65,6 +65,8 @@ class BattleManager:
     def __init__(self):
         # fee → asyncio.Queue of waiting players
         self.queues:         Dict[float, asyncio.Queue] = {}
+        # user_ids currently waiting in any queue (prevents self-match / double-deduction)
+        self.queued_users:   Set[int]                   = set()
         # battle_id → room state dict
         self.rooms:          Dict[int, Dict]            = {}
         # battle_id → set of active WebSockets
@@ -118,6 +120,8 @@ class BattleManager:
                             continue
                         p1 = await queue.get()
                         p2 = await queue.get()
+                        self.queued_users.discard(p1['user_id'])
+                        self.queued_users.discard(p2['user_id'])
                         # Only proceed if both WS are still alive
                         battle_id = await self._create_pvp_battle(
                             conn, p1, p2, float(fee)
@@ -693,67 +697,72 @@ async def _send_state(ws: WebSocket, battle_id: int, user_id: int):
 async def _handle_open(battle_id: int, user_id: int, case_id: Optional[str]):
     pool = await get_db()
     async with pool.acquire() as conn:
-        part = await conn.fetchrow("""
-            SELECT id, current_round
-            FROM case_battle_participants
-            WHERE battle_id = $1 AND user_id = $2
-        """, battle_id, user_id)
-        if not part:
-            return
+        # FOR UPDATE inside a transaction prevents concurrent opens from both
+        # reading the same current_round and doubling total_value.
+        async with conn.transaction():
+            part = await conn.fetchrow("""
+                SELECT id, current_round
+                FROM case_battle_participants
+                WHERE battle_id = $1 AND user_id = $2
+                FOR UPDATE
+            """, battle_id, user_id)
+            if not part:
+                return
 
-        current_round = part['current_round'] + 1
+            current_round = part['current_round'] + 1
 
-        battle = await conn.fetchrow(
-            "SELECT total_rounds FROM case_battles WHERE id = $1", battle_id
-        )
-        if current_round > battle['total_rounds']:
-            return
+            battle = await conn.fetchrow(
+                "SELECT total_rounds FROM case_battles WHERE id = $1", battle_id
+            )
+            if current_round > battle['total_rounds']:
+                return
 
-        # Idempotency guard
-        exists = await conn.fetchval("""
-            SELECT 1 FROM case_battle_rounds
-            WHERE participant_id = $1 AND round_number = $2
-        """, part['id'], current_round)
-        if exists:
-            return
+            # Idempotency guard
+            exists = await conn.fetchval("""
+                SELECT 1 FROM case_battle_rounds
+                WHERE participant_id = $1 AND round_number = $2
+            """, part['id'], current_round)
+            if exists:
+                return
 
-        if not case_id or case_id not in CASES:
-            case_id = secure_choice(list(CASES.keys()))
+            if not case_id or case_id not in CASES:
+                case_id = secure_choice(list(CASES.keys()))
 
-        item = get_random_item(case_id)
-        if not item:
-            return
+            item = get_random_item(case_id)
+            if not item:
+                return
 
-        # Record round
-        await conn.execute("""
-            INSERT INTO case_battle_rounds
-                (battle_id, participant_id, round_number,
-                 item_name, rarity, value, is_stattrak, float_value)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-            ON CONFLICT (participant_id, round_number) DO NOTHING
-        """, battle_id, part['id'], current_round,
-            item['name'], item['rarity'], item['price'],
-            item.get('is_stattrak', False), item.get('float', 0.0))
+            # Record round
+            await conn.execute("""
+                INSERT INTO case_battle_rounds
+                    (battle_id, participant_id, round_number,
+                     item_name, rarity, value, is_stattrak, float_value)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                ON CONFLICT (participant_id, round_number) DO NOTHING
+            """, battle_id, part['id'], current_round,
+                item['name'], item['rarity'], item['price'],
+                item.get('is_stattrak', False), item.get('float', 0.0))
 
-        # Update participant totals
-        await conn.execute("""
-            UPDATE case_battle_participants
-            SET total_value     = total_value + $1,
-                gold_count      = gold_count + CASE WHEN $2='Gold' THEN 1 ELSE 0 END,
-                best_item_value = GREATEST(best_item_value, $1),
-                current_round   = $3
-            WHERE id = $4
-        """, item['price'], item['rarity'], current_round, part['id'])
+            # Update participant totals
+            await conn.execute("""
+                UPDATE case_battle_participants
+                SET total_value     = total_value + $1,
+                    gold_count      = gold_count + CASE WHEN $2='Gold' THEN 1 ELSE 0 END,
+                    best_item_value = GREATEST(best_item_value, $1),
+                    current_round   = $3
+                WHERE id = $4
+            """, item['price'], item['rarity'], current_round, part['id'])
 
-        # Add item to user's inventory
-        await conn.execute("""
-            INSERT INTO inventory
-                (user_id, item_name, item_type, rarity, price,
-                 condition, is_stattrak, status, float_value)
-            VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7)
-        """, user_id, item['name'], item['rarity'], item['price'],
-            item.get('condition', 'Field-Tested'),
-            item.get('is_stattrak', False), item.get('float', 0.0))
+            # Add item to user's inventory
+            await conn.execute("""
+                INSERT INTO inventory
+                    (user_id, item_name, item_type, rarity, price,
+                     condition, is_stattrak, status, float_value)
+                VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7)
+            """, user_id, item['name'], item['rarity'], item['price'],
+                item.get('condition', 'Field-Tested'),
+                item.get('is_stattrak', False), item.get('float', 0.0))
+        # Transaction committed — lock released; broadcast outside the transaction
 
         user_row = await conn.fetchrow(
             "SELECT username FROM users WHERE user_id = $1", user_id
@@ -827,6 +836,10 @@ async def join_queue(request: Request, req: QueueRequest):
     if not mm_ws:
         raise HTTPException(400, "Matchmaking WebSocket not connected — please refresh")
 
+    if user_id in battle_manager.queued_users:
+        raise HTTPException(400, "Already in matchmaking queue — please wait")
+
+    battle_manager.queued_users.add(user_id)
     queue = battle_manager.get_queue(req.fee)
     await queue.put({
         'user_id':       user_id,

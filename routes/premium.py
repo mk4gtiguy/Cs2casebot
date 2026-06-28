@@ -238,6 +238,13 @@ async def _run_daily_award():
             cfg = VIP_TIERS.get(row['vip_tier'], {})
             daily = cfg.get('daily_tickets', 0)
             if daily > 0:
+                already = await conn.fetchval("""
+                    SELECT 1 FROM ticket_transactions
+                    WHERE user_id = $1 AND source = 'daily'
+                      AND created_at::date = CURRENT_DATE
+                """, row['user_id'])
+                if already:
+                    continue
                 await grant_tickets(
                     row['user_id'], daily, 'daily',
                     {'tier': row['vip_tier']}, conn=conn

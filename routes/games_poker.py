@@ -1122,6 +1122,8 @@ async def vp_deal(req: VPDealRequest, request: Request):
     bet     = clamp_bet(req.amount)
     lock    = _get_vp_lock(user_id)
     async with lock:
+        if _vp_sessions.get(user_id):
+            raise HTTPException(400, "Active Video Poker hand in progress — draw first")
         pool = await get_db()
         async with pool.acquire() as conn:
             async with conn.transaction():
