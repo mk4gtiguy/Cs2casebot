@@ -9,6 +9,7 @@
 import asyncio
 import random
 import math
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from fastapi import APIRouter, Request, HTTPException
@@ -230,8 +231,9 @@ async def mystery_start(req: MysteryStartRequest, request: Request):
         'difficulty': difficulty,
         'grid':       grid,
         'opened':     [],
-        'total_mult': 0.0,   # accumulated multiplier
+        'total_mult': 0.0,
         'active':     True,
+        'created_at': datetime.utcnow(),
     }
 
     return {
@@ -246,118 +248,124 @@ async def mystery_start(req: MysteryStartRequest, request: Request):
 @router.post("/mystery/open")
 async def mystery_open(req: MysteryOpenRequest, request: Request):
     user_id = await require_auth(request)
-    sess    = _mystery_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Mystery Box game — start one first")
+    async with _get_mystery_lock(user_id):
+        sess    = _mystery_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Mystery Box game — start one first")
 
-    box = req.box
-    if box < 0 or box >= len(sess['grid']):
-        raise HTTPException(400, f"Box {box} out of range")
-    if box in sess['opened']:
-        raise HTTPException(400, "Box already opened")
+        box = req.box
+        if box < 0 or box >= len(sess['grid']):
+            raise HTTPException(400, f"Box {box} out of range")
+        if box in sess['opened']:
+            raise HTTPException(400, "Box already opened")
 
-    sess['opened'].append(box)
-    content = sess['grid'][box]
+        sess['opened'].append(box)
+        content = sess['grid'][box]
 
-    if content['type'] == 'bomb':
-        sess['active'] = False
-        _mystery_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            await log_game(conn, user_id, 'mystery_box', sess['bet'], 0, {
-                'difficulty': sess['difficulty'],
-                'boxes_opened': len(sess['opened']),
-                'bomb_hit': box,
-                'total_mult': sess['total_mult'],
-            })
-        return {
-            "success":    True,
-            "type":       "bomb",
-            "box":        box,
-            "skin":       content['skin'],
-            "opened":     sess['opened'],
-            "total_mult": sess['total_mult'],
-            "all_grid":   sess['grid'],   # reveal full grid on bust
-        }
-
-    # Safe — multiplier box
-    sess['total_mult'] = round(sess['total_mult'] + content['value'], 2)
-    pot_win = round(sess['bet'] * max(sess['total_mult'], 0), 2)
-
-    # Check if all safe boxes opened
-    safe_count  = sum(1 for b in sess['grid'] if b['type'] == 'mult')
-    opened_safe = sum(1 for i in sess['opened'] if sess['grid'][i]['type'] == 'mult')
-    all_cleared = (opened_safe >= safe_count)
-
-    if all_cleared:
-        sess['active'] = False
-        _mystery_sessions.pop(user_id, None)
-        win = apply_house(pot_win)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                win = await _add_win(user_id, win, conn)
-                await log_game(conn, user_id, 'mystery_box', sess['bet'], win, {
+        if content['type'] == 'bomb':
+            sess['active'] = False
+            _mystery_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                await log_game(conn, user_id, 'mystery_box', sess['bet'], 0, {
                     'difficulty': sess['difficulty'],
                     'boxes_opened': len(sess['opened']),
+                    'bomb_hit': box,
                     'total_mult': sess['total_mult'],
-                    'cleared': True,
                 })
-        return {
-            "success":    True,
-            "type":       "mult",
-            "box":        box,
-            "value":      content['value'],
-            "skin":       content['skin'],
-            "opened":     sess['opened'],
-            "total_mult": sess['total_mult'],
-            "potential_win": win,
-            "cleared":    True,
-            "auto_win":   win,
-        }
+            return {
+                "success":    True,
+                "type":       "bomb",
+                "box":        box,
+                "skin":       content['skin'],
+                "opened":     sess['opened'],
+                "total_mult": sess['total_mult'],
+                "all_grid":   sess['grid'],
+            }
 
-    return {
-        "success":       True,
-        "type":          "mult",
-        "box":           box,
-        "value":         content['value'],
-        "skin":          content['skin'],
-        "opened":        sess['opened'],
-        "total_mult":    sess['total_mult'],
-        "potential_win": pot_win,
-        "cleared":       False,
-    }
+        # Safe — multiplier box
+        sess['total_mult'] = round(sess['total_mult'] + content['value'], 2)
+        pot_win = round(sess['bet'] * max(sess['total_mult'], 0), 2)
+
+        # Check if all safe boxes opened
+        safe_count  = sum(1 for b in sess['grid'] if b['type'] == 'mult')
+        opened_safe = sum(1 for i in sess['opened'] if sess['grid'][i]['type'] == 'mult')
+        all_cleared = (opened_safe >= safe_count)
+
+        if all_cleared:
+            sess['active'] = False
+            _mystery_sessions.pop(user_id, None)
+            win = apply_house(pot_win)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    win = await _add_win(user_id, win, conn)
+                    await log_game(conn, user_id, 'mystery_box', sess['bet'], win, {
+                        'difficulty': sess['difficulty'],
+                        'boxes_opened': len(sess['opened']),
+                        'total_mult': sess['total_mult'],
+                        'cleared': True,
+                    })
+            return {
+                "success":       True,
+                "type":          "mult",
+                "box":           box,
+                "value":         content['value'],
+                "skin":          content['skin'],
+                "opened":        sess['opened'],
+                "total_mult":    sess['total_mult'],
+                "potential_win": win,
+                "cleared":       True,
+                "auto_win":      win,
+            }
+
+        return {
+            "success":       True,
+            "type":          "mult",
+            "box":           box,
+            "value":         content['value'],
+            "skin":          content['skin'],
+            "opened":        sess['opened'],
+            "total_mult":    sess['total_mult'],
+            "potential_win": pot_win,
+            "cleared":       False,
+        }
 
 @router.post("/mystery/cashout")
 async def mystery_cashout(request: Request):
     user_id = await require_auth(request)
-    sess    = _mystery_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Mystery Box game")
-    if not sess['opened']:
-        raise HTTPException(400, "Open at least one box before cashing out")
-    if sess['total_mult'] <= 0:
-        raise HTTPException(400, "No positive multiplier to cash out")
+    async with _get_mystery_lock(user_id):
+        sess    = _mystery_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Mystery Box game")
+        if not sess['opened']:
+            raise HTTPException(400, "Open at least one box before cashing out")
+        if sess['total_mult'] <= 0:
+            raise HTTPException(400, "No positive multiplier to cash out")
 
-    win  = apply_house(sess['bet'] * sess['total_mult'])
-    sess['active'] = False
-    _mystery_sessions.pop(user_id, None)
+        win        = apply_house(sess['bet'] * sess['total_mult'])
+        bet        = sess['bet']
+        difficulty = sess['difficulty']
+        opened     = list(sess['opened'])
+        total_mult = sess['total_mult']
+        sess['active'] = False
+        _mystery_sessions.pop(user_id, None)
 
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
             win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'mystery_box', sess['bet'], win, {
-                'difficulty': sess['difficulty'],
-                'boxes_opened': len(sess['opened']),
-                'total_mult': sess['total_mult'],
+            await log_game(conn, user_id, 'mystery_box', bet, win, {
+                'difficulty': difficulty,
+                'boxes_opened': len(opened),
+                'total_mult': total_mult,
             })
 
     return {
         "success":    True,
         "win":        win,
-        "total_mult": sess['total_mult'],
-        "opened":     sess['opened'],
+        "total_mult": total_mult,
+        "opened":     opened,
     }
 
 # ============================================================
@@ -494,10 +502,11 @@ async def rr_start(req: RRStartRequest, request: Request):
         'bet':            bet,
         'personality':    personality,
         'bullet_chamber': bullet_chamber,
-        'current_pull':   1,   # starts at chamber 1
+        'current_pull':   1,
         'player_pulls':   0,
         'active':         True,
-        'turn':           'player',   # 'player' | 'bot'
+        'turn':           'player',
+        'created_at':     datetime.utcnow(),
     }
 
     return {
@@ -515,143 +524,147 @@ async def rr_start(req: RRStartRequest, request: Request):
 async def rr_pull(request: Request):
     """Player pulls the trigger for their turn."""
     user_id = await require_auth(request)
-    sess    = _rr_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Russian Roulette game")
-    if sess['turn'] != 'player':
-        raise HTTPException(400, "It's the bot's turn, not yours")
+    async with _get_rr_lock(user_id):
+        sess    = _rr_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Russian Roulette game")
+        if sess['turn'] != 'player':
+            raise HTTPException(400, "It's the bot's turn, not yours")
 
-    pull_num = sess['current_pull']
-    fired    = (pull_num == sess['bullet_chamber'])
+        pull_num = sess['current_pull']
+        fired    = (pull_num == sess['bullet_chamber'])
 
-    if fired:
-        # Player hits the bullet — bust
-        sess['active'] = False
-        _rr_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            await log_game(conn, user_id, 'russian_roulette', sess['bet'], 0, {
-                'personality': sess['personality'],
-                'player_pulls': sess['player_pulls'],
-                'fired_at': pull_num,
-                'bullet_was': sess['bullet_chamber'],
-            })
-        bot = BOT_PERSONALITIES[sess['personality']]
+        if fired:
+            # Player hits the bullet — bust
+            sess['active'] = False
+            _rr_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                await log_game(conn, user_id, 'russian_roulette', sess['bet'], 0, {
+                    'personality': sess['personality'],
+                    'player_pulls': sess['player_pulls'],
+                    'fired_at': pull_num,
+                    'bullet_was': sess['bullet_chamber'],
+                })
+            bot = BOT_PERSONALITIES[sess['personality']]
+            return {
+                "success":      True,
+                "fired":        True,
+                "chamber":      pull_num,
+                "player_pulls": sess['player_pulls'],
+                "taunt":        secure_choice(bot['taunt_bust']),
+            }
+
+        # Player survived — advance
+        sess['player_pulls'] += 1
+        sess['current_pull'] += 1
+        sess['turn']          = 'bot'
+        mult = rr_payout_mult(sess['player_pulls'])
+        pot  = round(sess['bet'] * mult, 2)
+        bot  = BOT_PERSONALITIES[sess['personality']]
+
+        is_bluff   = secure_random() < bot["bluff_chance"]
+        tension    = sess['player_pulls'] >= 2
+        taunt_pool = bot['taunt_tension'] if tension else bot['taunt_safe']
+        taunt      = secure_choice(taunt_pool)
+
         return {
-            "success":      True,
-            "fired":        True,
-            "chamber":      pull_num,
-            "player_pulls": sess['player_pulls'],
-            "taunt":        secure_choice(bot['taunt_bust']),
+            "success":       True,
+            "fired":         False,
+            "chamber":       pull_num,
+            "player_pulls":  sess['player_pulls'],
+            "multiplier":    mult,
+            "potential_win": pot,
+            "turn":          "bot",
+            "bot_bluff":     is_bluff,
+            "taunt":         taunt,
         }
-
-    # Player survived — advance
-    sess['player_pulls'] += 1
-    sess['current_pull'] += 1
-    sess['turn']          = 'bot'
-    mult = rr_payout_mult(sess['player_pulls'])
-    pot  = round(sess['bet'] * mult, 2)
-    bot  = BOT_PERSONALITIES[sess['personality']]
-
-    # Bluff detection — sometimes bot shows a false tell
-    is_bluff = secure_random() < bot["bluff_chance"]
-    tension  = sess['player_pulls'] >= 2
-
-    taunt_pool = bot['taunt_tension'] if tension else bot['taunt_safe']
-    taunt = secure_choice(taunt_pool)
-
-    return {
-        "success":       True,
-        "fired":         False,
-        "chamber":       pull_num,
-        "player_pulls":  sess['player_pulls'],
-        "multiplier":    mult,
-        "potential_win": pot,
-        "turn":          "bot",
-        "bot_bluff":     is_bluff,  # UI can show bot "hesitating" if True
-        "taunt":         taunt,
-    }
 
 @router.post("/russian-roulette/bot-pull")
 async def rr_bot_pull(request: Request):
     """Simulate the bot's pull. Call after player's turn resolves."""
     user_id = await require_auth(request)
-    sess    = _rr_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Russian Roulette game")
-    if sess['turn'] != 'bot':
-        raise HTTPException(400, "It's the player's turn, not the bot's")
+    async with _get_rr_lock(user_id):
+        sess    = _rr_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Russian Roulette game")
+        if sess['turn'] != 'bot':
+            raise HTTPException(400, "It's the player's turn, not the bot's")
 
-    pull_num = sess['current_pull']
-    fired    = (pull_num == sess['bullet_chamber'])
-    bot      = BOT_PERSONALITIES[sess['personality']]
+        pull_num = sess['current_pull']
+        fired    = (pull_num == sess['bullet_chamber'])
+        bot      = BOT_PERSONALITIES[sess['personality']]
 
-    if fired:
-        # Bot hits the bullet — PLAYER WINS
-        sess['active'] = False
-        _rr_sessions.pop(user_id, None)
-        mult = rr_payout_mult(sess['player_pulls'])
-        win  = round(sess['bet'] * mult, 2)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                win = await _add_win(user_id, win, conn)
-                await log_game(conn, user_id, 'russian_roulette', sess['bet'], win, {
-                    'personality': sess['personality'],
-                    'player_pulls': sess['player_pulls'],
-                    'bot_fired_at': pull_num,
-                })
+        if fired:
+            # Bot hits the bullet — PLAYER WINS
+            sess['active'] = False
+            _rr_sessions.pop(user_id, None)
+            mult = rr_payout_mult(sess['player_pulls'])
+            win  = round(sess['bet'] * mult, 2)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    win = await _add_win(user_id, win, conn)
+                    await log_game(conn, user_id, 'russian_roulette', sess['bet'], win, {
+                        'personality': sess['personality'],
+                        'player_pulls': sess['player_pulls'],
+                        'bot_fired_at': pull_num,
+                    })
+            return {
+                "success":      True,
+                "bot_fired":    True,
+                "chamber":      pull_num,
+                "player_pulls": sess['player_pulls'],
+                "multiplier":   mult,
+                "win":          win,
+                "taunt":        secure_choice(bot['taunt_bust']),
+            }
+
+        # Bot survived — back to player
+        sess['current_pull'] += 1
+        sess['turn']          = 'player'
+        mult    = rr_payout_mult(sess['player_pulls'])
+        pot     = round(sess['bet'] * mult, 2)
+        tension = sess['player_pulls'] >= 2
+        taunt   = secure_choice(bot['taunt_tension'] if tension else bot['taunt_safe'])
+
         return {
-            "success":      True,
-            "bot_fired":    True,
-            "chamber":      pull_num,
-            "player_pulls": sess['player_pulls'],
-            "multiplier":   mult,
-            "win":          win,
-            "taunt":        secure_choice(bot['taunt_bust']),
+            "success":       True,
+            "bot_fired":     False,
+            "chamber":       pull_num,
+            "turn":          "player",
+            "multiplier":    mult,
+            "potential_win": pot,
+            "taunt":         taunt,
         }
-
-    # Bot survived — back to player
-    sess['current_pull'] += 1
-    sess['turn']          = 'player'
-    mult = rr_payout_mult(sess['player_pulls'])
-    pot  = round(sess['bet'] * mult, 2)
-    tension = sess['player_pulls'] >= 2
-    taunt   = secure_choice(bot['taunt_tension'] if tension else bot['taunt_safe'])
-
-    return {
-        "success":       True,
-        "bot_fired":     False,
-        "chamber":       pull_num,
-        "turn":          "player",
-        "multiplier":    mult,
-        "potential_win": pot,
-        "taunt":         taunt,
-    }
 
 @router.post("/russian-roulette/cashout")
 async def rr_cashout(request: Request):
     user_id = await require_auth(request)
-    sess    = _rr_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Russian Roulette game")
-    if sess['player_pulls'] == 0:
-        raise HTTPException(400, "Survive at least one pull before cashing out")
-    if sess['turn'] != 'player':
-        raise HTTPException(400, "Wait for the bot's turn to resolve first")
+    async with _get_rr_lock(user_id):
+        sess    = _rr_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Russian Roulette game")
+        if sess['player_pulls'] == 0:
+            raise HTTPException(400, "Survive at least one pull before cashing out")
+        if sess['turn'] != 'player':
+            raise HTTPException(400, "Wait for the bot's turn to resolve first")
 
-    mult = rr_payout_mult(sess['player_pulls'])
-    win  = round(sess['bet'] * mult, 2)
-    sess['active'] = False
-    _rr_sessions.pop(user_id, None)
+        mult         = rr_payout_mult(sess['player_pulls'])
+        win          = round(sess['bet'] * mult, 2)
+        bet          = sess['bet']
+        personality  = sess['personality']
+        player_pulls = sess['player_pulls']
+        sess['active'] = False
+        _rr_sessions.pop(user_id, None)
 
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
             win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'russian_roulette', sess['bet'], win, {
-                'personality': sess['personality'],
-                'player_pulls': sess['player_pulls'],
+            await log_game(conn, user_id, 'russian_roulette', bet, win, {
+                'personality': personality,
+                'player_pulls': player_pulls,
                 'cashout': True,
                 'multiplier': mult,
             })
@@ -660,7 +673,7 @@ async def rr_cashout(request: Request):
         "success":    True,
         "win":        win,
         "multiplier": mult,
-        "pulls":      sess['player_pulls'],
+        "pulls":      player_pulls,
     }
 
 # ============================================================
@@ -934,6 +947,7 @@ async def bj_deal(req: BJStartRequest, request: Request):
                                           {'game': 'blackjack', 'bet': bet}, conn)
                 if not ok:
                     raise HTTPException(400, "High Roller bets require 1 ticket")
+    shoe   = new_bj_shoe()
     p_hand = [shoe.pop(), shoe.pop()]
     d_hand = [shoe.pop(), shoe.pop()]
 
@@ -944,8 +958,8 @@ async def bj_deal(req: BJStartRequest, request: Request):
     session = {
         'bet':         bet,
         'shoe':        shoe,
-        'hands':       [p_hand],   # list of hands (for splits)
-        'bets':        [bet],      # bet per hand
+        'hands':       [p_hand],
+        'bets':        [bet],
         'dealer':      d_hand,
         'active_hand': 0,
         'doubled':     [False],
@@ -953,6 +967,7 @@ async def bj_deal(req: BJStartRequest, request: Request):
         'insurance':   0.0,
         'active':      True,
         'done':        False,
+        'created_at':  datetime.utcnow(),
     }
 
     # Immediate resolution if either has blackjack
@@ -1011,114 +1026,110 @@ async def bj_deal(req: BJStartRequest, request: Request):
 @router.post("/blackjack/action")
 async def bj_action(req: BJActionRequest, request: Request):
     user_id = await require_auth(request)
-    sess    = _bj_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Blackjack game — deal first")
+    async with _get_bj_lock(user_id):
+        sess    = _bj_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Blackjack game — deal first")
 
-    action   = req.action.lower()
-    hand_idx = req.hand_idx
-    shoe     = sess['shoe']
+        action   = req.action.lower()
+        hand_idx = req.hand_idx
+        shoe     = sess['shoe']
 
-    # Validate hand index
-    if hand_idx >= len(sess['hands']):
-        raise HTTPException(400, "Invalid hand index")
+        if hand_idx >= len(sess['hands']):
+            raise HTTPException(400, "Invalid hand index")
 
-    hand = sess['hands'][hand_idx]
-    bet  = sess['bets'][hand_idx]
+        hand = sess['hands'][hand_idx]
+        bet  = sess['bets'][hand_idx]
 
-    # ── INSURANCE ──────────────────────────────────────
-    if action == 'insurance':
-        ins_cost = round(bet / 2, 2)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            if not await deduct_balance(user_id, ins_cost, conn):
-                raise HTTPException(400, "Insufficient balance for insurance")
-        sess['insurance'] = ins_cost
-        return {"success": True, "action": "insurance", "cost": ins_cost}
+        # ── INSURANCE ──────────────────────────────────────
+        if action == 'insurance':
+            ins_cost = round(bet / 2, 2)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                if not await deduct_balance(user_id, ins_cost, conn):
+                    raise HTTPException(400, "Insufficient balance for insurance")
+            sess['insurance'] = ins_cost
+            return {"success": True, "action": "insurance", "cost": ins_cost}
 
-    # ── HIT ────────────────────────────────────────────
-    if action == 'hit':
-        hand.append(shoe.pop())
-        val, soft = bj_hand_value(hand)
-        if val > 21:
-            sess['stood'][hand_idx] = True   # bust = auto-stand
-            return await _check_bj_completion(user_id, sess, hand_idx)
-        return {
-            "success":      True,
-            "action":       "hit",
-            "hand":         hand,
-            "value":        val,
-            "soft":         soft,
-            "bust":         False,
-            "can_double":   False,   # can't double after hit
-        }
+        # ── HIT ────────────────────────────────────────────
+        if action == 'hit':
+            hand.append(shoe.pop())
+            val, soft = bj_hand_value(hand)
+            if val > 21:
+                sess['stood'][hand_idx] = True
+                return await _check_bj_completion(user_id, sess, hand_idx)
+            return {
+                "success":    True,
+                "action":     "hit",
+                "hand":       hand,
+                "value":      val,
+                "soft":       soft,
+                "bust":       False,
+                "can_double": False,
+            }
 
-    # ── STAND ──────────────────────────────────────────
-    if action == 'stand':
-        sess['stood'][hand_idx] = True
-        return await _check_bj_completion(user_id, sess, hand_idx)
-
-    # ── DOUBLE DOWN ────────────────────────────────────
-    if action == 'double':
-        if len(hand) != 2:
-            raise HTTPException(400, "Can only double on first two cards")
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance to double")
-        sess['bets'][hand_idx]    = bet * 2
-        sess['doubled'][hand_idx] = True
-        hand.append(shoe.pop())
-        sess['stood'][hand_idx] = True   # must stand after double
-        return await _check_bj_completion(user_id, sess, hand_idx)
-
-    # ── SPLIT ──────────────────────────────────────────
-    if action == 'split':
-        if len(hand) != 2:
-            raise HTTPException(400, "Can only split on first two cards")
-        if hand[0]['rank'] != hand[1]['rank']:
-            raise HTTPException(400, "Can only split matching ranks")
-        if len(sess['hands']) >= 4:
-            raise HTTPException(400, "Maximum 4 hands after splits")
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance to split")
-
-        splitting_aces = (hand[0]['rank'] == 'A')
-        c1, c2 = hand[0], hand[1]
-        # Give each split hand one new card
-        new_card_1 = shoe.pop()
-        new_card_2 = shoe.pop()
-        sess['hands'][hand_idx] = [c1, new_card_1]
-        sess['hands'].append([c2, new_card_2])
-        sess['bets'].append(bet)
-        sess['doubled'].append(False)
-
-        if splitting_aces:
-            # Standard rule: split aces get exactly one card each, then auto-stand
-            sess['stood'].append(True)   # new hand auto-stands
-            sess['stood'][hand_idx] = True  # current hand also auto-stands
-        else:
-            sess['stood'].append(False)
-            # Current hand index is NOT stood yet — player continues on it
-
-        vals = [bj_hand_value(h)[0] for h in sess['hands']]
-
-        if splitting_aces:
-            # Both hands stood — go straight to completion
+        # ── STAND ──────────────────────────────────────────
+        if action == 'stand':
+            sess['stood'][hand_idx] = True
             return await _check_bj_completion(user_id, sess, hand_idx)
 
-        return {
-            "success":    True,
-            "action":     "split",
-            "hands":      sess['hands'],
-            "values":     vals,
-            "hand_count": len(sess['hands']),
-            "active_hand": hand_idx,
-        }
+        # ── DOUBLE DOWN ────────────────────────────────────
+        if action == 'double':
+            if len(hand) != 2:
+                raise HTTPException(400, "Can only double on first two cards")
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance to double")
+            sess['bets'][hand_idx]    = bet * 2
+            sess['doubled'][hand_idx] = True
+            hand.append(shoe.pop())
+            sess['stood'][hand_idx] = True
+            return await _check_bj_completion(user_id, sess, hand_idx)
 
-    raise HTTPException(400, f"Unknown action: {action}")
+        # ── SPLIT ──────────────────────────────────────────
+        if action == 'split':
+            if len(hand) != 2:
+                raise HTTPException(400, "Can only split on first two cards")
+            if hand[0]['rank'] != hand[1]['rank']:
+                raise HTTPException(400, "Can only split matching ranks")
+            if len(sess['hands']) >= 4:
+                raise HTTPException(400, "Maximum 4 hands after splits")
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance to split")
+
+            splitting_aces = (hand[0]['rank'] == 'A')
+            c1, c2 = hand[0], hand[1]
+            new_card_1 = shoe.pop()
+            new_card_2 = shoe.pop()
+            sess['hands'][hand_idx] = [c1, new_card_1]
+            sess['hands'].append([c2, new_card_2])
+            sess['bets'].append(bet)
+            sess['doubled'].append(False)
+
+            if splitting_aces:
+                sess['stood'].append(True)
+                sess['stood'][hand_idx] = True
+            else:
+                sess['stood'].append(False)
+
+            vals = [bj_hand_value(h)[0] for h in sess['hands']]
+
+            if splitting_aces:
+                return await _check_bj_completion(user_id, sess, hand_idx)
+
+            return {
+                "success":     True,
+                "action":      "split",
+                "hands":       sess['hands'],
+                "values":      vals,
+                "hand_count":  len(sess['hands']),
+                "active_hand": hand_idx,
+            }
+
+        raise HTTPException(400, f"Unknown action: {action}")
 
 
 async def _check_bj_completion(user_id: int, sess: Dict, current_hand: int) -> Dict:

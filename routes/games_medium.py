@@ -8,6 +8,7 @@
 import asyncio
 import random
 import math
+from datetime import datetime
 from typing import Dict, List, Optional, Any
 
 from fastapi import APIRouter, Request, HTTPException
@@ -121,11 +122,12 @@ async def mines_start(req: MinesStartRequest, request: Request):
     # Place mines randomly — hidden from player
     positions = secure_shuffle(list(range(MINES_GRID)))[:mines]
     _mine_sessions[user_id] = {
-        'bet':       bet,
-        'mines':     mines,
-        'positions': positions,
-        'revealed':  [],
-        'active':    True,
+        'bet':        bet,
+        'mines':      mines,
+        'positions':  positions,
+        'revealed':   [],
+        'active':     True,
+        'created_at': datetime.utcnow(),
     }
 
     return {
@@ -385,6 +387,7 @@ async def tower_start(req: TowerStartRequest, request: Request):
         'layout':     floors_layout,
         'floor':      0,
         'active':     True,
+        'created_at': datetime.utcnow(),
     }
 
     return {
@@ -400,107 +403,112 @@ async def tower_start(req: TowerStartRequest, request: Request):
 @router.post("/tower/pick")
 async def tower_pick(req: TowerPickRequest, request: Request):
     user_id = await require_auth(request)
-    sess    = _tower_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Tower game — start one first")
+    async with _get_tower_lock(user_id):
+        sess    = _tower_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Tower game — start one first")
 
-    cfg   = sess['cfg']
-    box   = req.box
-    if box < 0 or box >= cfg['boxes']:
-        raise HTTPException(400, f"Box must be 0–{cfg['boxes'] - 1}")
+        cfg   = sess['cfg']
+        box   = req.box
+        if box < 0 or box >= cfg['boxes']:
+            raise HTTPException(400, f"Box must be 0–{cfg['boxes'] - 1}")
 
-    floor_idx    = sess['floor']
-    bomb_slots   = sess['layout'][floor_idx]
-    hit_bomb     = box in bomb_slots
+        floor_idx    = sess['floor']
+        bomb_slots   = sess['layout'][floor_idx]
+        hit_bomb     = box in bomb_slots
 
-    if hit_bomb:
-        sess['active'] = False
-        _tower_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            await log_game(conn, user_id, 'tower', sess['bet'], 0, {
-                'difficulty': sess['difficulty'],
-                'floors_cleared': floor_idx,
-                'bust_floor': floor_idx,
-            })
-        return {
-            "success":      True,
-            "hit_bomb":     True,
-            "box":          box,
-            "bomb_slots":   bomb_slots,
-            "floor":        floor_idx,
-            "floors_cleared": floor_idx,
-        }
-
-    # Safe — advance floor
-    sess['floor'] += 1
-    new_floor = sess['floor']
-    mult      = tower_multiplier(new_floor, cfg['boxes'], cfg['bombs'])
-    pot_win   = round(sess['bet'] * mult, 2)
-    at_top    = (new_floor >= cfg['floors'])
-
-    if at_top:
-        # Auto-cashout at top
-        sess['active'] = False
-        _tower_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                pot_win = await _add_win(user_id, pot_win, conn)
-                await log_game(conn, user_id, 'tower', sess['bet'], pot_win, {
+        if hit_bomb:
+            sess['active'] = False
+            _tower_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                await log_game(conn, user_id, 'tower', sess['bet'], 0, {
                     'difficulty': sess['difficulty'],
-                    'floors_cleared': new_floor,
-                    'max_floor': True,
+                    'floors_cleared': floor_idx,
+                    'bust_floor': floor_idx,
                 })
-        return {
-            "success":        True,
-            "hit_bomb":       False,
-            "box":            box,
-            "bomb_slots":     bomb_slots,
-            "floor":          new_floor,
-            "multiplier":     mult,
-            "potential_win":  pot_win,
-            "at_top":         True,
-            "auto_win":       pot_win,
-        }
+            return {
+                "success":      True,
+                "hit_bomb":     True,
+                "box":          box,
+                "bomb_slots":   bomb_slots,
+                "floor":        floor_idx,
+                "floors_cleared": floor_idx,
+            }
 
-    return {
-        "success":       True,
-        "hit_bomb":      False,
-        "box":           box,
-        "bomb_slots":    bomb_slots,
-        "floor":         new_floor,
-        "multiplier":    mult,
-        "potential_win": pot_win,
-        "at_top":        False,
-    }
+        # Safe — advance floor
+        sess['floor'] += 1
+        new_floor = sess['floor']
+        mult      = tower_multiplier(new_floor, cfg['boxes'], cfg['bombs'])
+        pot_win   = round(sess['bet'] * mult, 2)
+        at_top    = (new_floor >= cfg['floors'])
+
+        if at_top:
+            # Auto-cashout at top
+            sess['active'] = False
+            _tower_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    pot_win = await _add_win(user_id, pot_win, conn)
+                    await log_game(conn, user_id, 'tower', sess['bet'], pot_win, {
+                        'difficulty': sess['difficulty'],
+                        'floors_cleared': new_floor,
+                        'max_floor': True,
+                    })
+            return {
+                "success":        True,
+                "hit_bomb":       False,
+                "box":            box,
+                "bomb_slots":     bomb_slots,
+                "floor":          new_floor,
+                "multiplier":     mult,
+                "potential_win":  pot_win,
+                "at_top":         True,
+                "auto_win":       pot_win,
+            }
+
+        return {
+            "success":       True,
+            "hit_bomb":      False,
+            "box":           box,
+            "bomb_slots":    bomb_slots,
+            "floor":         new_floor,
+            "multiplier":    mult,
+            "potential_win": pot_win,
+            "at_top":        False,
+        }
 
 @router.post("/tower/cashout")
 async def tower_cashout(request: Request):
     user_id = await require_auth(request)
-    sess    = _tower_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Tower game")
-    if sess['floor'] == 0:
-        raise HTTPException(400, "Clear at least one floor before cashing out")
+    async with _get_tower_lock(user_id):
+        sess    = _tower_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Tower game")
+        if sess['floor'] == 0:
+            raise HTTPException(400, "Clear at least one floor before cashing out")
 
-    cfg   = sess['cfg']
-    mult  = tower_multiplier(sess['floor'], cfg['boxes'], cfg['bombs'])
-    win   = round(sess['bet'] * mult, 2)
-    sess['active'] = False
-    _tower_sessions.pop(user_id, None)
+        cfg    = sess['cfg']
+        mult   = tower_multiplier(sess['floor'], cfg['boxes'], cfg['bombs'])
+        win    = round(sess['bet'] * mult, 2)
+        bet    = sess['bet']
+        diff   = sess['difficulty']
+        floors = sess['floor']
+        sess['active'] = False
+        _tower_sessions.pop(user_id, None)
 
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
             win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'tower', sess['bet'], win, {
-                'difficulty': sess['difficulty'],
-                'floors_cleared': sess['floor'],
+            await log_game(conn, user_id, 'tower', bet, win, {
+                'difficulty': diff,
+                'floors_cleared': floors,
                 'multiplier': mult,
             })
 
-    return {"success": True, "win": win, "multiplier": mult, "floors": sess['floor']}
+    return {"success": True, "win": win, "multiplier": mult, "floors": floors}
 
 # ============================================================
 # ══════════════════════════════════════════════════════════
@@ -564,6 +572,7 @@ async def shotgun_start(req: ShotgunStartRequest, request: Request):
         'loaded_pos': loaded_pos,
         'pulled':     0,
         'active':     True,
+        'created_at': datetime.utcnow(),
     }
 
     return {
@@ -577,96 +586,101 @@ async def shotgun_start(req: ShotgunStartRequest, request: Request):
 @router.post("/shotgun/pull")
 async def shotgun_pull(request: Request):
     user_id = await require_auth(request)
-    sess    = _shotgun_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Shotgun game — start one first")
+    async with _get_shotgun_lock(user_id):
+        sess    = _shotgun_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Shotgun game — start one first")
 
-    pull_num    = sess['pulled']
-    is_loaded   = (pull_num == sess['loaded_pos'])
+        pull_num    = sess['pulled']
+        is_loaded   = (pull_num == sess['loaded_pos'])
 
-    if is_loaded:
-        sess['active'] = False
-        _shotgun_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            await log_game(conn, user_id, 'shotgun', sess['bet'], 0, {
-                'chambers': sess['chambers'],
-                'survived': pull_num,
-                'fired_at': pull_num,
-            })
-        return {
-            "success":   True,
-            "fired":     True,
-            "chamber":   pull_num,
-            "survived":  pull_num,
-            "loaded_at": sess['loaded_pos'],
-        }
-
-    # Survived
-    sess['pulled'] += 1
-    mult     = shotgun_multiplier(sess['chambers'], SHOTGUN_LOADED, sess['pulled'])
-    pot_win  = round(sess['bet'] * mult, 2)
-    last_safe = (sess['pulled'] >= sess['chambers'] - SHOTGUN_LOADED)
-
-    if last_safe:
-        # All safe chambers survived — auto cashout
-        sess['active'] = False
-        _shotgun_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                pot_win = await _add_win(user_id, pot_win, conn)
-                await log_game(conn, user_id, 'shotgun', sess['bet'], pot_win, {
+        if is_loaded:
+            sess['active'] = False
+            _shotgun_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                await log_game(conn, user_id, 'shotgun', sess['bet'], 0, {
                     'chambers': sess['chambers'],
-                    'survived': sess['pulled'],
-                    'cleared': True,
+                    'survived': pull_num,
+                    'fired_at': pull_num,
                 })
-        return {
-            "success":      True,
-            "fired":        False,
-            "chamber":      pull_num,
-            "survived":     sess['pulled'],
-            "multiplier":   mult,
-            "potential_win": pot_win,
-            "cleared":      True,
-            "auto_win":     pot_win,
-        }
+            return {
+                "success":   True,
+                "fired":     True,
+                "chamber":   pull_num,
+                "survived":  pull_num,
+                "loaded_at": sess['loaded_pos'],
+            }
 
-    return {
-        "success":       True,
-        "fired":         False,
-        "chamber":       pull_num,
-        "survived":      sess['pulled'],
-        "multiplier":    mult,
-        "potential_win": pot_win,
-        "cleared":       False,
-    }
+        # Survived
+        sess['pulled'] += 1
+        mult      = shotgun_multiplier(sess['chambers'], SHOTGUN_LOADED, sess['pulled'])
+        pot_win   = round(sess['bet'] * mult, 2)
+        last_safe = (sess['pulled'] >= sess['chambers'] - SHOTGUN_LOADED)
+
+        if last_safe:
+            # All safe chambers survived — auto cashout
+            sess['active'] = False
+            _shotgun_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    pot_win = await _add_win(user_id, pot_win, conn)
+                    await log_game(conn, user_id, 'shotgun', sess['bet'], pot_win, {
+                        'chambers': sess['chambers'],
+                        'survived': sess['pulled'],
+                        'cleared': True,
+                    })
+            return {
+                "success":       True,
+                "fired":         False,
+                "chamber":       pull_num,
+                "survived":      sess['pulled'],
+                "multiplier":    mult,
+                "potential_win": pot_win,
+                "cleared":       True,
+                "auto_win":      pot_win,
+            }
+
+        return {
+            "success":       True,
+            "fired":         False,
+            "chamber":       pull_num,
+            "survived":      sess['pulled'],
+            "multiplier":    mult,
+            "potential_win": pot_win,
+            "cleared":       False,
+        }
 
 @router.post("/shotgun/cashout")
 async def shotgun_cashout(request: Request):
     user_id = await require_auth(request)
-    sess    = _shotgun_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Shotgun game")
-    if sess['pulled'] == 0:
-        raise HTTPException(400, "Pull at least once before cashing out")
+    async with _get_shotgun_lock(user_id):
+        sess    = _shotgun_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Shotgun game")
+        if sess['pulled'] == 0:
+            raise HTTPException(400, "Pull at least once before cashing out")
 
-    mult = shotgun_multiplier(sess['chambers'], SHOTGUN_LOADED, sess['pulled'])
-    win  = round(sess['bet'] * mult, 2)
-    sess['active'] = False
-    _shotgun_sessions.pop(user_id, None)
+        mult     = shotgun_multiplier(sess['chambers'], SHOTGUN_LOADED, sess['pulled'])
+        win      = round(sess['bet'] * mult, 2)
+        bet      = sess['bet']
+        chambers = sess['chambers']
+        survived = sess['pulled']
+        sess['active'] = False
+        _shotgun_sessions.pop(user_id, None)
 
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
             win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'shotgun', sess['bet'], win, {
-                'chambers': sess['chambers'],
-                'survived': sess['pulled'],
+            await log_game(conn, user_id, 'shotgun', bet, win, {
+                'chambers': chambers,
+                'survived': survived,
                 'multiplier': mult,
             })
 
-    return {"success": True, "win": win, "multiplier": mult, "survived": sess['pulled']}
+    return {"success": True, "win": win, "multiplier": mult, "survived": survived}
 
 # ============================================================
 # ══════════════════════════════════════════════════════════
@@ -722,10 +736,11 @@ async def ladder_start(req: LadderStartRequest, request: Request):
                 raise HTTPException(400, "Insufficient balance")
 
     _ladder_sessions[user_id] = {
-        'bet':    bet,
-        'rung':   0,       # current rung (0 = ground)
-        'mult':   1.0,     # accumulated multiplier
-        'active': True,
+        'bet':        bet,
+        'rung':       0,
+        'mult':       1.0,
+        'active':     True,
+        'created_at': datetime.utcnow(),
     }
 
     return {
@@ -739,100 +754,105 @@ async def ladder_start(req: LadderStartRequest, request: Request):
 @router.post("/ladder/climb")
 async def ladder_climb(request: Request):
     user_id = await require_auth(request)
-    sess    = _ladder_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Ladder Climb game — start one first")
+    async with _get_ladder_lock(user_id):
+        sess    = _ladder_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Ladder Climb game — start one first")
 
-    rung_idx = sess['rung']
-    if rung_idx >= len(LADDER_RUNGS):
-        raise HTTPException(400, "Already at the top")
+        rung_idx = sess['rung']
+        if rung_idx >= len(LADDER_RUNGS):
+            raise HTTPException(400, "Already at the top")
 
-    fail_chance, rung_mult = LADDER_RUNGS[rung_idx]
-    failed = secure_random() < fail_chance
+        fail_chance, rung_mult = LADDER_RUNGS[rung_idx]
+        failed = secure_random() < fail_chance
 
-    if failed:
-        sess['active'] = False
-        _ladder_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            await log_game(conn, user_id, 'ladder', sess['bet'], 0, {
-                'rungs_climbed': rung_idx,
-                'bust_rung': rung_idx,
-            })
-        return {
-            "success":       True,
-            "climbed":       False,
-            "rung":          rung_idx,
-            "rungs_climbed": rung_idx,
-        }
-
-    # Climbed safely
-    sess['mult']  = round(apply_house(sess['mult'] * rung_mult), 4)
-    sess['rung'] += 1
-    new_rung      = sess['rung']
-    pot_win       = round(sess['bet'] * sess['mult'], 2)
-    at_top        = (new_rung >= len(LADDER_RUNGS))
-
-    if at_top:
-        # Auto-cashout at summit
-        sess['active'] = False
-        _ladder_sessions.pop(user_id, None)
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                pot_win = await _add_win(user_id, pot_win, conn)
-                await log_game(conn, user_id, 'ladder', sess['bet'], pot_win, {
-                    'rungs_climbed': new_rung, 'summit': True,
-                    'multiplier': sess['mult'],
+        if failed:
+            sess['active'] = False
+            _ladder_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                await log_game(conn, user_id, 'ladder', sess['bet'], 0, {
+                    'rungs_climbed': rung_idx,
+                    'bust_rung': rung_idx,
                 })
+            return {
+                "success":       True,
+                "climbed":       False,
+                "rung":          rung_idx,
+                "rungs_climbed": rung_idx,
+            }
+
+        # Climbed safely
+        sess['mult']  = round(apply_house(sess['mult'] * rung_mult), 4)
+        sess['rung'] += 1
+        new_rung      = sess['rung']
+        pot_win       = round(sess['bet'] * sess['mult'], 2)
+        at_top        = (new_rung >= len(LADDER_RUNGS))
+
+        if at_top:
+            # Auto-cashout at summit
+            sess['active'] = False
+            _ladder_sessions.pop(user_id, None)
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    pot_win = await _add_win(user_id, pot_win, conn)
+                    await log_game(conn, user_id, 'ladder', sess['bet'], pot_win, {
+                        'rungs_climbed': new_rung, 'summit': True,
+                        'multiplier': sess['mult'],
+                    })
+            return {
+                "success":       True,
+                "climbed":       True,
+                "rung":          new_rung,
+                "multiplier":    sess['mult'],
+                "potential_win": pot_win,
+                "at_top":        True,
+                "auto_win":      pot_win,
+            }
+
+        next_rung = LADDER_RUNGS[new_rung] if new_rung < len(LADDER_RUNGS) else None
         return {
             "success":       True,
             "climbed":       True,
             "rung":          new_rung,
             "multiplier":    sess['mult'],
             "potential_win": pot_win,
-            "at_top":        True,
-            "auto_win":      pot_win,
+            "at_top":        False,
+            "next_rung":     next_rung,
         }
-
-    next_rung = LADDER_RUNGS[new_rung] if new_rung < len(LADDER_RUNGS) else None
-    return {
-        "success":       True,
-        "climbed":       True,
-        "rung":          new_rung,
-        "multiplier":    sess['mult'],
-        "potential_win": pot_win,
-        "at_top":        False,
-        "next_rung":     next_rung,
-    }
 
 @router.post("/ladder/cashout")
 async def ladder_cashout(request: Request):
     user_id = await require_auth(request)
-    sess    = _ladder_sessions.get(user_id)
-    if not sess or not sess['active']:
-        raise HTTPException(400, "No active Ladder Climb game")
-    if sess['rung'] == 0:
-        raise HTTPException(400, "Climb at least one rung before cashing out")
+    async with _get_ladder_lock(user_id):
+        sess    = _ladder_sessions.get(user_id)
+        if not sess or not sess['active']:
+            raise HTTPException(400, "No active Ladder Climb game")
+        if sess['rung'] == 0:
+            raise HTTPException(400, "Climb at least one rung before cashing out")
 
-    win  = round(sess['bet'] * sess['mult'], 2)
-    sess['active'] = False
-    _ladder_sessions.pop(user_id, None)
+        win  = round(sess['bet'] * sess['mult'], 2)
+        bet  = sess['bet']
+        mult = sess['mult']
+        rung = sess['rung']
+        sess['active'] = False
+        _ladder_sessions.pop(user_id, None)
 
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
             win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'ladder', sess['bet'], win, {
-                'rungs_climbed': sess['rung'],
-                'multiplier':    sess['mult'],
+            await log_game(conn, user_id, 'ladder', bet, win, {
+                'rungs_climbed': rung,
+                'multiplier':    mult,
             })
 
     return {
         "success":    True,
         "win":        win,
-        "multiplier": sess['mult'],
-        "rungs":      sess['rung'],
+        "multiplier": mult,
+        "rungs":      rung,
     }
 
 # ============================================================

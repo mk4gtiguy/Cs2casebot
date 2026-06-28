@@ -11,6 +11,7 @@
 import asyncio
 import random
 import time
+from datetime import datetime
 from itertools import combinations
 from typing import Dict, Set, Optional, List, Tuple, Any
 
@@ -1107,7 +1108,7 @@ async def vp_deal(req: VPDealRequest, request: Request):
 
         deck  = new_deck()
         hand  = [deck.pop() for _ in range(5)]
-        _vp_sessions[user_id] = {'bet': bet, 'deck': deck, 'hand': hand}
+        _vp_sessions[user_id] = {'bet': bet, 'deck': deck, 'hand': hand, 'created_at': datetime.utcnow()}
 
         return {
             "success": True,
