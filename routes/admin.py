@@ -1051,6 +1051,7 @@ async def admin_toggle_premium(
             await set_setting(conn, "premium_enabled", new_val)
             await audit(conn, admin_id, "toggle_premium",
                        details={"enabled": new_val})
+    invalidate_settings_cache()   # Keep cache consistent after toggle
     return {"success": True, "premium_enabled": new_val == "true"}
 
 # ============================================================

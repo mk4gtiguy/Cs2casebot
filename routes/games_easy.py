@@ -300,30 +300,37 @@ async def jackpot_slots_spin(req: JackpotSlotsRequest, request: Request):
     reels = [spin_jackpot_reel() for _ in range(5)]
     mult, label, is_jackpot = evaluate_jackpot_5reel(reels)
 
+    # Snapshot the pool value before any DB work. The in-memory pool is only
+    # updated AFTER a successful DB commit to prevent jackpot evaporation if
+    # the credit transaction rolls back.
+    async with _jackpot_lock:
+        jackpot_snapshot = _jackpot_pool
+
+    jackpot_won = 0.0
+    win = 0.0
+    if is_jackpot:
+        jackpot_won = jackpot_snapshot
+        win = apply_house(jackpot_won)
+    elif mult:
+        win = apply_house(bet * mult)
+
     async with (await get_db()).acquire() as conn:
         async with conn.transaction():
             await ensure_user_exists(user_id, conn=conn)
             if not await deduct_balance(user_id, bet, conn):
                 raise HTTPException(400, "Insufficient balance")
 
-            async with _jackpot_lock:
-                _jackpot_pool = round(_jackpot_pool + bet * JACKPOT_FEED_RATE, 2)
-
-            win = 0.0
-            jackpot_won = 0.0
-            if is_jackpot:
-                async with _jackpot_lock:
-                    jackpot_won = _jackpot_pool
-                    _jackpot_pool = _jackpot_seed
-                win = apply_house(jackpot_won)
-            elif mult:
-                win = apply_house(bet * mult)
-
             if win:
                 win = await _add_win(user_id, win, conn)
 
             await log_game(conn, user_id, 'slots_jackpot', bet, win,
                            {'reels': reels, 'label': label, 'jackpot': is_jackpot})
+
+    # DB committed — now it is safe to update the in-memory pool.
+    async with _jackpot_lock:
+        _jackpot_pool = round(_jackpot_pool + bet * JACKPOT_FEED_RATE, 2)
+        if is_jackpot:
+            _jackpot_pool = _jackpot_seed
 
     return {
         "success":      True,
@@ -1024,6 +1031,8 @@ class CrashRoom:
         p = self.players.get(user_id)
         if not p or p['cashed_out']:
             return
+        # Mark immediately to block a concurrent cashout attempt. If the DB
+        # credit later fails we roll this back so the player can retry.
         p['cashed_out'] = True
         p['cashout_at'] = at_mult
         win = 0.0
@@ -1031,13 +1040,18 @@ class CrashRoom:
         if not p['is_bot']:
             win = apply_house(p['bet'] * at_mult)
             pool = await get_db()
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    win = await _add_win(user_id, win, conn)
-                    await log_game(conn, user_id, 'crash', p['bet'], win,
-                                   {'room': self.room_id,
-                                    'crash_at': self.crash_at,
-                                    'cashed_out_at': at_mult})
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        win = await _add_win(user_id, win, conn)
+                        await log_game(conn, user_id, 'crash', p['bet'], win,
+                                       {'room': self.room_id,
+                                        'crash_at': self.crash_at,
+                                        'cashed_out_at': at_mult})
+            except Exception as e:
+                logger.error(f"Crash cashout DB error user {user_id}: {e}")
+                p['cashed_out'] = False   # Allow player to retry
+                return 0.0
 
         await self.broadcast({
             'type':       'cashout',

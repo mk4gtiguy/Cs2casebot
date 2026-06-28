@@ -317,6 +317,7 @@ class HoldemRoom:
         self.current_bet = 0.0
         self.dealer_seat = 0
         self.action_seat = 0
+        self.action_uid  = None        # user_id of the player whose turn it is
         self.round_num   = 0
         self.task:       Optional[asyncio.Task] = None
         self.created_at  = time.time()
@@ -572,6 +573,7 @@ class HoldemRoom:
                 # Human player — set flag and wait
                 self.waiting_for_human = True
                 self.action_seat       = seat
+                self.action_uid        = uid
                 await self.send_to(uid, {
                     'type':       'your_turn',
                     'call_amount': call_amt,
@@ -636,6 +638,8 @@ class HoldemRoom:
         """Called by WebSocket handler when human submits action."""
         if not self.waiting_for_human:
             return
+        if uid != self.action_uid:
+            return  # Not this player's turn — reject the action
         player = self.players.get(uid)
         if not player or player.status != 'active':
             return
@@ -914,6 +918,11 @@ async def holdem_leave(req: HoldemLeaveRequest, request: Request):
             pool = await get_db()
             async with pool.acquire() as conn:
                 await add_balance(user_id, remaining, conn)
+
+        # If the game loop is waiting for this player's action, signal it to
+        # move on immediately rather than waiting for the 30-second timeout.
+        if room.waiting_for_human and room.action_uid == user_id:
+            room.waiting_for_human = False
 
         del room.players[user_id]
         room.seats = {s: u for s, u in room.seats.items() if u != user_id}
