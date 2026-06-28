@@ -898,24 +898,25 @@ async def holdem_leave(req: HoldemLeaveRequest, request: Request):
     """Cash out and leave the table."""
     user_id   = await require_auth(request)
     room_code = req.room_code
-    room      = _holdem_rooms.get(room_code)
 
-    if not room:
-        raise HTTPException(404, "Room not found")
+    async with _holdem_lock:
+        room = _holdem_rooms.get(room_code)
 
-    player = room.players.get(user_id)
-    if not player:
-        raise HTTPException(400, "Not at this table")
+        if not room:
+            raise HTTPException(404, "Room not found")
 
-    # Return remaining chips
-    remaining = player.chips
-    if remaining > 0:
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            await add_balance(user_id, remaining, conn)
+        player = room.players.get(user_id)
+        if not player:
+            raise HTTPException(400, "Not at this table")
 
-    del room.players[user_id]
-    room.seats = {s: u for s, u in room.seats.items() if u != user_id}
+        remaining = player.chips
+        if remaining > 0:
+            pool = await get_db()
+            async with pool.acquire() as conn:
+                await add_balance(user_id, remaining, conn)
+
+        del room.players[user_id]
+        room.seats = {s: u for s, u in room.seats.items() if u != user_id}
 
     await room.broadcast({
         'type':     'player_left',

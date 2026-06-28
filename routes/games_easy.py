@@ -1080,10 +1080,11 @@ async def crash_bet(req: CrashBetRequest, request: Request):
     bet     = clamp_bet(req.amount)
 
     async with _crash_room_lock:
-        room = _get_or_create_room()
+        for existing_room in _crash_rooms.values():
+            if user_id in existing_room.players and existing_room.phase in ('betting', 'running'):
+                raise HTTPException(400, "Already in an active round")
 
-        if user_id in room.players:
-            raise HTTPException(400, "Already in this round")
+        room = _get_or_create_room()
 
         pool = await get_db()
         async with pool.acquire() as conn:
