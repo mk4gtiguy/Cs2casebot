@@ -132,17 +132,28 @@ class BattleManager:
         try:
             rounds        = p1.get('rounds', 3)
             win_condition = p1.get('win_condition', 'total_value')
-            battle_id = await conn.fetchval("""
-                INSERT INTO case_battles
-                    (battle_type, status, entry_fee, total_rounds, win_condition)
-                VALUES ('pvp', 'waiting', $1, $2, $3)
-                RETURNING id
-            """, fee, rounds, win_condition)
 
-            await conn.executemany("""
-                INSERT INTO case_battle_participants (battle_id, user_id)
-                VALUES ($1, $2)
-            """, [(battle_id, p1['user_id']), (battle_id, p2['user_id'])])
+            async with conn.transaction():
+                for player in (p1, p2):
+                    deducted = await conn.fetchval("""
+                        UPDATE users SET balance = balance - $1
+                        WHERE user_id = $2 AND balance >= $1
+                        RETURNING user_id
+                    """, fee, player['user_id'])
+                    if not deducted:
+                        return None
+
+                battle_id = await conn.fetchval("""
+                    INSERT INTO case_battles
+                        (battle_type, status, entry_fee, total_rounds, win_condition)
+                    VALUES ('pvp', 'waiting', $1, $2, $3)
+                    RETURNING id
+                """, fee, rounds, win_condition)
+
+                await conn.executemany("""
+                    INSERT INTO case_battle_participants (battle_id, user_id)
+                    VALUES ($1, $2)
+                """, [(battle_id, p1['user_id']), (battle_id, p2['user_id'])])
 
             self.rooms[battle_id] = {
                 'status':       'waiting',
@@ -408,8 +419,11 @@ class BattleManager:
         )
         win_condition = battle['win_condition']
 
+        col_map = {'best_item': 'best_item_value'}
+        primary_col = col_map.get(win_condition, win_condition)
+
         def sort_key(p):
-            primary   = float(p[win_condition])
+            primary   = float(p[primary_col])
             secondary = float(p['gold_count'] if win_condition != 'gold_count' else p['total_value'])
             return (primary, secondary)
 
@@ -533,11 +547,12 @@ async def ws_matchmaking(websocket: WebSocket):
     await websocket.accept()
 
     token = websocket.cookies.get("session_token")
-    if not token or token not in shared.sessions:
+    session = shared.get_session(token) if token else None
+    if not session:
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    user_id = shared.sessions[token]["user_id"]
+    user_id = session["user_id"]
     battle_manager.matchmaking_ws[user_id] = websocket
     logger.info(f"Matchmaking WS connected: user {user_id}")
 
@@ -556,11 +571,12 @@ async def ws_battle(websocket: WebSocket, battle_id: int):
     await websocket.accept()
 
     token = websocket.cookies.get("session_token")
-    if not token or token not in shared.sessions:
+    session = shared.get_session(token) if token else None
+    if not session:
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    user_id = shared.sessions[token]["user_id"]
+    user_id = session["user_id"]
     pool    = await get_db()
 
     async with pool.acquire() as conn:

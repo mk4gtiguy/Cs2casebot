@@ -297,9 +297,6 @@ async def jackpot_slots_spin(req: JackpotSlotsRequest, request: Request):
     user_id = await require_auth(request)
     bet     = clamp_bet(req.amount)
 
-    async with _jackpot_lock:
-        _jackpot_pool = round(_jackpot_pool + bet * JACKPOT_FEED_RATE, 2)
-
     reels = [spin_jackpot_reel() for _ in range(5)]
     mult, label, is_jackpot = evaluate_jackpot_5reel(reels)
 
@@ -308,6 +305,9 @@ async def jackpot_slots_spin(req: JackpotSlotsRequest, request: Request):
             await ensure_user_exists(user_id, conn=conn)
             if not await deduct_balance(user_id, bet, conn):
                 raise HTTPException(400, "Insufficient balance")
+
+            async with _jackpot_lock:
+                _jackpot_pool = round(_jackpot_pool + bet * JACKPOT_FEED_RATE, 2)
 
             win = 0.0
             jackpot_won = 0.0
@@ -999,6 +999,7 @@ class CrashRoom:
 
         await asyncio.sleep(3)
         self.phase = 'ended'
+        _crash_rooms.pop(self.room_id, None)
 
     def _fill_bots(self, force=False):
         """Add bot players with random strategies."""
@@ -1136,11 +1137,12 @@ async def crash_ws(websocket: WebSocket, room_id: str):
     await websocket.accept()
 
     token = websocket.cookies.get("session_token")
-    if not token or token not in shared.sessions:
+    session = shared.get_session(token) if token else None
+    if not session:
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    user_id = shared.sessions[token]["user_id"]
+    user_id = session["user_id"]
     room    = _crash_rooms.get(room_id)
     if not room:
         # Spectator mode — create a read-only view

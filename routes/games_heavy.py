@@ -624,11 +624,12 @@ async def race_ws(websocket: WebSocket, room_code: str):
     await websocket.accept()
 
     token = websocket.cookies.get("session_token")
-    if not token or token not in shared.sessions:
+    session = shared.get_session(token) if token else None
+    if not session:
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    user_id = shared.sessions[token]["user_id"]
+    user_id = session["user_id"]
     room    = _race_rooms.get(room_code)
 
     if not room:
