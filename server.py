@@ -287,7 +287,7 @@ async def page_privacy():      return _html("static/privacy.html")
 _GAME_PAGES = [
     "slots", "slots-cs2", "slots-jackpot", "slots-bomb",
     "coinflip", "dice", "mines", "crash", "limbo", "hilo",
-    "keno", "plinko", "tower", "shotgun", "ladder-climb",
+    "dragon-tiger", "keno", "plinko", "tower", "shotgun", "ladder-climb",
     "roulette", "slide", "mystery-box", "russian-roulette",
     "baccarat", "blackjack", "live-race", "poker",
 ]
@@ -1195,24 +1195,31 @@ async def add_favorite(request: Request):
     async with pool.acquire() as conn:
         try:
             import json
-            settings_raw = await conn.fetchval("SELECT settings FROM users WHERE user_id = $1", user_id)
-            if settings_raw is None:
-                settings = {}
-            elif isinstance(settings_raw, str):
-                settings = json.loads(settings_raw)
-            else:
-                settings = settings_raw
+            async with conn.transaction():
+                # FOR UPDATE prevents concurrent add_favorite calls from both
+                # passing the len < 5 check and storing more than 5 favorites.
+                settings_raw = await conn.fetchval(
+                    "SELECT settings FROM users WHERE user_id = $1 FOR UPDATE", user_id
+                )
+                if settings_raw is None:
+                    settings = {}
+                elif isinstance(settings_raw, str):
+                    settings = json.loads(settings_raw)
+                else:
+                    settings = settings_raw
 
-            favs = settings.get("favorites", [])
-            if case_id not in favs:
-                if len(favs) >= 5:
-                    raise HTTPException(400, "Maximum 5 favorites allowed")
-                favs.append(case_id)
-            settings["favorites"] = favs
+                favs = settings.get("favorites", [])
+                if case_id not in favs:
+                    if len(favs) >= 5:
+                        raise HTTPException(400, "Maximum 5 favorites allowed")
+                    favs.append(case_id)
+                settings["favorites"] = favs
 
-            # Store as JSON string
-            await conn.execute("UPDATE users SET settings = $1 WHERE user_id = $2", json.dumps(settings), user_id)
+                # Store as JSON string
+                await conn.execute("UPDATE users SET settings = $1 WHERE user_id = $2", json.dumps(settings), user_id)
             return {"success": True, "favorites": favs}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception("Favorite add error")
             raise HTTPException(500, f"Database error: {str(e)}")
