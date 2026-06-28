@@ -50,6 +50,7 @@ async def _add_win(user_id: int, win: float, conn) -> float:
 HOUSE_EDGE   = 0.04   # 4% — applied to all games
 MIN_BET      = 50
 MAX_BET      = 750_000
+_HILO_SESSION_TTL = 3600   # seconds before an abandoned Hi-Lo session auto-expires
 
 def clamp_bet(amount: float) -> float:
     return max(MIN_BET, min(MAX_BET, float(amount)))
@@ -300,37 +301,38 @@ async def jackpot_slots_spin(req: JackpotSlotsRequest, request: Request):
     reels = [spin_jackpot_reel() for _ in range(5)]
     mult, label, is_jackpot = evaluate_jackpot_5reel(reels)
 
-    # Snapshot the pool value before any DB work. The in-memory pool is only
-    # updated AFTER a successful DB commit to prevent jackpot evaporation if
-    # the credit transaction rolls back.
-    async with _jackpot_lock:
-        jackpot_snapshot = _jackpot_pool
-
+    # Atomically claim the jackpot before any DB work so two concurrent
+    # winners cannot both receive the same pool amount.
     jackpot_won = 0.0
-    win = 0.0
-    if is_jackpot:
-        jackpot_won = jackpot_snapshot
-        win = apply_house(jackpot_won)
-    elif mult:
-        win = apply_house(bet * mult)
+    async with _jackpot_lock:
+        if is_jackpot:
+            jackpot_won   = _jackpot_pool
+            _jackpot_pool = _jackpot_seed   # claimed — reset immediately
 
-    async with (await get_db()).acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+    win = apply_house(jackpot_won) if jackpot_won else (apply_house(bet * mult) if mult else 0.0)
 
-            if win:
-                win = await _add_win(user_id, win, conn)
+    try:
+        async with (await get_db()).acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
 
-            await log_game(conn, user_id, 'slots_jackpot', bet, win,
-                           {'reels': reels, 'label': label, 'jackpot': is_jackpot})
+                if win:
+                    win = await _add_win(user_id, win, conn)
 
-    # DB committed — now it is safe to update the in-memory pool.
+                await log_game(conn, user_id, 'slots_jackpot', bet, win,
+                               {'reels': reels, 'label': label, 'jackpot': bool(jackpot_won)})
+    except Exception:
+        # DB failed — restore the claimed jackpot so it isn't lost
+        if jackpot_won:
+            async with _jackpot_lock:
+                _jackpot_pool = round(jackpot_won, 2)
+        raise
+
+    # DB committed — feed this bet's contribution into the pool
     async with _jackpot_lock:
         _jackpot_pool = round(_jackpot_pool + bet * JACKPOT_FEED_RATE, 2)
-        if is_jackpot:
-            _jackpot_pool = _jackpot_seed
 
     return {
         "success":      True,
@@ -655,6 +657,18 @@ async def hilo_start(req: HiLoStartRequest, request: Request):
     bet     = clamp_bet(req.amount)
     lock    = _get_hilo_lock(user_id)
     async with lock:
+        existing_hilo = _hilo_sessions.get(user_id)
+        if existing_hilo and existing_hilo.get('active'):
+            created = existing_hilo.get('created_at')
+            expired = (
+                created is not None and
+                (datetime.utcnow() - created).total_seconds() > _HILO_SESSION_TTL
+            )
+            if expired:
+                _hilo_sessions.pop(user_id, None)
+            else:
+                raise HTTPException(400, "You already have an active Hi-Lo game — cashout or bust first")
+
         async with (await get_db()).acquire() as conn:
             async with conn.transaction():
                 await ensure_user_exists(user_id, conn=conn)
@@ -698,6 +712,12 @@ async def hilo_guess(req: HiLoGuessRequest, request: Request):
         mult    = hilo_mult_for_guess(current, guess)
         if mult == 0:
             sess['active'] = False
+            _hilo_sessions.pop(user_id, None)
+            _hilo_locks.pop(user_id, None)
+            async with (await get_db()).acquire() as conn:
+                await log_game(conn, user_id, 'hilo', sess['bet'], 0,
+                               {'chain': sess['chain'], 'bust': True,
+                                'reason': 'impossible_guess'})
             raise HTTPException(400, "That guess is impossible from this card")
 
         new = new_card()
@@ -1161,7 +1181,10 @@ async def crash_ws(websocket: WebSocket, room_id: str):
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    user_id = session["user_id"]
+    user_id = session.get("user_id")
+    if not user_id:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
     room    = _crash_rooms.get(room_id)
     if not room:
         # Spectator mode — create a read-only view

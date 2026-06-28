@@ -191,6 +191,8 @@ async def admin_users(
     limit: int = 20, offset: int = 0, search: str = "",
     admin_id: int = Depends(require_admin)
 ):
+    limit  = max(1, min(200, limit))
+    offset = max(0, offset)
     pool = await get_db()
     async with pool.acquire() as conn:
         if search:
@@ -443,6 +445,8 @@ async def admin_vip_users(
     admin_id: int = Depends(require_admin)
 ):
     """List all VIP users with tier, expiry, tickets, and total ticket spend."""
+    limit  = max(1, min(200, limit))
+    offset = max(0, offset)
     pool = await get_db()
     async with pool.acquire() as conn:
         where = "WHERE vip_tier != 'none' AND vip_tier IS NOT NULL AND vip_expires_at > NOW()"
@@ -954,6 +958,8 @@ async def admin_audit_log(
     action_type: str = "",
     admin_id: int = Depends(require_admin)
 ):
+    limit  = max(1, min(200, limit))
+    offset = max(0, offset)
     pool = await get_db()
     async with pool.acquire() as conn:
         if action_type:
