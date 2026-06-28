@@ -1356,11 +1356,26 @@ async def add_balance(user_id: int, amount: float, conn=None) -> None:
 # VIP HELPERS  (used by all game endpoints for win boost)
 # ============================================================
 
+import time as _vip_time
+
+_vip_cache: dict = {}          # user_id -> (expires_at_monotonic, result_dict)
+_VIP_CACHE_TTL = 60.0          # seconds — VIP status changes infrequently
+
+def _invalidate_vip_cache(user_id: int) -> None:
+    _vip_cache.pop(user_id, None)
+
 async def get_vip_status(user_id: int) -> dict:
     """
     Fast VIP lookup — returns tier info for win boost calculations.
     Returns {'tier': str, 'boost': float, 'active': bool, 'tickets': int}
+    Cached per-user for 60 s to avoid opening a second DB connection inside
+    an already-active transaction (which would double pool usage under load).
     """
+    now = _vip_time.monotonic()
+    cached = _vip_cache.get(user_id)
+    if cached and cached[0] > now:
+        return cached[1]
+
     from datetime import datetime
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -1369,21 +1384,27 @@ async def get_vip_status(user_id: int) -> dict:
             user_id
         )
     if not row:
-        return {'tier': 'none', 'boost': 1.0, 'active': False, 'tickets': 0}
+        result = {'tier': 'none', 'boost': 1.0, 'active': False, 'tickets': 0}
+        _vip_cache[user_id] = (now + _VIP_CACHE_TTL, result)
+        return result
     tier    = row['vip_tier'] or 'none'
     expires = row['vip_expires_at']
     active  = (tier != 'none' and expires is not None and expires > datetime.utcnow())
     if not active:
-        return {'tier': 'none', 'boost': 1.0, 'active': False,
-                'tickets': int(row['tickets'] or 0)}
+        result = {'tier': 'none', 'boost': 1.0, 'active': False,
+                  'tickets': int(row['tickets'] or 0)}
+        _vip_cache[user_id] = (now + _VIP_CACHE_TTL, result)
+        return result
     # Boost values match VIP_TIERS in premium.py
     boosts = {'silver': 1.05, 'gold': 1.10, 'platinum': 1.20}
-    return {
+    result = {
         'tier':    tier,
         'boost':   boosts.get(tier, 1.0),
         'active':  True,
         'tickets': int(row['tickets'] or 0),
     }
+    _vip_cache[user_id] = (now + _VIP_CACHE_TTL, result)
+    return result
 
 def apply_vip_boost(win: float, vip: dict) -> float:
     """Multiply a win by the user's VIP boost if active. Returns rounded result."""

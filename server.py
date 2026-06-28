@@ -145,10 +145,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import time as _time
 
 class PerUserRateLimitMiddleware(BaseHTTPMiddleware):
+    _EVICT_INTERVAL = 300  # evict idle entries every 5 minutes
+
     def __init__(self, app, requests_per_second: int = 10):
         super().__init__(app)
         self._rps = requests_per_second
         self._user_windows: dict = {}   # user_id -> (window_start, count)
+        self._last_evict = _time.monotonic()
 
     async def dispatch(self, request, call_next):
         if request.url.path.startswith("/api/games/"):
@@ -165,6 +168,14 @@ class PerUserRateLimitMiddleware(BaseHTTPMiddleware):
                     return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
                 else:
                     self._user_windows[uid] = (window_start, count + 1)
+                # Periodically evict entries idle for more than 60 seconds
+                if now - self._last_evict > self._EVICT_INTERVAL:
+                    self._last_evict = now
+                    cutoff = now - 60.0
+                    self._user_windows = {
+                        k: v for k, v in self._user_windows.items()
+                        if v[0] >= cutoff
+                    }
         return await call_next(request)
 # ============================================================
 # APP
@@ -295,12 +306,18 @@ for _game in _GAME_PAGES:
 async def serve_game_with_ext(game_name: str):
     return _html(f"static/games/{game_name}.html")
 
+def _safe_static_path(base_dir: str, filename: str) -> str | None:
+    """Return resolved path only if it stays within base_dir; else None."""
+    base = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base_dir, filename))
+    return candidate if candidate.startswith(base + os.sep) or candidate == base else None
+
 @app.get("/static/images/containers/{filename}.png")
 async def serve_container_image(filename: str):
     # Try .png first (if any), then .webp
     for ext in ('.png', '.webp'):
-        path = f"static/images/containers/{filename}{ext}"
-        if os.path.exists(path):
+        path = _safe_static_path("static/images/containers", filename + ext)
+        if path and os.path.exists(path):
             return FileResponse(path)
     # Fallback to a default image
     default = "static/images/containers/default.png"
@@ -313,8 +330,8 @@ async def serve_container_image(filename: str):
 
 @app.get("/static/images/stickers/{filename}")
 async def serve_sticker_image(filename: str):
-    path = f"static/images/stickers/{filename}"
-    if os.path.exists(path):
+    path = _safe_static_path("static/images/stickers", filename)
+    if path and os.path.exists(path):
         return FileResponse(path)
     raise HTTPException(404, "Sticker image not found")
 # ============================================================
@@ -458,8 +475,23 @@ async def _init_all_tables(pool):
                 id           SERIAL PRIMARY KEY,
                 giveaway_id  INTEGER REFERENCES giveaways(id) ON DELETE CASCADE,
                 user_id      BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-                created_at   TIMESTAMP DEFAULT NOW()
+                created_at   TIMESTAMP DEFAULT NOW(),
+                UNIQUE (giveaway_id, user_id)
             )
+        """)
+        # Migration: add unique constraint to existing tables that lack it
+        await conn.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'giveaway_entries_giveaway_id_user_id_key'
+                ) THEN
+                    ALTER TABLE giveaway_entries
+                        ADD CONSTRAINT giveaway_entries_giveaway_id_user_id_key
+                        UNIQUE (giveaway_id, user_id);
+                END IF;
+            END $$;
         """)
         # Game tables
         await conn.execute("""
