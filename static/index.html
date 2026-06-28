@@ -3181,9 +3181,9 @@ window.setInvTypeFilter = setInvTypeFilter;
                     ${stBadge}
                 </div>
                 <div class="inv-info">
-                    <div class="inv-name" style="color:${rarLabelColor};">${stPrefix}${displayName}</div>
+                    <div class="inv-name" style="color:${rarLabelColor};">${stPrefix}${esc(displayName)}</div>
                     <div class="inv-sub">${subLine}</div>
-                    ${condShort && cat !== 'sticker' ? `<div class="inv-condition">${cond}</div>` : ''}
+                    ${condShort && cat !== 'sticker' ? `<div class="inv-condition">${esc(cond)}</div>` : ''}
                     <div class="inv-price">$${price.toFixed(2)}</div>
                 </div>
                 <div class="inv-actions">

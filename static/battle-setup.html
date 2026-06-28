@@ -807,6 +807,8 @@ body {
 <div class="toast" id="toast"></div>
 
 <script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
 // ── STATE ────────────────────────────────────────────────────
 const S = {
   mode:       'pvp',
@@ -893,7 +895,7 @@ async function loadCases() {
       const el = document.createElement('div');
       el.className = 'case-card';
       el.dataset.id = c.id;
-      el.innerHTML = `<span class="emoji">${c.emoji || '📦'}</span><span class="name">${c.name}</span>`;
+      el.innerHTML = `<span class="emoji">${c.emoji || '📦'}</span><span class="name">${esc(c.name)}</span>`;
       el.onclick = () => {
         document.querySelectorAll('.case-card').forEach(x => x.classList.remove('active'));
         el.classList.add('active');
