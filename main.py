@@ -1806,22 +1806,16 @@ async def open_case(interaction: discord.Interaction, case: str):
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
                 
-                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-
-                if not user:
-                    await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
-                    await create_daily_quests(interaction.user.id, conn)
-                    user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-
-                old_balance = user['balance']
-
-                if old_balance < case_data['price']:
+                # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+                deducted = await conn.fetchval(
+                    "UPDATE users SET balance = balance - $1, total_opens = total_opens + 1 WHERE user_id = $2 AND balance >= $1 RETURNING user_id",
+                    case_data['price'], interaction.user.id
+                )
+                if not deducted:
                     embed = discord.Embed(title="❌ Insufficient Balance", description=f"You need ${case_data['price']:.2f} to open this case!", color=discord.Color.red())
                     embed.set_footer(text=f"💖 Support: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
-
-                await conn.execute("UPDATE users SET balance = balance - $1, total_opens = total_opens + 1 WHERE user_id = $2", case_data['price'], interaction.user.id)
 
                 item = get_random_item(case_id)
 
@@ -1898,23 +1892,18 @@ async def bulk_open(interaction: discord.Interaction, case: str, quantity: int):
         async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-                
-                user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
 
-                if not user:
-                    await conn.execute("INSERT INTO users (user_id, balance) VALUES ($1, $2)", interaction.user.id, 1000)
-                    await create_daily_quests(interaction.user.id, conn)
-                    user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-
-                old_balance = user['balance']
-
-                if old_balance < total_cost:
+                # Atomic deduct + opens increment; WHERE balance >= $1 prevents
+                # negative balance under concurrent bulkopen requests.
+                deducted = await conn.fetchval(
+                    "UPDATE users SET balance = balance - $1, total_opens = total_opens + $2 WHERE user_id = $3 AND balance >= $1 RETURNING balance",
+                    total_cost, quantity, interaction.user.id
+                )
+                if deducted is None:
                     embed = discord.Embed(title="❌ Insufficient Balance", description=f"You need ${total_cost:.2f} to open {quantity} {case_data['name']}s!", color=discord.Color.red())
                     embed.set_footer(text=f"💖 Support: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
                     await interaction.followup.send(embed=embed, ephemeral=True)
                     return
-
-                await conn.execute("UPDATE users SET balance = balance - $1, total_opens = total_opens + $2 WHERE user_id = $3", total_cost, quantity, interaction.user.id)
 
                 items = []
                 for _ in range(quantity):
@@ -3122,16 +3111,15 @@ async def play_dice(user_id: int, amount: float, bet_type: str, bet_number: int)
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+
+            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+            deducted = await conn.fetchval(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
                 amount, user_id
             )
-            
+            if deducted is None:
+                return {'success': False, 'error': 'Insufficient balance'}
+
             roll = secure_randint(1, 100)
             win = (roll > bet_number) if bet_type == 'over' else (roll < bet_number)
             
@@ -3186,16 +3174,15 @@ async def start_mines_game(user_id: int, amount: float, grid_size: int = 5, mine
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+
+            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+            deducted = await conn.fetchval(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
                 amount, user_id
             )
-            
+            if deducted is None:
+                return {'success': False, 'error': 'Insufficient balance'}
+
             total_tiles = grid_size * grid_size
             mine_positions = secure_shuffle(list(range(total_tiles)))[:mine_count]
             
@@ -3511,16 +3498,15 @@ async def play_slots(user_id: int, amount: float) -> dict:
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await ensure_user_exists(user_id, conn=conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < amount:
-                return {'success': False, 'error': 'Insufficient balance'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+
+            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+            deducted = await conn.fetchval(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
                 amount, user_id
             )
-            
+            if deducted is None:
+                return {'success': False, 'error': 'Insufficient balance'}
+
             symbols = [secure_choice(SLOT_SYMBOLS)['emoji'] for _ in range(3)]
             result_str = ''.join(symbols)
             multiplier = SLOT_PAYOUTS.get(result_str, 0)
@@ -3575,17 +3561,15 @@ async def cmd_coinflip(interaction: discord.Interaction, amount: float):
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", interaction.user.id)
-            if not user or user['balance'] < amount:
-                await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
-                return
-            
-            # Take their money
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+
+            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
+            deducted = await conn.fetchval(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
                 amount, interaction.user.id
             )
+            if deducted is None:
+                await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
+                return
             
             # Computer flips coin - 50/50 chance
             user_wins = secure_random() < 0.5
