@@ -321,7 +321,7 @@ function onRaceResults(msg){
     const card=document.createElement('div');card.className='result-card'+(r.place===1?' top':'');
     card.innerHTML=`<div class="rc-place">${PLACE_ICONS[r.place-1]||r.place}</div>
       <div class="rc-info">
-        <div class="rc-name">${r.username}</div>
+        <div class="rc-name">${esc(r.username)}</div>
         <div class="rc-time">Finished in ${r.finish_time}s · ${r.agent_name}</div>
       </div>
       <div class="rc-payout">${r.payout>0?'+$'+r.payout.toLocaleString(undefined,{maximumFractionDigits:0}):''}</div>`;
