@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from typing import Optional
 
 # Secure RNG helpers (Fix 1)
-from shared import secure_random, secure_randint, secure_choice, secure_shuffle
+from shared import secure_random, secure_randint, secure_choice, secure_shuffle, deduct_balance
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -2866,13 +2866,13 @@ async def create_giveaway(interaction: discord.Interaction, prize: str, duration
     async def button_callback(button_interaction: discord.Interaction):
         async with db_pool.acquire() as conn:
             await ensure_user_exists(button_interaction.user.id, button_interaction.user.display_name, conn)
-            
-            existing = await conn.fetchrow("SELECT * FROM giveaway_entries WHERE giveaway_id = $1 AND user_id = $2", giveaway_id, button_interaction.user.id)
-            if existing:
-                await button_interaction.response.send_message("❌ You already entered this giveaway!", ephemeral=True)
-                return
-
-            await conn.execute("INSERT INTO giveaway_entries (giveaway_id, user_id) VALUES ($1, $2)", giveaway_id, button_interaction.user.id)
+            result = await conn.execute(
+                "INSERT INTO giveaway_entries (giveaway_id, user_id) VALUES ($1, $2) ON CONFLICT (giveaway_id, user_id) DO NOTHING",
+                giveaway_id, button_interaction.user.id
+            )
+        if result == "INSERT 0 0":
+            await button_interaction.response.send_message("❌ You already entered this giveaway!", ephemeral=True)
+        else:
             await button_interaction.response.send_message("✅ You entered the giveaway! Good luck!", ephemeral=True)
 
     button.callback = button_callback
@@ -3893,37 +3893,32 @@ async def skin_upgrade(user_id: int, item_id: int) -> dict:
             await ensure_user_exists(user_id, conn=conn)
             
             item = await conn.fetchrow(
-                "SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND status = 'kept'",
+                "SELECT * FROM inventory WHERE id = $1 AND user_id = $2 AND status = 'kept' FOR UPDATE",
                 item_id, user_id
             )
             if not item:
                 return {'success': False, 'error': 'Item not found in inventory'}
-            
+
             rarity_order = ['Blue', 'Purple', 'Pink', 'Red', 'Gold']
             if item['rarity'] == 'Gold':
                 return {'success': False, 'error': 'Gold items cannot be upgraded! Use gold trade instead.'}
-            
+
             current_rarity = item['rarity']
             current_index = rarity_order.index(current_rarity)
             next_rarity = rarity_order[current_index + 1] if current_index < len(rarity_order) - 1 else None
-            
+
             if not next_rarity:
                 return {'success': False, 'error': 'Item cannot be upgraded further'}
-            
+
             chances = {'Blue': 0.8, 'Purple': 0.6, 'Pink': 0.4, 'Red': 0.25}
             success_chance = chances.get(current_rarity, 0.5)
             success = secure_random() < success_chance
-            
+
             upgrade_cost = {'Blue': 10, 'Purple': 50, 'Pink': 200, 'Red': 1000}.get(current_rarity, 10)
-            
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or user['balance'] < upgrade_cost:
+
+            if not await deduct_balance(user_id, upgrade_cost, conn):
                 return {'success': False, 'error': f'Insufficient balance. Upgrade costs ${upgrade_cost}'}
-            
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                upgrade_cost, user_id
-            )
+
             await conn.execute("DELETE FROM inventory WHERE id = $1", item_id)
             
             if success:
