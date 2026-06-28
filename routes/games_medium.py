@@ -68,6 +68,14 @@ async def log_game(conn, user_id: int, game_type: str,
 # Multiplier formula: (tiles_total / remaining_safe) accumulated.
 # Player can cashout at any time or hit a mine and lose.
 
+SESSION_TTL = 3600   # 1 hour — abandon sessions older than this
+
+def _is_session_expired(sess: dict) -> bool:
+    created = sess.get('created_at')
+    if not created:
+        return False
+    return (datetime.utcnow() - created).total_seconds() > SESSION_TTL
+
 MINES_GRID = 25
 
 def mines_multiplier(total: int, mines: int, revealed: int) -> float:
@@ -113,8 +121,12 @@ async def mines_start(req: MinesStartRequest, request: Request):
     mines   = max(1, min(24, req.mine_count))
 
     async with _get_mine_lock(user_id):
-        if _mine_sessions.get(user_id, {}).get('active'):
-            raise HTTPException(400, "You already have an active Mines game — cashout or finish first")
+        existing = _mine_sessions.get(user_id, {})
+        if existing.get('active'):
+            if _is_session_expired(existing):
+                _mine_sessions.pop(user_id, None)   # discard stale session; bet is forfeit
+            else:
+                raise HTTPException(400, "You already have an active Mines game — cashout or finish first")
 
         pool = await get_db()
         async with pool.acquire() as conn:
@@ -372,8 +384,12 @@ async def tower_start(req: TowerStartRequest, request: Request):
     cfg        = TOWER_CONFIG[difficulty]
 
     async with _get_tower_lock(user_id):
-        if _tower_sessions.get(user_id, {}).get('active'):
-            raise HTTPException(400, "You already have an active Tower game — cashout or finish first")
+        existing = _tower_sessions.get(user_id, {})
+        if existing.get('active'):
+            if _is_session_expired(existing):
+                _tower_sessions.pop(user_id, None)
+            else:
+                raise HTTPException(400, "You already have an active Tower game — cashout or finish first")
 
         pool = await get_db()
         async with pool.acquire() as conn:
@@ -566,8 +582,12 @@ async def shotgun_start(req: ShotgunStartRequest, request: Request):
     chambers = max(3, min(12, req.chambers))
 
     async with _get_shotgun_lock(user_id):
-        if _shotgun_sessions.get(user_id, {}).get('active'):
-            raise HTTPException(400, "You already have an active Shotgun game — cashout or finish first")
+        existing = _shotgun_sessions.get(user_id, {})
+        if existing.get('active'):
+            if _is_session_expired(existing):
+                _shotgun_sessions.pop(user_id, None)
+            else:
+                raise HTTPException(400, "You already have an active Shotgun game — cashout or finish first")
 
         pool = await get_db()
         async with pool.acquire() as conn:
@@ -741,8 +761,12 @@ async def ladder_start(req: LadderStartRequest, request: Request):
     bet     = clamp_bet(req.amount)
 
     async with _get_ladder_lock(user_id):
-        if _ladder_sessions.get(user_id, {}).get('active'):
-            raise HTTPException(400, "You already have an active Ladder Climb game — cashout or finish first")
+        existing = _ladder_sessions.get(user_id, {})
+        if existing.get('active'):
+            if _is_session_expired(existing):
+                _ladder_sessions.pop(user_id, None)
+            else:
+                raise HTTPException(400, "You already have an active Ladder Climb game — cashout or finish first")
 
         pool = await get_db()
         async with pool.acquire() as conn:
@@ -798,11 +822,11 @@ async def ladder_climb(request: Request):
                 "rungs_climbed": rung_idx,
             }
 
-        # Climbed safely
-        sess['mult']  = round(apply_house(sess['mult'] * rung_mult), 4)
+        # Climbed safely — accumulate raw multiplier; apply house edge only at cashout
+        sess['mult']  = round(sess['mult'] * rung_mult, 4)
         sess['rung'] += 1
         new_rung      = sess['rung']
-        pot_win       = round(sess['bet'] * sess['mult'], 2)
+        pot_win       = round(sess['bet'] * apply_house(sess['mult']), 2)
         at_top        = (new_rung >= len(LADDER_RUNGS))
 
         if at_top:
@@ -848,7 +872,7 @@ async def ladder_cashout(request: Request):
         if sess['rung'] == 0:
             raise HTTPException(400, "Climb at least one rung before cashing out")
 
-        win  = round(sess['bet'] * sess['mult'], 2)
+        win  = round(sess['bet'] * apply_house(sess['mult']), 2)
         bet  = sess['bet']
         mult = sess['mult']
         rung = sess['rung']

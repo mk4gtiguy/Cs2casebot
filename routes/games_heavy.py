@@ -433,40 +433,60 @@ class RaceRoom:
         net_pot    = round(total_pot * (1 - HOUSE_EDGE), 2)
 
         results    = []
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                for uid in self.finish_order:
-                    racer = self.racers.get(uid)
-                    if not racer:
-                        continue
-                    place = racer.finish_pos or MAX_PLAYERS
-                    share = PLACE_SHARES.get(place, 0)
-                    payout = round(net_pot * share, 2) if not racer.is_bot else 0
+        last_err   = None
+        for _attempt in range(3):
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        for uid in self.finish_order:
+                            racer = self.racers.get(uid)
+                            if not racer:
+                                continue
+                            place = racer.finish_pos or MAX_PLAYERS
+                            share = PLACE_SHARES.get(place, 0)
+                            payout = round(net_pot * share, 2) if not racer.is_bot else 0
 
-                    if payout and not racer.is_bot:
-                        payout = await _add_win(uid, payout, conn)
-                        await log_game(conn, uid, racer.bet, payout, {
-                            'room':     self.room_code,
-                            'agent':    racer.agent_id,
-                            'place':    place,
-                            'net_pot':  net_pot,
-                        })
+                            if payout and not racer.is_bot:
+                                payout = await _add_win(uid, payout, conn)
+                                await log_game(conn, uid, racer.bet, payout, {
+                                    'room':     self.room_code,
+                                    'agent':    racer.agent_id,
+                                    'place':    place,
+                                    'net_pot':  net_pot,
+                                })
 
-                    self.payouts[uid] = payout
+                            self.payouts[uid] = payout
 
-                    results.append({
-                        'user_id':    uid,
-                        'username':   racer.username,
-                        'agent_id':   racer.agent_id,
-                        'agent_name': racer.agent['name'],
-                        'emoji':      racer.agent['emoji'],
-                        'color':      racer.agent['color'],
-                        'place':      place,
-                        'finish_time': round(racer.finish_time or 0, 2),
-                        'bet':        racer.bet,
-                        'payout':     payout,
-                        'is_bot':     racer.is_bot,
-                    })
+                            results.append({
+                                'user_id':    uid,
+                                'username':   racer.username,
+                                'agent_id':   racer.agent_id,
+                                'agent_name': racer.agent['name'],
+                                'emoji':      racer.agent['emoji'],
+                                'color':      racer.agent['color'],
+                                'place':      place,
+                                'finish_time': round(racer.finish_time or 0, 2),
+                                'bet':        racer.bet,
+                                'payout':     payout,
+                                'is_bot':     racer.is_bot,
+                            })
+                last_err = None
+                break   # success
+            except Exception as e:
+                last_err = e
+                results  = []
+                self.payouts = {}
+                logger.error(f"Race {self.room_code} payout attempt {_attempt+1}/3 failed: {e}")
+                if _attempt < 2:
+                    await asyncio.sleep(1)
+
+        if last_err:
+            logger.error(f"Race {self.room_code} payout permanently failed: {last_err}")
+            await self.broadcast({
+                'type':    'error',
+                'message': 'Payout system error — your bet will be refunded. Contact support.',
+            })
+            return
 
         await self.broadcast({
             'type':      'race_results',
@@ -546,15 +566,29 @@ async def join_race(req: JoinRaceRequest, request: Request):
                     free = [a for a in AGENT_PROFILES if a not in used]
                     agent_id = free[0] if free else agent_id
 
+                is_new_room = False
                 if not room:
-                    # Create new room
+                    # Create room object but don't register until balance confirmed
                     code = _new_room_code()
                     room = RaceRoom(code)
-                    _race_rooms[code] = room
-                    room.task = asyncio.create_task(room.run())
+                    is_new_room = True
+                else:
+                    # Joining an existing room that bots may have filled —
+                    # evict one bot to keep total at MAX_PLAYERS
+                    if room.total_count >= MAX_PLAYERS:
+                        bot_id = next(
+                            (uid for uid, r in room.racers.items() if r.is_bot), None
+                        )
+                        if bot_id is None:
+                            raise HTTPException(400, "Race room is full")
+                        del room.racers[bot_id]
 
                 if not await deduct_balance(user_id, bet, conn):
                     raise HTTPException(400, "Insufficient balance")
+
+                # Balance confirmed — safe to register room and racer
+                if is_new_room:
+                    _race_rooms[room.room_code] = room
 
                 racer = Racer(
                     user_id  = user_id,
@@ -564,6 +598,10 @@ async def join_race(req: JoinRaceRequest, request: Request):
                     is_bot   = False,
                 )
                 room.racers[user_id] = racer
+
+        # Spawn the room task outside the transaction, still inside the room lock
+        if is_new_room:
+            room.task = asyncio.create_task(room.run())
 
     return {
         "success":    True,
