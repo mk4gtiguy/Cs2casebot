@@ -187,7 +187,7 @@ async function openBox(idx){
       doExplode();balance=await refreshBal();updateBal();
     }else{
       cell.className='mbox safe-open';cell.textContent=d.skin||'💎';
-      const val=d.value||0;cell.innerHTML+='<div class="box-val">+'+val+'×</div>';
+      const val=parseFloat(d.value)||0;const valEl=document.createElement('div');valEl.className='box-val';valEl.textContent='+'+val+'×';cell.appendChild(valEl);
       totalMult=d.total_mult;opened++;
       updateStats(opened,totalMult,bet*Math.max(totalMult,0));
       if(d.cleared){

@@ -238,7 +238,9 @@ function renderCard(areaId,card,animate){
   const isRed=RED.includes(card.suit);
   if(area.querySelector('span')) area.innerHTML='';
   const c=document.createElement('div');c.className='bac-card face'+(isRed?' face-red':'')+(animate?' flip-anim':'');
-  c.innerHTML='<div class="bc-rank">'+card.rank+'</div><div class="bc-suit">'+card.suit+'</div>';
+  const rankEl=document.createElement('div');rankEl.className='bc-rank';rankEl.textContent=card.rank;
+  const suitEl=document.createElement('div');suitEl.className='bc-suit';suitEl.textContent=card.suit;
+  c.appendChild(rankEl);c.appendChild(suitEl);
   area.appendChild(c);
 }
 function resetHands(){

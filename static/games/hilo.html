@@ -193,7 +193,13 @@ async function cashout(){
 function renderCard(elId,card,animate=false){
   const el=document.getElementById(elId);const isRed=RED_SUITS.includes(card.suit);
   el.className='playing-card face'+(isRed?' face-red':'')+(animate?' flip-in':'');
-  el.innerHTML='<div class="card-corner">'+card.name+'<div class="cs">'+card.suit+'</div></div><div class="card-rank">'+card.name+'</div><div class="card-suit">'+card.suit+'</div>';
+  el.innerHTML='';
+  const corner=document.createElement('div');corner.className='card-corner';corner.textContent=card.name;
+  const cs=document.createElement('div');cs.className='cs';cs.textContent=card.suit;
+  corner.appendChild(cs);
+  const rankEl=document.createElement('div');rankEl.className='card-rank';rankEl.textContent=card.name;
+  const suitEl=document.createElement('div');suitEl.className='card-suit';suitEl.textContent=card.suit;
+  el.appendChild(corner);el.appendChild(rankEl);el.appendChild(suitEl);
 }
 function updateOdds(hm,lm){document.getElementById('higherMult').textContent=hm?hm.toFixed(2)+'×':'—';document.getElementById('lowerMult').textContent=lm?lm.toFixed(2)+'×':'—';}
 function updateChainDisplay(){document.getElementById('chainNum').textContent=chainLen;document.getElementById('chainMult').textContent=chainMult.toFixed(2)+'×';}

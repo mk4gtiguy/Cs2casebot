@@ -216,7 +216,12 @@ async function cashout(){
     const d=await api('/api/games/medium/ladder/cashout',{method:'POST'});
     balance=await refreshBal();updateBal();
     setResult('💰 CASHED OUT RUNG '+d.rungs+' · '+d.multiplier.toFixed(2)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
-  }catch(e){setResult('ERROR','idle');}
+  }catch(e){
+    gameActive=true;
+    document.getElementById('coBtn').disabled=false;
+    document.getElementById('climbBtn').disabled=false;
+    setResult('ERROR: '+e.message,'idle');
+  }
   finally{acting=false;}
 }
 

@@ -375,7 +375,9 @@ function addLog(combo,win){
   const log=document.getElementById('sessionLog');
   const d=document.createElement('div');
   d.className='log-item'+(win>0?' win':'');
-  d.innerHTML=`<span>${combo||'no match'}</span><span>${win>0?'+$'+win.toLocaleString(undefined,{maximumFractionDigits:0}):'-$'+bet.toLocaleString()}</span>`;
+  const s1=document.createElement('span');s1.textContent=combo||'no match';
+  const s2=document.createElement('span');s2.textContent=win>0?'+$'+win.toLocaleString(undefined,{maximumFractionDigits:0}):'-$'+bet.toLocaleString();
+  d.appendChild(s1);d.appendChild(s2);
   log.insertBefore(d,log.firstChild);
   if(log.children.length>20) log.lastChild.remove();
 }

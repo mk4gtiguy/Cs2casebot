@@ -347,7 +347,9 @@ function mkCard(card,animate){
   if(!card) return document.createElement('div');
   const isRed=RED.includes(card.suit);
   const c=document.createElement('div');c.className='bj-card face'+(isRed?' face-red':'')+(animate?' flip-bj':'');
-  c.innerHTML='<div class="bc">'+card.rank+'</div><div class="bs">'+card.suit+'</div>';
+  const rankEl=document.createElement('div');rankEl.className='bc';rankEl.textContent=card.rank;
+  const suitEl=document.createElement('div');suitEl.className='bs';suitEl.textContent=card.suit;
+  c.appendChild(rankEl);c.appendChild(suitEl);
   return c;
 }
 function calcVal(hand){

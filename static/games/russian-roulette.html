@@ -270,7 +270,14 @@ async function doBotPull(bet){
       setTurn('player');document.getElementById('pullRRBtn').disabled=false;
       document.getElementById('rrCoBtn').disabled=false;
     }
-  }catch(e){waitingBotPull=false;setResult('ERROR','idle');}
+  }catch(e){
+    waitingBotPull=false;
+    setResult('ERROR — network issue, try again','idle');
+    if(gameActive){
+      setTurn('bot');
+      document.getElementById('pullRRBtn').disabled=false;
+    }
+  }
 }
 async function rrCashout(){
   if(!gameActive||acting||waitingBotPull) return;
