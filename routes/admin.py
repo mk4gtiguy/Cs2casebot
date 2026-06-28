@@ -1008,8 +1008,9 @@ async def admin_remove_beta(
     """Remove a user from beta testers."""
     pool = await get_db()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM beta_testers WHERE user_id=$1", user_id)
-        await audit(conn, admin_id, "remove_beta_tester", target_id=user_id)
+        async with conn.transaction():
+            await conn.execute("DELETE FROM beta_testers WHERE user_id=$1", user_id)
+            await audit(conn, admin_id, "remove_beta_tester", target_id=user_id)
     return {"success": True}
 
 # ============================================================

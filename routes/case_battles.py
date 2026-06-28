@@ -141,7 +141,9 @@ class BattleManager:
                         RETURNING user_id
                     """, fee, player['user_id'])
                     if not deducted:
-                        return None
+                        # Raise so the transaction rolls back rather than
+                        # committing the first player's deduction without a battle.
+                        raise ValueError(f"Insufficient balance for user {player['user_id']}")
 
                 battle_id = await conn.fetchval("""
                     INSERT INTO case_battles
@@ -845,18 +847,17 @@ async def start_pve(request: Request, req: PvERequest):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            user = await conn.fetchrow(
-                "SELECT balance FROM users WHERE user_id = $1", user_id
-            )
-            if not user or float(user['balance']) < req.fee:
-                raise HTTPException(400, "Insufficient balance")
             if req.fee > 750_000:
                 raise HTTPException(400, "Maximum battle fee is $750,000")
 
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
+            # Atomic deduct with balance guard to prevent negative balance under
+            # concurrent requests (no separate SELECT needed).
+            deducted = await conn.fetchval(
+                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING user_id",
                 req.fee, user_id
             )
+            if not deducted:
+                raise HTTPException(400, "Insufficient balance")
 
             battle_id = await conn.fetchval("""
                 INSERT INTO case_battles
