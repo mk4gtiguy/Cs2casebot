@@ -1760,7 +1760,7 @@ async def skin_upgrade_endpoint(request: Request):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 item = await conn.fetchrow(
-                    "SELECT * FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept'",
+                    "SELECT * FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept' FOR UPDATE",
                     item_id, user_id
                 )
                 if not item:
@@ -1952,26 +1952,21 @@ async def update_streak(request: Request):
     body = await request.json()
     user_id = await require_auth(request)
     is_gold = body.get("is_gold", False)
+    gold_inc = 1 if is_gold else 0
     pool = await get_db()
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            "SELECT * FROM user_streaks WHERE user_id=$1", user_id
-        )
-        if existing:
-            new_streak = int(existing["current_streak"] or 0) + 1
-            best = max(new_streak, int(existing["best_streak"] or 0))
-            golds = int(existing["golds_in_streak"] or 0) + (1 if is_gold else 0)
-            await conn.execute("""
-                UPDATE user_streaks
-                SET current_streak=$1, best_streak=$2, golds_in_streak=$3, updated_at=NOW()
-                WHERE user_id=$4
-            """, new_streak, best, golds, user_id)
-        else:
-            await conn.execute("""
-                INSERT INTO user_streaks (user_id, current_streak, best_streak, golds_in_streak)
-                VALUES ($1, 1, 1, $2)
-            """, user_id, 1 if is_gold else 0)
-            new_streak = 1
+        row = await conn.fetchrow("""
+            INSERT INTO user_streaks (user_id, current_streak, best_streak, golds_in_streak)
+            VALUES ($1, 1, 1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET
+                current_streak = user_streaks.current_streak + 1,
+                best_streak    = GREATEST(user_streaks.best_streak,
+                                          user_streaks.current_streak + 1),
+                golds_in_streak = user_streaks.golds_in_streak + $2,
+                updated_at     = NOW()
+            RETURNING current_streak
+        """, user_id, gold_inc)
+    new_streak = row["current_streak"]
     return {"current_streak": new_streak}
 
 # ============================================================
@@ -2336,31 +2331,37 @@ async def mines_reveal(request: Request):
     tile_idx = int(body.get("tile_index", 0))
     pool = await get_db()
     async with pool.acquire() as conn:
-        game = await conn.fetchrow(
-            "SELECT * FROM mines_games WHERE id=$1 AND user_id=$2 AND status='active'",
-            game_id, user_id
-        )
-        if not game:
-            raise HTTPException(404, "Game not found or already ended")
-        mine_positions = list(game["mine_positions"])
-        revealed       = list(game["revealed_tiles"] or [])
-        if tile_idx in mine_positions:
-            await conn.execute(
-                "UPDATE mines_games SET status='lost', exploded=true WHERE id=$1", game_id
+        async with conn.transaction():
+            # FOR UPDATE prevents concurrent reveals from racing on the same game
+            # row and overwriting each other's tile appends or double-counting
+            # a re-submitted tile index.
+            game = await conn.fetchrow(
+                "SELECT * FROM mines_games WHERE id=$1 AND user_id=$2 AND status='active' FOR UPDATE",
+                game_id, user_id
             )
+            if not game:
+                raise HTTPException(404, "Game not found or already ended")
+            mine_positions = list(game["mine_positions"])
+            revealed       = list(game["revealed_tiles"] or [])
+            if tile_idx in revealed:
+                raise HTTPException(400, "Tile already revealed")
+            if tile_idx in mine_positions:
+                await conn.execute(
+                    "UPDATE mines_games SET status='lost', exploded=true WHERE id=$1", game_id
+                )
+                await conn.execute(
+                    "INSERT INTO game_logs (user_id,game_type,bet_amount,win_amount,multiplier,result) VALUES ($1,'mines',$2,0,0,'loss')",
+                    user_id, float(game["bet_amount"])
+                )
+                return {"success": True, "hit_mine": True, "mine_positions": mine_positions}
+            revealed.append(tile_idx)
+            safe_count = len(revealed)
+            total_safe = game["grid_size"]**2 - game["mine_count"]
+            mult = round(1 + (safe_count / total_safe) * 4, 2)
             await conn.execute(
-                "INSERT INTO game_logs (user_id,game_type,bet_amount,win_amount,multiplier,result) VALUES ($1,'mines',$2,0,0,'loss')",
-                user_id, float(game["bet_amount"])
+                "UPDATE mines_games SET revealed_tiles=$1, multiplier=$2 WHERE id=$3",
+                revealed, mult, game_id
             )
-            return {"success": True, "hit_mine": True, "mine_positions": mine_positions}
-        revealed.append(tile_idx)
-        safe_count = len(revealed)
-        total_safe = game["grid_size"]**2 - game["mine_count"]
-        mult = round(1 + (safe_count / total_safe) * 4, 2)
-        await conn.execute(
-            "UPDATE mines_games SET revealed_tiles=$1, multiplier=$2 WHERE id=$3",
-            revealed, mult, game_id
-        )
     return {"success": True, "hit_mine": False, "tile_index": tile_idx,
             "safe_count": safe_count, "multiplier": mult, "revealed": revealed}
 
@@ -2374,7 +2375,7 @@ async def mines_cashout(request: Request):
     async with pool.acquire() as conn:
         async with conn.transaction():
             game = await conn.fetchrow(
-                "SELECT * FROM mines_games WHERE id=$1 AND user_id=$2 AND status='active'",
+                "SELECT * FROM mines_games WHERE id=$1 AND user_id=$2 AND status='active' FOR UPDATE",
                 game_id, user_id
             )
             if not game:
@@ -2452,17 +2453,17 @@ async def sell_batch(request: Request):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Atomic ownership+status transition matches sell_item; prevents
+            # concurrent calls from double-crediting the same items.
             rows = await conn.fetch("""
-                SELECT id, price FROM inventory
+                UPDATE inventory SET status='sold'
                 WHERE id = ANY($1::int[]) AND user_id=$2 AND status IN ('kept','pending')
+                RETURNING id, price
             """, item_ids, user_id)
             if not rows:
                 raise HTTPException(404, "No valid items found")
             total = round(sum(float(r["price"]) * 0.70 for r in rows), 2)
             ids   = [r["id"] for r in rows]
-            await conn.execute(
-                "UPDATE inventory SET status='sold' WHERE id=ANY($1::int[])", ids
-            )
             await add_balance(user_id, total, conn)
     return {
         "success": True,
