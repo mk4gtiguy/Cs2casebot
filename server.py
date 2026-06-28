@@ -1302,24 +1302,30 @@ async def claim_daily(request: Request):
     user_id = await require_auth(request)
     pool = await get_db()
     async with pool.acquire() as conn:
-        user = await conn.fetchrow("SELECT balance, daily_streak, last_daily FROM users WHERE user_id = $1", user_id)
-        if not user:
-            raise HTTPException(404, "User not found")
-        now = datetime.now()
-        last = user["last_daily"]
-        streak = user["daily_streak"] or 0
-        if last and last.date() == now.date():
-            raise HTTPException(400, "Already claimed today")
-        if last and (now - last).days == 1:
-            streak += 1
-        else:
-            streak = 1
-        reward = 500 + (streak * 100)
-        jackpot = shared.secure_randint(1, 1000000) == 1
-        if jackpot:
-            reward += 50000
-        await conn.execute("UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4",
-                           reward, streak, now, user_id)
+        async with conn.transaction():
+            user = await conn.fetchrow(
+                "SELECT balance, daily_streak, last_daily FROM users WHERE user_id = $1 FOR UPDATE",
+                user_id
+            )
+            if not user:
+                raise HTTPException(404, "User not found")
+            now = datetime.now()
+            last = user["last_daily"]
+            streak = user["daily_streak"] or 0
+            if last and last.date() == now.date():
+                raise HTTPException(400, "Already claimed today")
+            if last and last.date() == (now - timedelta(days=1)).date():
+                streak += 1
+            else:
+                streak = 1
+            reward = 500 + (streak * 100)
+            jackpot = shared.secure_randint(1, 1000000) == 1
+            if jackpot:
+                reward += 50000
+            await conn.execute(
+                "UPDATE users SET balance = balance + $1, daily_streak = $2, last_daily = $3 WHERE user_id = $4",
+                reward, streak, now, user_id
+            )
     return {"success": True, "reward": reward, "streak": streak, "jackpot": jackpot}
 
 @app.get("/api/cases/featured")
@@ -1496,14 +1502,8 @@ async def open_sticker(request: Request):
         async with conn.transaction():
             await ensure_user_exists(user_id, conn=conn)
 
-            user = await conn.fetchrow("SELECT balance FROM users WHERE user_id = $1", user_id)
-            if not user or float(user['balance']) < capsule['price']:
+            if not await deduct_balance(user_id, capsule['price'], conn):
                 raise HTTPException(400, "Insufficient balance")
-
-            await conn.execute(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2",
-                capsule['price'], user_id
-            )
 
             sticker = get_random_sticker(capsule_id)
             if not sticker:
@@ -1845,21 +1845,23 @@ async def claim_hourly(request: Request):
     user_id = await require_auth(request)
     pool = await get_db()
     async with pool.acquire() as conn:
-        user = await conn.fetchrow(
-            "SELECT last_hourly, total_hourly_claimed FROM users WHERE user_id=$1", user_id
-        )
-        if not user:
-            raise HTTPException(404, "User not found")
-        now = datetime.now()
-        if user["last_hourly"] and (now - user["last_hourly"]).total_seconds() < 3600:
-            remaining = int(3600 - (now - user["last_hourly"]).total_seconds())
-            raise HTTPException(400, f"Next claim in {remaining // 60}m {remaining % 60}s")
-        total = (user["total_hourly_claimed"] or 0) + 1
-        reward = 75 + (250 if total % 10 == 0 else 0)
-        await conn.execute("""
-            UPDATE users SET balance=balance+$1, last_hourly=$2, total_hourly_claimed=$3
-            WHERE user_id=$4
-        """, reward, now, total, user_id)
+        async with conn.transaction():
+            user = await conn.fetchrow(
+                "SELECT last_hourly, total_hourly_claimed FROM users WHERE user_id=$1 FOR UPDATE",
+                user_id
+            )
+            if not user:
+                raise HTTPException(404, "User not found")
+            now = datetime.now()
+            if user["last_hourly"] and (now - user["last_hourly"]).total_seconds() < 3600:
+                remaining = int(3600 - (now - user["last_hourly"]).total_seconds())
+                raise HTTPException(400, f"Next claim in {remaining // 60}m {remaining % 60}s")
+            total = (user["total_hourly_claimed"] or 0) + 1
+            reward = 75 + (250 if total % 10 == 0 else 0)
+            await conn.execute("""
+                UPDATE users SET balance=balance+$1, last_hourly=$2, total_hourly_claimed=$3
+                WHERE user_id=$4
+            """, reward, now, total, user_id)
     return {"success": True, "reward": reward, "total_claimed": total}
 
 @app.post("/api/weekly")
@@ -1867,23 +1869,25 @@ async def claim_weekly(request: Request):
     user_id = await require_auth(request)
     pool = await get_db()
     async with pool.acquire() as conn:
-        user = await conn.fetchrow(
-            "SELECT last_weekly, total_weekly_claimed FROM users WHERE user_id=$1", user_id
-        )
-        if not user:
-            raise HTTPException(404, "User not found")
-        now = datetime.now()
-        if user["last_weekly"] and (now - user["last_weekly"]).total_seconds() < 604800:
-            remaining = int(604800 - (now - user["last_weekly"]).total_seconds())
-            days = remaining // 86400
-            hrs  = (remaining % 86400) // 3600
-            raise HTTPException(400, f"Next claim in {days}d {hrs}h")
-        total = (user["total_weekly_claimed"] or 0) + 1
-        reward = 5000
-        await conn.execute("""
-            UPDATE users SET balance=balance+$1, last_weekly=$2, total_weekly_claimed=$3
-            WHERE user_id=$4
-        """, reward, now, total, user_id)
+        async with conn.transaction():
+            user = await conn.fetchrow(
+                "SELECT last_weekly, total_weekly_claimed FROM users WHERE user_id=$1 FOR UPDATE",
+                user_id
+            )
+            if not user:
+                raise HTTPException(404, "User not found")
+            now = datetime.now()
+            if user["last_weekly"] and (now - user["last_weekly"]).total_seconds() < 604800:
+                remaining = int(604800 - (now - user["last_weekly"]).total_seconds())
+                days = remaining // 86400
+                hrs  = (remaining % 86400) // 3600
+                raise HTTPException(400, f"Next claim in {days}d {hrs}h")
+            total = (user["total_weekly_claimed"] or 0) + 1
+            reward = 5000
+            await conn.execute("""
+                UPDATE users SET balance=balance+$1, last_weekly=$2, total_weekly_claimed=$3
+                WHERE user_id=$4
+            """, reward, now, total, user_id)
     return {"success": True, "reward": reward, "total_claimed": total}
 
 # ============================================================
@@ -2077,7 +2081,9 @@ async def admin_give_balance(request: Request, _=Depends(require_admin)):
     amount    = float(body.get("amount", 0))
     if not target_id or amount <= 0:
         raise HTTPException(400, "Invalid params")
-    await add_balance(target_id, amount)
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        await add_balance(target_id, amount, conn)
     return {"success": True}
 
 @app.post("/api/admin/reset-balance")
@@ -2391,13 +2397,14 @@ async def open_premium_case(request: Request):
         raise HTTPException(400, "Invalid case")
     pool = await get_db()
     async with pool.acquire() as conn:
-        tickets = await conn.fetchval("SELECT tickets FROM users WHERE user_id=$1", user_id) or 0
-        if tickets < quantity:
-            raise HTTPException(400, f"Need {quantity} ticket(s) — you have {tickets}")
         async with conn.transaction():
-            await conn.execute(
-                "UPDATE users SET tickets=tickets-$1 WHERE user_id=$2", quantity, user_id
-            )
+            updated = await conn.fetchval("""
+                UPDATE users SET tickets=tickets-$1
+                WHERE user_id=$2 AND tickets >= $1
+                RETURNING tickets
+            """, quantity, user_id)
+            if updated is None:
+                raise HTTPException(400, f"Need {quantity} ticket(s) — insufficient balance")
             items = []
             for _ in range(quantity):
                 item = get_random_item(case_id)
