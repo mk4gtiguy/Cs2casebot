@@ -833,6 +833,11 @@ async def join_queue(request: Request, req: QueueRequest):
     if not user_id:
         raise HTTPException(401, "Not authenticated")
 
+    _VALID_WIN_CONDITIONS = {'total_value', 'gold_count', 'best_item'}
+    if req.win_condition not in _VALID_WIN_CONDITIONS:
+        raise HTTPException(400, f"win_condition must be one of {sorted(_VALID_WIN_CONDITIONS)}")
+    rounds = max(1, min(req.rounds, 10))
+
     pool = await get_db()
     async with pool.acquire() as conn:
         enabled = await conn.fetchval(
@@ -861,7 +866,7 @@ async def join_queue(request: Request, req: QueueRequest):
         'user_id':       user_id,
         'ws':            mm_ws,
         'fee':           req.fee,
-        'rounds':        req.rounds,
+        'rounds':        rounds,
         'win_condition': req.win_condition,
     })
     return {"success": True, "message": "In queue — waiting for opponent"}
@@ -872,6 +877,11 @@ async def start_pve(request: Request, req: PvERequest):
     user_id = await get_user_id_from_session(request)
     if not user_id:
         raise HTTPException(401, "Not authenticated")
+
+    _VALID_WIN_CONDITIONS = {'total_value', 'gold_count', 'best_item'}
+    if req.win_condition not in _VALID_WIN_CONDITIONS:
+        raise HTTPException(400, f"win_condition must be one of {sorted(_VALID_WIN_CONDITIONS)}")
+    rounds = max(1, min(req.rounds, 10))
 
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -893,7 +903,7 @@ async def start_pve(request: Request, req: PvERequest):
                     (battle_type, status, entry_fee, total_rounds, win_condition)
                 VALUES ('pve', 'waiting', $1, $2, $3)
                 RETURNING id
-            """, req.fee, req.rounds, req.win_condition)
+            """, req.fee, rounds, req.win_condition)
 
             await conn.execute("""
                 INSERT INTO case_battle_participants (battle_id, user_id)
