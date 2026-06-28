@@ -945,20 +945,6 @@ async def bj_deal(req: BJStartRequest, request: Request):
         if _bj_sessions.get(user_id, {}).get('active'):
             raise HTTPException(400, "You already have an active Blackjack game — finish or abandon it first")
 
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await ensure_user_exists(user_id, conn=conn)
-                if not await deduct_balance(user_id, bet, conn):
-                    raise HTTPException(400, "Insufficient balance")
-                # High Roller: bets >= $25,000 require 1 ticket
-                if bet >= 25000:
-                    from routes.premium import deduct_ticket as _deduct_ticket
-                    ok = await _deduct_ticket(user_id, 'spend_game',
-                                              {'game': 'blackjack', 'bet': bet}, conn)
-                    if not ok:
-                        raise HTTPException(400, "High Roller bets require 1 ticket")
-
         shoe   = new_bj_shoe()
         p_hand = [shoe.pop(), shoe.pop()]
         d_hand = [shoe.pop(), shoe.pop()]
@@ -982,41 +968,56 @@ async def bj_deal(req: BJStartRequest, request: Request):
             'created_at':  datetime.utcnow(),
         }
 
-        # Immediate resolution if either has blackjack
-        if p_bj or d_bj:
-            session['active'] = False
-            session['done']   = True
-            win = 0.0
-            result = ''
-            if p_bj and d_bj:
-                win    = bet   # push
-                result = 'push'
-            elif p_bj:
-                win    = apply_house(bet * 2.5)   # 3:2 payout
-                result = 'blackjack'
-            else:
-                win    = 0
-                result = 'dealer_blackjack'
+        # Use a single connection for both the bet deduction and any immediate
+        # blackjack win credit so a pool-exhaustion error can never permanently
+        # lose the player's bet after it has already been deducted.
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+                # High Roller: bets >= $25,000 require 1 ticket
+                if bet >= 25000:
+                    from routes.premium import deduct_ticket as _deduct_ticket
+                    ok = await _deduct_ticket(user_id, 'spend_game',
+                                              {'game': 'blackjack', 'bet': bet}, conn)
+                    if not ok:
+                        raise HTTPException(400, "High Roller bets require 1 ticket")
 
-            _bj_sessions.pop(user_id, None)
-            async with (await get_db()).acquire() as conn:
-                async with conn.transaction():
+                # Immediate resolution if either has blackjack
+                if p_bj or d_bj:
+                    session['active'] = False
+                    session['done']   = True
+                    win = 0.0
+                    result = ''
+                    if p_bj and d_bj:
+                        win    = bet   # push
+                        result = 'push'
+                    elif p_bj:
+                        win    = apply_house(bet * 2.5)   # 3:2 payout
+                        result = 'blackjack'
+                    else:
+                        win    = 0
+                        result = 'dealer_blackjack'
+
+                    _bj_sessions.pop(user_id, None)
                     if win:
                         win = await _add_win(user_id, win, conn)
                     await log_game(conn, user_id, 'blackjack', bet, win, {
                         'result': result, 'player_bj': p_bj, 'dealer_bj': d_bj,
                     })
-            return {
-                "success":       True,
-                "player_hands":  [p_hand],
-                "dealer_hand":   d_hand,
-                "player_values": [bj_hand_value(p_hand)[0]],
-                "dealer_value":  bj_hand_value(d_hand)[0],
-                "blackjack":     True,
-                "result":        result,
-                "win":           round(win, 2),
-                "done":          True,
-            }
+                    return {
+                        "success":       True,
+                        "player_hands":  [p_hand],
+                        "dealer_hand":   d_hand,
+                        "player_values": [bj_hand_value(p_hand)[0]],
+                        "dealer_value":  bj_hand_value(d_hand)[0],
+                        "blackjack":     True,
+                        "result":        result,
+                        "win":           round(win, 2),
+                        "done":          True,
+                    }
 
         # Insurance offer when dealer shows Ace
         offer_insurance = (d_hand[0]['rank'] == 'A')

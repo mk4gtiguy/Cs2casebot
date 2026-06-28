@@ -193,11 +193,16 @@ class BattleManager:
 
     # ── Start battle ──────────────────────────────────────
     async def start_battle(self, battle_id: int, conn):
-        await conn.execute("""
+        # Guard against concurrent WebSocket connections both seeing 'waiting'
+        # and both trying to start the battle. Only one UPDATE can win.
+        updated = await conn.fetchval("""
             UPDATE case_battles
             SET status = 'active', started_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND status = 'waiting'
+            RETURNING id
         """, battle_id)
+        if not updated:
+            return  # Already started by a concurrent connection
 
         room = self.rooms.get(battle_id)
         if room:
@@ -271,7 +276,8 @@ class BattleManager:
                             p['bot_difficulty'] or 'normal', conn
                         )
                     else:
-                        # Player missed — record zero
+                        # Player missed — record zero and advance their round
+                        # counter so they are not stuck replaying the same round.
                         await conn.execute("""
                             INSERT INTO case_battle_rounds
                                 (battle_id, participant_id, round_number,
@@ -279,6 +285,11 @@ class BattleManager:
                             VALUES ($1, $2, $3, 'Missed Round', 'Blue', 0)
                             ON CONFLICT (participant_id, round_number) DO NOTHING
                         """, battle_id, p['id'], round_num)
+                        await conn.execute("""
+                            UPDATE case_battle_participants
+                            SET current_round = $1
+                            WHERE id = $2 AND current_round < $1
+                        """, round_num, p['id'])
                         user_row = await conn.fetchrow(
                             "SELECT username FROM users WHERE user_id = $1", p['user_id']
                         )
@@ -439,13 +450,18 @@ class BattleManager:
         entry_fee = float(battle['entry_fee'])
         prize     = round(entry_fee * len(participants) * 0.95, 2)  # 5% house edge
 
-        # Fix 16: Wrap status update AND payout in one atomic transaction
+        # Guard against _schedule_bot_open and _tick_loop both calling
+        # _finish_battle concurrently — only the first UPDATE wins.
         async with conn.transaction():
-            await conn.execute("""
+            updated = await conn.fetchval("""
                 UPDATE case_battles
                 SET status = 'completed', ended_at = NOW(), winner_id = $1
-                WHERE id = $2
+                WHERE id = $2 AND status = 'active'
+                RETURNING id
             """, winner['user_id'], battle_id)
+
+            if not updated:
+                return  # Already finished by a concurrent call
 
             # Only pay real users (not bots)
             if winner['user_id'] > 0:
