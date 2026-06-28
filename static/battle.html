@@ -1358,19 +1358,33 @@ function setLastItem(elId, item) {
   const r    = item.rarity || 'Blue';
   const info = RARITY[r] || RARITY.Blue;
   el.className = 'last-item';
-  el.innerHTML = `
-    <span class="li-rarity">${info.emoji}</span>
-    <span class="li-name">${item.name || item.display_name || '—'}</span>
-    <span class="li-price">$${parseFloat(item.price || 0).toFixed(2)}</span>`;
+  el.innerHTML = '';
+  const spanRarity = document.createElement('span');
+  spanRarity.className = 'li-rarity';
+  spanRarity.textContent = info.emoji;
+  const spanName = document.createElement('span');
+  spanName.className = 'li-name';
+  spanName.textContent = item.name || item.display_name || '—';
+  const spanPrice = document.createElement('span');
+  spanPrice.className = 'li-price';
+  spanPrice.textContent = '$' + parseFloat(item.price || 0).toFixed(2);
+  el.appendChild(spanRarity);
+  el.appendChild(spanName);
+  el.appendChild(spanPrice);
 }
 
 function addHistoryItem(gridId, name, rarity, value) {
   const grid = document.getElementById(gridId);
   const el   = document.createElement('div');
   el.className = `hist-item rarity-${rarity}`;
-  el.innerHTML = `
-    <span class="hist-name">${name}</span>
-    <span class="hist-price">$${parseFloat(value||0).toFixed(2)}</span>`;
+  const spanName = document.createElement('span');
+  spanName.className = 'hist-name';
+  spanName.textContent = name;
+  const spanPrice = document.createElement('span');
+  spanPrice.className = 'hist-price';
+  spanPrice.textContent = '$' + parseFloat(value || 0).toFixed(2);
+  el.appendChild(spanName);
+  el.appendChild(spanPrice);
   grid.insertBefore(el, grid.firstChild);
 }
 

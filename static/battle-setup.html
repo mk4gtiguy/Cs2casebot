@@ -836,8 +836,12 @@ async function loadUser() {
     document.getElementById('balanceDisplay').textContent = '$' + Number(d.balance).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
     document.getElementById('yourName').textContent = S.username;
     if (d.avatar_url) {
-      document.getElementById('yourAvatar').innerHTML =
-        `<img src="${d.avatar_url}" alt="${S.username}">`;
+      const img = document.createElement('img');
+      img.src = d.avatar_url;
+      img.alt = S.username;
+      const av = document.getElementById('yourAvatar');
+      av.innerHTML = '';
+      av.appendChild(img);
     }
   } catch(e) {}
 }
