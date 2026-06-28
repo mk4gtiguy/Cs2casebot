@@ -2067,7 +2067,7 @@ async def admin_stats(request: Request, _=Depends(require_admin)):
         "total_opens":       int(opens or 0),
         "total_golds":       int(golds or 0),
         "total_inv_value":   float(inv_value or 0),
-        "sessions_active":   len(sessions),
+        "sessions_active":   len(shared.sessions),
     }
 
 @app.post("/api/admin/give-balance")
