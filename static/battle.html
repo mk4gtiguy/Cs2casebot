@@ -769,6 +769,7 @@ html, body {
 </style>
 
 <script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 // ══════════════════════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════════════════════
@@ -1404,7 +1405,7 @@ async function onBattleComplete(msg) {
       const col      = document.createElement('div');
       col.className  = `end-col${isWinner ? ' winner' : ''}`;
       col.innerHTML  = `
-        <div class="ec-name">${isWinner ? '🏆 ' : ''}${p.username || (isMe ? 'You' : 'Opponent')}</div>
+        <div class="ec-name">${isWinner ? '🏆 ' : ''}${esc(p.username || (isMe ? 'You' : 'Opponent'))}</div>
         <div class="ec-total">$${parseFloat(p.total_value||0).toFixed(2)}</div>
         <div style="font-size:9px;color:var(--muted);margin-top:4px;">⭐ ${p.gold_count || 0} golds</div>`;
       compare.appendChild(col);

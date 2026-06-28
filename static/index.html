@@ -1650,6 +1650,7 @@
     JAVASCRIPT - FULL INTEGRATED VERSION (ALL WORKING)
     ============================================ -->
     <script>
+    const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     // ============================================
     // SECTION 1: CONFIGURATION & CONSTANTS
     // ============================================
@@ -1706,6 +1707,7 @@
     let favoriteIds = [];
     let bulkItems = [];
     let bulkIndex = 0;
+    let isOpening = false;
     let currentSticker = null;
     let lastCapsuleId = null;
     let leaderboardType = 'money';
@@ -2147,13 +2149,15 @@
     // SECTION 7: NEW CS2-STYLE REEL FUNCTIONS (FIXED IMAGE MAPPING)
     // ============================================
     function openCasePopup(caseId, quantity = 1) {
+        if (isOpening) return;
+        isOpening = true;
         state.popupCaseId = caseId;
         state.popupIndex = 0;
         state.popupItems = [];
         const overlay = document.getElementById('popupOverlay');
         overlay.classList.add('show');
         document.getElementById('popupBody').innerHTML = `<div class="loading" style="font-size:18px;padding:40px;">Opening case${quantity > 1 ? 'es' : ''}...</div>`;
-        openCaseBatch(caseId, quantity);
+        openCaseBatch(caseId, quantity).finally(() => { isOpening = false; });
     }
 
     async function openCaseBatch(caseId, quantity) {
@@ -2400,8 +2404,8 @@
         const html = `
             <div class="inspect-screen">
                 <div class="inspect-card" style="border-color:${color};box-shadow:0 0 60px ${color}22;">
-                    <img class="inspect-weapon" src="${imgUrl}" alt="${displayLabel}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
-                    <div class="inspect-name" style="color:${color};">${displayLabel}</div>
+                    <img class="inspect-weapon" src="${imgUrl}" alt="${esc(displayLabel)}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
+                    <div class="inspect-name" style="color:${color};">${esc(displayLabel)}</div>
                     <div class="inspect-rarity" style="color:${color};">${emoji} ${rarity}</div>
                     <div class="inspect-details">
                         <div><span class="label">💰 Value</span><br><span class="value">$${item.price.toFixed(2)}</span></div>
@@ -2443,7 +2447,7 @@
                 <div style="font-size:14px;color:#4caf50;">🔥 Streak: ${state.streakData.current_streak || 0}</div>
             </div>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;max-height:200px;overflow-y:auto;margin:10px 0;padding:10px;background:rgba(0,0,0,0.2);border-radius:8px;">
-                ${bulkItems.map((item) => `<div style="text-align:center;padding:5px;border-radius:4px;background:rgba(255,255,255,0.02);"><div style="font-size:10px;color:#888;">${item.display_name || item.name}</div><div style="font-size:9px;color:#aaa;">$${item.price.toFixed(2)}</div></div>`).join('')}
+                ${bulkItems.map((item) => `<div style="text-align:center;padding:5px;border-radius:4px;background:rgba(255,255,255,0.02);"><div style="font-size:10px;color:#888;">${esc(item.display_name || item.name)}</div><div style="font-size:9px;color:#aaa;">$${item.price.toFixed(2)}</div></div>`).join('')}
             </div>
             <div class="popup-buttons" style="margin-top:15px;">
                 <button class="btn btn-success" onclick="handlePopupAction('keep_all')">💾 Keep All</button>
@@ -2585,7 +2589,7 @@
                 <div style="font-size:14px;color:#4caf50;">🔥 Streak: ${state.streakData.current_streak || 0}</div>
             </div>
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;max-height:200px;overflow-y:auto;margin:10px 0;padding:10px;background:rgba(0,0,0,0.2);border-radius:8px;">
-                ${items.map((item) => `<div style="text-align:center;padding:5px;border-radius:4px;background:rgba(255,255,255,0.02);"><div style="font-size:10px;color:#888;">${item.display_name || item.name}</div><div style="font-size:9px;color:#aaa;">$${item.price.toFixed(2)}</div></div>`).join('')}
+                ${items.map((item) => `<div style="text-align:center;padding:5px;border-radius:4px;background:rgba(255,255,255,0.02);"><div style="font-size:10px;color:#888;">${esc(item.display_name || item.name)}</div><div style="font-size:9px;color:#aaa;">$${item.price.toFixed(2)}</div></div>`).join('')}
             </div>
             <div class="popup-buttons" style="margin-top:15px;">
                 <button class="btn btn-success" onclick="handlePopupAction('keep_all')">💾 Keep All</button>
@@ -2862,13 +2866,13 @@
             <div style="color:${color};font-size:12px;letter-spacing:2px;text-transform:uppercase;margin-bottom:16px;font-weight:700;">Sticker Revealed!</div>
             <div class="sticker-reveal-wrap" id="stickerRevealWrap">
                 ${stickerImgSrc
-                    ? `<img class="sticker-reveal-img" id="stickerRevealImg" src="${stickerImgSrc}" alt="${sticker.name}">`
-                    : `<div class="sticker-reveal-img" id="stickerRevealImg" style="display:flex;align-items:center;justify-content:center;font-size:48px;background:rgba(0,0,0,0.4);">${sticker.rarity}</div>`}
-                <div class="sticker-rarity-badge" id="stickerBadge" style="color:${color};border-color:${color};">${sticker.rarity}</div>
+                    ? `<img class="sticker-reveal-img" id="stickerRevealImg" src="${stickerImgSrc}" alt="">`
+                    : `<div class="sticker-reveal-img" id="stickerRevealImg" style="display:flex;align-items:center;justify-content:center;font-size:48px;background:rgba(0,0,0,0.4);"></div>`}
+                <div class="sticker-rarity-badge" id="stickerBadge" style="color:${color};border-color:${color};"></div>
             </div>
-            <div class="sticker-name-reveal" id="stickerNameReveal" style="color:${color};">${sticker.name}</div>
+            <div class="sticker-name-reveal" id="stickerNameReveal" style="color:${color};"></div>
             <div class="sticker-details-reveal" id="stickerDetailsReveal">
-                <div style="color:#aaa;font-size:13px;margin-bottom:2px;">💰 $${sticker.price.toFixed(2)} &nbsp;|&nbsp; ${sticker.rarity}</div>
+                <div style="color:#aaa;font-size:13px;margin-bottom:2px;">💰 $${sticker.price.toFixed(2)} &nbsp;|&nbsp; <span id="stickerRarityDetail"></span></div>
                 ${sticker.is_stattrak ? '<div style="color:#ff6b00;font-size:12px;font-weight:700;">🔥 StatTrak™</div>' : ''}
             </div>
             <div class="popup-buttons" id="stickerActBtns" style="margin-top:18px;opacity:0;transition:opacity 0.4s;">
@@ -2877,6 +2881,14 @@
                 <button class="btn btn-primary" onclick="handleStickerAction('spin_again')">🎰 Open Again</button>
             </div>
         `;
+        if (document.getElementById('stickerRevealImg') && !stickerImgSrc) {
+            document.getElementById('stickerRevealImg').textContent = sticker.rarity;
+        }
+        document.getElementById('stickerBadge').textContent = sticker.rarity;
+        document.getElementById('stickerNameReveal').textContent = sticker.name;
+        if (document.getElementById('stickerRarityDetail')) {
+            document.getElementById('stickerRarityDetail').textContent = sticker.rarity;
+        }
 
         playStickerEject();
         const revealImg = document.getElementById('stickerRevealImg');
