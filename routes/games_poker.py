@@ -25,9 +25,19 @@ from shared import (
     convert_decimals, broadcast_to_set,
     secure_random, secure_randint, secure_choice, secure_shuffle,
     apply_house_edge, HOUSE_EDGE_POKER,
+    get_vip_status, apply_vip_boost,
 )
 
 router = APIRouter(prefix="/api/games/poker", tags=["games-poker"])
+
+async def _add_win(user_id: int, win: float, conn) -> float:
+    """Apply VIP boost then credit balance. Returns the final (boosted) win."""
+    if win <= 0:
+        return win
+    vip = await get_vip_status(user_id)
+    win = apply_vip_boost(win, vip)
+    await add_balance(user_id, win, conn)
+    return win
 
 HOUSE_EDGE   = 0.03   # 3% rake on every pot
 MIN_BET      = 100
@@ -656,7 +666,7 @@ class HoldemRoom:
                 pool = await get_db()
                 async with pool.acquire() as conn:
                     async with conn.transaction():
-                        await add_balance(winner.user_id, win, conn)
+                        win = await _add_win(winner.user_id, win, conn)
                         await log_game(conn, winner.user_id, 'holdem',
                                        winner.total_bet, win, {
                                            'room': self.room_code,
@@ -719,7 +729,7 @@ class HoldemRoom:
                     for p, best_cards in pot_winners:
                         if not p.is_bot:
                             p.chips += split
-                            await add_balance(p.user_id, split, conn)
+                            split = await _add_win(p.user_id, split, conn)
                             await log_game(conn, p.user_id, 'holdem',
                                            p.total_bet, split, {
                                                'room': self.room_code,
@@ -802,17 +812,19 @@ async def holdem_join(req: HoldemJoinRequest, request: Request):
     user_id = await require_auth(request)
     buy_in  = clamp_bet(req.buy_in)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            user = await conn.fetchrow(
-                "SELECT username, balance FROM users WHERE user_id=$1", user_id
-            )
-            if not user or float(user['balance']) < buy_in:
-                raise HTTPException(400, "Insufficient balance")
+    # Acquire the lock before the DB connection to avoid holding a pool
+    # connection while suspended waiting for the lock (pool exhaustion risk).
+    async with _holdem_lock:
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                user = await conn.fetchrow(
+                    "SELECT username, balance FROM users WHERE user_id=$1", user_id
+                )
+                if not user or float(user['balance']) < buy_in:
+                    raise HTTPException(400, "Insufficient balance")
 
-            async with _holdem_lock:
                 room = _find_holdem_room(buy_in)
                 if not room:
                     code = _holdem_room_code()
@@ -1149,7 +1161,7 @@ async def vp_draw(req: VPDrawRequest, request: Request):
         async with pool.acquire() as conn:
             async with conn.transaction():
                 if win:
-                    await add_balance(user_id, win, conn)
+                    win = await _add_win(user_id, win, conn)
                 await log_game(conn, user_id, 'video_poker', bet, win, {
                     'hand':      hand_key,
                     'mult':      mult,
