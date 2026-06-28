@@ -807,6 +807,14 @@ def _find_holdem_room(buy_in: float) -> Optional[HoldemRoom]:
 class HoldemJoinRequest(BaseModel):
     buy_in: float   # chips to sit down with
 
+class HoldemActionRequest(BaseModel):
+    room_code: str
+    action:    str
+    amount:    float = 0
+
+class HoldemLeaveRequest(BaseModel):
+    room_code: str
+
 @router.post("/holdem/join")
 async def holdem_join(req: HoldemJoinRequest, request: Request):
     user_id = await require_auth(request)
@@ -867,12 +875,12 @@ async def holdem_join(req: HoldemJoinRequest, request: Request):
 
 
 @router.post("/holdem/action")
-async def holdem_action(request: Request, body: dict):
+async def holdem_action(req: HoldemActionRequest, request: Request):
     """Submit a player action (fold/call/check/raise)."""
     user_id   = await require_auth(request)
-    room_code = body.get('room_code', '')
-    action    = body.get('action', '').lower()
-    amount    = float(body.get('amount', 0))
+    room_code = req.room_code
+    action    = req.action.lower()
+    amount    = req.amount
 
     if action not in ('fold', 'call', 'check', 'raise'):
         raise HTTPException(400, "Invalid action")
@@ -886,10 +894,10 @@ async def holdem_action(request: Request, body: dict):
 
 
 @router.post("/holdem/leave")
-async def holdem_leave(request: Request, body: dict):
+async def holdem_leave(req: HoldemLeaveRequest, request: Request):
     """Cash out and leave the table."""
     user_id   = await require_auth(request)
-    room_code = body.get('room_code', '')
+    room_code = req.room_code
     room      = _holdem_rooms.get(room_code)
 
     if not room:

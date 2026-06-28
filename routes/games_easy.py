@@ -1070,6 +1070,9 @@ def _get_or_create_room() -> CrashRoom:
 class CrashBetRequest(BaseModel):
     amount: float
 
+class CrashCashoutRequest(BaseModel):
+    room_id: str
+
 @router.post("/crash/bet")
 async def crash_bet(req: CrashBetRequest, request: Request):
     """Place a bet and get assigned to a room."""
@@ -1114,10 +1117,10 @@ async def crash_bet(req: CrashBetRequest, request: Request):
 
 
 @router.post("/crash/cashout")
-async def crash_cashout(request: Request, body: dict):
+async def crash_cashout(req: CrashCashoutRequest, request: Request):
     """Cash out during an active round."""
     user_id = await require_auth(request)
-    room_id = body.get('room_id', '')
+    room_id = req.room_id
     room    = _crash_rooms.get(room_id)
 
     if not room or room.phase != 'running':

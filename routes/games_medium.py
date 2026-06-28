@@ -112,23 +112,27 @@ async def mines_start(req: MinesStartRequest, request: Request):
     bet     = clamp_bet(req.amount)
     mines   = max(1, min(24, req.mine_count))
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+    async with _get_mine_lock(user_id):
+        if _mine_sessions.get(user_id, {}).get('active'):
+            raise HTTPException(400, "You already have an active Mines game — cashout or finish first")
 
-    # Place mines randomly — hidden from player
-    positions = secure_shuffle(list(range(MINES_GRID)))[:mines]
-    _mine_sessions[user_id] = {
-        'bet':        bet,
-        'mines':      mines,
-        'positions':  positions,
-        'revealed':   [],
-        'active':     True,
-        'created_at': datetime.utcnow(),
-    }
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+
+        # Place mines randomly — hidden from player
+        positions = secure_shuffle(list(range(MINES_GRID)))[:mines]
+        _mine_sessions[user_id] = {
+            'bet':        bet,
+            'mines':      mines,
+            'positions':  positions,
+            'revealed':   [],
+            'active':     True,
+            'created_at': datetime.utcnow(),
+        }
 
     return {
         "success":    True,
@@ -367,28 +371,32 @@ async def tower_start(req: TowerStartRequest, request: Request):
     difficulty = req.difficulty if req.difficulty in TOWER_CONFIG else 'medium'
     cfg        = TOWER_CONFIG[difficulty]
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+    async with _get_tower_lock(user_id):
+        if _tower_sessions.get(user_id, {}).get('active'):
+            raise HTTPException(400, "You already have an active Tower game — cashout or finish first")
 
-    # Pre-generate bomb position for every floor
-    floors_layout = []
-    for _ in range(cfg['floors']):
-        bomb_positions = secure_shuffle(list(range(cfg["boxes"])))[:cfg["bombs"]]
-        floors_layout.append(bomb_positions)
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
 
-    _tower_sessions[user_id] = {
-        'bet':        bet,
-        'difficulty': difficulty,
-        'cfg':        cfg,
-        'layout':     floors_layout,
-        'floor':      0,
-        'active':     True,
-        'created_at': datetime.utcnow(),
-    }
+        # Pre-generate bomb position for every floor
+        floors_layout = []
+        for _ in range(cfg['floors']):
+            bomb_positions = secure_shuffle(list(range(cfg["boxes"])))[:cfg["bombs"]]
+            floors_layout.append(bomb_positions)
+
+        _tower_sessions[user_id] = {
+            'bet':        bet,
+            'difficulty': difficulty,
+            'cfg':        cfg,
+            'layout':     floors_layout,
+            'floor':      0,
+            'active':     True,
+            'created_at': datetime.utcnow(),
+        }
 
     return {
         "success":    True,
@@ -557,23 +565,27 @@ async def shotgun_start(req: ShotgunStartRequest, request: Request):
     bet      = clamp_bet(req.amount)
     chambers = max(3, min(12, req.chambers))
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+    async with _get_shotgun_lock(user_id):
+        if _shotgun_sessions.get(user_id, {}).get('active'):
+            raise HTTPException(400, "You already have an active Shotgun game — cashout or finish first")
 
-    # Loaded chamber position (0-indexed), hidden from player
-    loaded_pos = secure_randint(0, chambers - 1)
-    _shotgun_sessions[user_id] = {
-        'bet':        bet,
-        'chambers':   chambers,
-        'loaded_pos': loaded_pos,
-        'pulled':     0,
-        'active':     True,
-        'created_at': datetime.utcnow(),
-    }
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+
+        # Loaded chamber position (0-indexed), hidden from player
+        loaded_pos = secure_randint(0, chambers - 1)
+        _shotgun_sessions[user_id] = {
+            'bet':        bet,
+            'chambers':   chambers,
+            'loaded_pos': loaded_pos,
+            'pulled':     0,
+            'active':     True,
+            'created_at': datetime.utcnow(),
+        }
 
     return {
         "success":    True,
@@ -728,20 +740,24 @@ async def ladder_start(req: LadderStartRequest, request: Request):
     user_id = await require_auth(request)
     bet     = clamp_bet(req.amount)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            if not await deduct_balance(user_id, bet, conn):
-                raise HTTPException(400, "Insufficient balance")
+    async with _get_ladder_lock(user_id):
+        if _ladder_sessions.get(user_id, {}).get('active'):
+            raise HTTPException(400, "You already have an active Ladder Climb game — cashout or finish first")
 
-    _ladder_sessions[user_id] = {
-        'bet':        bet,
-        'rung':       0,
-        'mult':       1.0,
-        'active':     True,
-        'created_at': datetime.utcnow(),
-    }
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                if not await deduct_balance(user_id, bet, conn):
+                    raise HTTPException(400, "Insufficient balance")
+
+        _ladder_sessions[user_id] = {
+            'bet':        bet,
+            'rung':       0,
+            'mult':       1.0,
+            'active':     True,
+            'created_at': datetime.utcnow(),
+        }
 
     return {
         "success":     True,

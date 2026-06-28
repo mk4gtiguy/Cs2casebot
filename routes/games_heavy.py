@@ -524,19 +524,21 @@ async def join_race(req: JoinRaceRequest, request: Request):
     bet      = clamp_bet(req.amount)
     agent_id = req.agent_id if req.agent_id in AGENT_PROFILES else 'sas'
 
-    # Validate user funds
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(user_id, conn=conn)
-            user = await conn.fetchrow(
-                "SELECT username, balance FROM users WHERE user_id=$1", user_id
-            )
-            if not user or float(user['balance']) < bet:
-                raise HTTPException(400, "Insufficient balance")
+    # Acquire room lock before DB connection to avoid holding a pool connection
+    # while suspended waiting for the lock (pool exhaustion risk).
+    async with _race_room_lock:
+        for existing_room in _race_rooms.values():
+            if user_id in existing_room.racers and existing_room.phase in ('lobby', 'racing'):
+                raise HTTPException(400, "Already in an active race room")
 
-            # Check agent not already in room
-            async with _race_room_lock:
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await ensure_user_exists(user_id, conn=conn)
+                user = await conn.fetchrow(
+                    "SELECT username, balance FROM users WHERE user_id=$1", user_id
+                )
+
                 room = _find_open_room(bet)
                 if room and agent_id in {r.agent_id for r in room.racers.values()}:
                     # Pick different agent automatically
