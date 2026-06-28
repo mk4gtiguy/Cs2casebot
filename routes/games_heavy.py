@@ -427,9 +427,16 @@ class RaceRoom:
         # Calculate payouts:
         # 1st: 50% of pot, 2nd: 30%, 3rd: 15%, 4th: 5%
         # House takes HOUSE_EDGE from total pot first.
+        # Bots have bet=0, which would make the pot tiny when bots fill the
+        # room, causing 1st-place real players to get back only ~48% of their
+        # bet. Fix: bots contribute a virtual bet equal to the minimum real
+        # player bet so payouts are fair regardless of bot count.
         PLACE_SHARES = {1: 0.50, 2: 0.30, 3: 0.15, 4: 0.05}
 
-        total_pot  = sum(r.bet for r in self.racers.values() if not r.is_bot)
+        real_bets  = [r.bet for r in self.racers.values() if not r.is_bot]
+        n_bots     = sum(1 for r in self.racers.values() if r.is_bot)
+        min_bet    = min(real_bets) if real_bets else 0
+        total_pot  = sum(real_bets) + n_bots * min_bet
         net_pot    = round(total_pot * (1 - HOUSE_EDGE), 2)
 
         results    = []
@@ -482,9 +489,22 @@ class RaceRoom:
 
         if last_err:
             logger.error(f"Race {self.room_code} payout permanently failed: {last_err}")
+            # Refund all real players their original bet so the promise of a
+            # refund in the broadcast message is actually honoured.
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        for racer in self.racers.values():
+                            if not racer.is_bot and racer.bet > 0:
+                                await add_balance(racer.user_id, racer.bet, conn)
+                                logger.info(
+                                    f"Race {self.room_code}: refunded {racer.bet} to user {racer.user_id}"
+                                )
+            except Exception as refund_err:
+                logger.error(f"Race {self.room_code} refund also failed: {refund_err}")
             await self.broadcast({
                 'type':    'error',
-                'message': 'Payout system error — your bet will be refunded. Contact support.',
+                'message': 'Payout system error — your bet has been refunded. Contact support.',
             })
             return
 

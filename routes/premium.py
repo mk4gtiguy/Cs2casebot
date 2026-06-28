@@ -333,12 +333,44 @@ async def vip_cancel(request: Request):
     user_id = await require_auth(request)
     pool = await get_db()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE users SET vip_expires_at = NOW() WHERE user_id = $1",
-            user_id
+        row = await conn.fetchrow(
+            "SELECT stripe_customer_id FROM users WHERE user_id=$1", user_id
         )
+
+    customer_id = row["stripe_customer_id"] if row else None
+    cancelled_stripe = False
+
+    if customer_id:
+        try:
+            import stripe as _stripe
+            _stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "")
+            if _stripe.api_key:
+                subs = _stripe.Subscription.list(
+                    customer=customer_id, status="active", limit=10
+                )
+                for sub in subs.auto_paging_iter():
+                    _stripe.Subscription.modify(sub.id, cancel_at_period_end=True)
+                cancelled_stripe = True
+        except Exception as _e:
+            logger.warning(f"Stripe cancel failed for user {user_id}: {_e}")
+
+    # Leave vip_expires_at unchanged — the customer.subscription.deleted
+    # webhook fires at period end and revokes access then. Only immediately
+    # revoke if Stripe is not configured (no billing to worry about).
+    if not cancelled_stripe:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET vip_expires_at = NOW() WHERE user_id = $1",
+                user_id
+            )
+
     _invalidate_vip_cache(user_id)
-    return {"success": True, "message": "VIP cancelled. Access remains until end of current period."}
+    msg = (
+        "Subscription cancelled. VIP benefits remain until the end of your current billing period."
+        if cancelled_stripe
+        else "VIP cancelled. Access has been revoked immediately."
+    )
+    return {"success": True, "message": msg}
 
 # ============================================================
 # TICKET STORE
