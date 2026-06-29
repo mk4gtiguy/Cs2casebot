@@ -246,7 +246,14 @@
     white-space: nowrap;
   }
   .rarity-chip:hover { border-color: var(--border2); color: var(--text); }
-  .rarity-chip.active { color: #fff; border-color: currentColor; }
+  .rarity-chip.active { color: #fff; border-color: #fff; background: rgba(255,255,255,0.1); }
+  .rarity-chip[data-r="Consumer Grade"].active   { color: var(--consumer);   border-color: var(--consumer);   background: rgba(176,195,217,0.15); }
+  .rarity-chip[data-r="Industrial Grade"].active { color: var(--industrial); border-color: var(--industrial); background: rgba(94,152,217,0.15); }
+  .rarity-chip[data-r="Mil-Spec"].active         { color: var(--milspec);    border-color: var(--milspec);    background: rgba(75,105,255,0.15); }
+  .rarity-chip[data-r="Restricted"].active       { color: var(--restricted); border-color: var(--restricted); background: rgba(136,71,255,0.15); }
+  .rarity-chip[data-r="Classified"].active       { color: var(--classified); border-color: var(--classified); background: rgba(211,44,230,0.15); }
+  .rarity-chip[data-r="Covert"].active           { color: var(--covert);     border-color: var(--covert);     background: rgba(235,75,75,0.15); }
+  .rarity-chip[data-r="Contraband"].active       { color: var(--contraband); border-color: var(--contraband); background: rgba(228,174,57,0.15); }
 
   /* ── Listings grid ── */
   .listings-grid {
@@ -277,7 +284,7 @@
 
   .card-img-wrap {
     position: relative;
-    background: radial-gradient(ellipse at center, color-mix(in srgb, var(--card-rarity, #4b69ff) 18%, transparent) 0%, transparent 70%);
+    background: radial-gradient(ellipse at center, var(--card-glow, rgba(75,105,255,0.18)) 0%, transparent 70%);
     padding: 16px 12px 10px;
     display: flex;
     align-items: center;
@@ -435,6 +442,7 @@
   .btn-submit:disabled { opacity: .4; cursor: default; transform: none; }
 
   /* My listings table */
+  .table-wrap { overflow-x: auto; }
   .my-table { width: 100%; border-collapse: collapse; }
   .my-table th {
     text-align: left; font-size: 11px; text-transform: uppercase;
@@ -503,10 +511,50 @@
   @keyframes slideIn { from { transform: translateX(30px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
   @keyframes fadeOut { to { opacity: 0; transform: translateX(10px); } }
 
+  @media (max-width: 768px) {
+    .page-wrap { padding: 16px 12px; }
+    .listings-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .inv-grid { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
+  }
+
   @media (max-width: 640px) {
+    .site-header { padding: 0 14px; gap: 12px; }
     .header-nav { display: none; }
-    .filter-bar { flex-direction: column; }
-    .rarity-chips { display: none; }
+    .header-right { gap: 8px; }
+
+    .market-title-row { flex-wrap: wrap; gap: 8px; }
+    .market-title-row h1 { font-size: 18px; }
+    .btn-sell-now { margin-left: 0; flex-basis: 100%; }
+
+    .tab-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .tab-btn { padding: 10px 14px; font-size: 13px; white-space: nowrap; }
+
+    .filter-bar { flex-direction: column; align-items: stretch; padding: 10px 12px; }
+    .search-wrap { min-width: 0; width: 100%; }
+    .filter-select { width: 100%; }
+    .filter-divider { display: none; }
+    .rarity-chips {
+      display: flex; flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+      width: 100%; padding-bottom: 2px;
+    }
+    .rarity-chip { flex-shrink: 0; }
+
+    .listings-grid { grid-template-columns: repeat(auto-fill, minmax(135px, 1fr)); gap: 8px; }
+
+    /* Buy button has no hover affordance on touch — keep it always visible and in-flow */
+    .card-buy-btn { position: static; transform: none; }
+    .listing-card:hover .card-buy-btn { transform: none; }
+
+    .inv-grid { grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); max-height: 320px; }
+
+    .panel { padding: 16px; }
+    .modal-box { padding: 18px; width: 92vw; }
+    .modal-item-row { flex-wrap: wrap; }
+
+    .my-table th, .my-table td { padding: 8px 6px; font-size: 12px; }
+
+    .toast-wrap { left: 12px; right: 12px; bottom: 12px; }
+    .toast { min-width: 0; width: 100%; }
   }
 </style>
 </head>
@@ -554,13 +602,13 @@
       <div class="filter-divider"></div>
       <div class="rarity-chips" id="rarityChips">
         <button class="rarity-chip active" data-r="" onclick="setRarity(this,'')">All</button>
-        <button class="rarity-chip" data-r="Consumer Grade"   style="--chip-c:#b0c3d9" onclick="setRarity(this,'Consumer Grade')">Consumer</button>
-        <button class="rarity-chip" data-r="Industrial Grade" style="--chip-c:#5e98d9" onclick="setRarity(this,'Industrial Grade')">Industrial</button>
-        <button class="rarity-chip" data-r="Mil-Spec"         style="--chip-c:#4b69ff" onclick="setRarity(this,'Mil-Spec')">Mil-Spec</button>
-        <button class="rarity-chip" data-r="Restricted"       style="--chip-c:#8847ff" onclick="setRarity(this,'Restricted')">Restricted</button>
-        <button class="rarity-chip" data-r="Classified"       style="--chip-c:#d32ce6" onclick="setRarity(this,'Classified')">Classified</button>
-        <button class="rarity-chip" data-r="Covert"           style="--chip-c:#eb4b4b" onclick="setRarity(this,'Covert')">Covert</button>
-        <button class="rarity-chip" data-r="Contraband"       style="--chip-c:#e4ae39" onclick="setRarity(this,'Contraband')">Contraband</button>
+        <button class="rarity-chip" data-r="Consumer Grade"   onclick="setRarity(this,'Consumer Grade')">Consumer</button>
+        <button class="rarity-chip" data-r="Industrial Grade" onclick="setRarity(this,'Industrial Grade')">Industrial</button>
+        <button class="rarity-chip" data-r="Mil-Spec"         onclick="setRarity(this,'Mil-Spec')">Mil-Spec</button>
+        <button class="rarity-chip" data-r="Restricted"       onclick="setRarity(this,'Restricted')">Restricted</button>
+        <button class="rarity-chip" data-r="Classified"       onclick="setRarity(this,'Classified')">Classified</button>
+        <button class="rarity-chip" data-r="Covert"           onclick="setRarity(this,'Covert')">Covert</button>
+        <button class="rarity-chip" data-r="Contraband"       onclick="setRarity(this,'Contraband')">Contraband</button>
       </div>
     </div>
     <div class="listings-grid" id="listingsGrid"></div>
@@ -603,21 +651,23 @@
   <div id="pane-mine" style="display:none">
     <div class="panel" style="max-width:900px">
       <h2>My Listings</h2>
-      <table class="my-table">
-        <thead>
-          <tr>
-            <th>Item</th>
-            <th>Condition</th>
-            <th>Price</th>
-            <th>Status</th>
-            <th>Date</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="myListingsBody">
-          <tr><td colspan="6" style="color:var(--text-dim);text-align:center;padding:30px">Loading&#8230;</td></tr>
-        </tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="my-table">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Condition</th>
+              <th>Price</th>
+              <th>Status</th>
+              <th>Date</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="myListingsBody">
+            <tr><td colspan="6" style="color:var(--text-dim);text-align:center;padding:30px">Loading&#8230;</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
@@ -648,14 +698,15 @@ const S = {
 };
 
 const RARITY_COLORS = {
-  'Consumer Grade':   '#b0c3d9',
-  'Industrial Grade': '#5e98d9',
-  'Mil-Spec':         '#4b69ff',
-  'Restricted':       '#8847ff',
-  'Classified':       '#d32ce6',
-  'Covert':           '#eb4b4b',
-  'Contraband':       '#e4ae39',
+  'Consumer Grade':   { hex: '#b0c3d9', glow: 'rgba(176,195,217,0.18)' },
+  'Industrial Grade': { hex: '#5e98d9', glow: 'rgba(94,152,217,0.18)' },
+  'Mil-Spec':         { hex: '#4b69ff', glow: 'rgba(75,105,255,0.18)' },
+  'Restricted':       { hex: '#8847ff', glow: 'rgba(136,71,255,0.18)' },
+  'Classified':       { hex: '#d32ce6', glow: 'rgba(211,44,230,0.18)' },
+  'Covert':           { hex: '#eb4b4b', glow: 'rgba(235,75,75,0.18)' },
+  'Contraband':       { hex: '#e4ae39', glow: 'rgba(228,174,57,0.18)' },
 };
+const DEFAULT_RARITY_COLOR = { hex: '#666', glow: 'rgba(102,102,102,0.18)' };
 
 const COND_MAP = {
   'Factory New':    ['fn', 'FN'],
@@ -720,15 +771,16 @@ async function loadListings(reset) {
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function buildCard(l) {
-  const color    = RARITY_COLORS[l.rarity] || '#666';
+  const rc       = RARITY_COLORS[l.rarity] || DEFAULT_RARITY_COLOR;
   const condKey  = COND_MAP[l.condition] || ['', l.condition || ''];
   const imgSrc   = l.image_url || ('/api/skin-image?name=' + encodeURIComponent(l.item_name));
   const stBadge  = l.is_stattrak ? '<div class="stattrak-badge">StatTrak&#8482;</div>' : '';
   const floatStr = l.float_value != null ? '<span class="float-val">' + parseFloat(l.float_value).toFixed(4) + '</span>' : '';
   const condBadge = condKey[0] ? '<span class="cond-badge cond-'+condKey[0]+'">'+condKey[1]+'</span>' : '';
   const price    = parseFloat(l.price).toFixed(2);
-  const dataAttr = 'data-id="'+l.id+'" data-name="'+esc(l.item_name)+'" data-price="'+price+'" data-seller="'+esc(l.seller_name||'')+'" data-img="'+esc(imgSrc)+'" data-cond="'+esc(l.condition||'')+'" data-float="'+(l.float_value||'')+'" data-st="'+(l.is_stattrak?'1':'0')+'"';
-  return '<div class="listing-card" style="--card-rarity:'+color+'" '+dataAttr+' onclick="openBuyFromCard(this)">'
+  const floatAttr = l.float_value != null ? l.float_value : '';
+  const dataAttr = 'data-id="'+l.id+'" data-name="'+esc(l.item_name)+'" data-price="'+price+'" data-seller="'+esc(l.seller_name||'')+'" data-img="'+esc(imgSrc)+'" data-cond="'+esc(l.condition||'')+'" data-float="'+floatAttr+'" data-st="'+(l.is_stattrak?'1':'0')+'"';
+  return '<div class="listing-card" style="--card-rarity:'+rc.hex+';--card-glow:'+rc.glow+'" '+dataAttr+' onclick="openBuyFromCard(this)">'
     + '<div class="card-stripe"></div>'
     + '<div class="card-img-wrap">'
     +   stBadge
@@ -742,7 +794,7 @@ function buildCard(l) {
     +     '<div class="card-seller">by <span>'+esc(l.seller_name||'Unknown')+'</span></div>'
     +   '</div>'
     + '</div>'
-    + '<button class="card-buy-btn">Buy Now &#8212; $'+price+'</button>'
+    + '<button type="button" class="card-buy-btn">Buy Now &#8212; $'+price+'</button>'
     + '</div>';
 }
 
@@ -783,7 +835,7 @@ function openBuyFromCard(el) {
     seller_name:el.dataset.seller,
     image_url:  el.dataset.img,
     condition:  el.dataset.cond,
-    float_value:el.dataset.float || null,
+    float_value:el.dataset.float !== '' ? el.dataset.float : null,
     is_stattrak:el.dataset.st === '1',
   };
   openBuyModal(listing);
@@ -795,7 +847,7 @@ function openBuyModal(l) {
   const price    = parseFloat(l.price);
   const imgSrc   = l.image_url || ('/api/skin-image?name='+encodeURIComponent(l.item_name));
   document.getElementById('modalItemRow').innerHTML =
-    '<img src="'+esc(imgSrc)+'" alt="'+esc(l.item_name)+'" onerror="this.src=\'\'" style="width:90px;height:68px;object-fit:contain;border-radius:4px">'
+    '<img src="'+esc(imgSrc)+'" alt="'+esc(l.item_name)+'" onerror="this.style.display=\'none\'" style="width:90px;height:68px;object-fit:contain;border-radius:4px">'
     + '<div class="modal-item-info">'
     +   '<div class="iname">'+(l.is_stattrak?'<span style="color:#cf6a32">StatTrak&#8482;</span> ':'')+esc(l.item_name)+'</div>'
     +   '<div class="imeta">'+(condKey[1]||l.condition||'')+(l.float_value?' &middot; Float: '+parseFloat(l.float_value).toFixed(4):'')+'</div>'
@@ -836,19 +888,22 @@ async function loadInventory() {
   const grid = document.getElementById('invGrid');
   grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:20px;grid-column:1/-1;text-align:center">Loading…</div>';
   try {
-    const res  = await fetch('/api/inventory');
+    const res  = await fetch('/api/user/me/inventory?limit=200');
+    if (res.status===401) { grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:30px;grid-column:1/-1;text-align:center">Please log in to see your inventory.</div>'; return; }
     const data = await res.json();
-    invItems = (data.items || data || []).filter(i => i.status==='kept' && i.item_type!=='sticker');
+    const items = Array.isArray(data.items) ? data.items : (Array.isArray(data) ? data : []);
+    invItems = items.filter(i => i.item_type !== 'sticker');
     if (!invItems.length) {
       grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:30px;grid-column:1/-1;text-align:center">No items available to list.</div>';
       return;
     }
     grid.innerHTML = invItems.map((item, idx) => {
+      const name    = item.display_name || item.item_name;
       const imgSrc  = item.image_url || ('/api/skin-image?name='+encodeURIComponent(item.item_name));
       const condKey = COND_MAP[item.condition] || ['',''];
       return '<div class="inv-item" id="inv-'+idx+'" onclick="selectInvItem('+idx+')">'
-        + '<img src="'+esc(imgSrc)+'" alt="'+esc(item.item_name)+'" onerror="this.src=\'\'">'
-        + '<div class="ii-name">'+esc(item.item_name)+'</div>'
+        + '<img src="'+esc(imgSrc)+'" alt="'+esc(name)+'" onerror="this.style.display=\'none\'">'
+        + '<div class="ii-name">'+esc(name)+'</div>'
         + '<div class="ii-cond">'+(condKey[1]||item.condition||'')+'</div>'
         + '</div>';
     }).join('');
@@ -903,11 +958,10 @@ async function submitListing() {
     document.getElementById('listPrice').value = '';
     document.getElementById('priceSummary').style.display='none';
     loadInventory();
-    updateListBtn();
   } catch(e) {
     toast(e.message, 'error');
   } finally {
-    btn.disabled=false;
+    updateListBtn();
   }
 }
 
@@ -919,6 +973,7 @@ async function loadMyListings() {
     const res  = await fetch('/api/market/my-listings');
     if (res.status===401) { tbody.innerHTML='<tr><td colspan="6" style="color:var(--text-dim);text-align:center;padding:30px">Please log in to see your listings.</td></tr>'; return; }
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to load listings');
     if (!data.length) { tbody.innerHTML='<tr><td colspan="6" style="color:var(--text-dim);text-align:center;padding:30px">No listings yet.</td></tr>'; return; }
     const pillMap = {active:'pill-active', sold:'pill-sold', cancelled:'pill-cancelled'};
     tbody.innerHTML = data.map(l => {
@@ -971,18 +1026,6 @@ function toast(msg, type) {
 
 document.getElementById('buyModal').addEventListener('click', function(e) {
   if (e.target===this) closeModal();
-});
-
-// Rarity chip active style
-document.querySelectorAll('.rarity-chip[data-r]').forEach(chip => {
-  chip.addEventListener('click', () => {
-    const c = chip.style.getPropertyValue('--chip-c');
-    if (chip.classList.contains('active') && c) {
-      chip.style.background = 'rgba(0,0,0,0)';
-      chip.style.borderColor = c;
-      chip.style.color = c;
-    }
-  });
 });
 
 loadListings(true);
