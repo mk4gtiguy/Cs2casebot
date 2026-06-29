@@ -3553,9 +3553,13 @@ window.setInvTypeFilter = setInvTypeFilter;
             const data = await apiCall('/api/vip/premium-batch-open', { method: 'POST' });
             if (data.success) {
                 await loadTicketBalance();
-                await loadInventory();
                 await loadStats();
-                // Show items using bulk reel
+                // Open the reel popup so spinner animations are visible
+                const overlay = document.getElementById('popupOverlay');
+                overlay.classList.add('show');
+                state.popupItems = [];
+                state.popupCaseId = 'premium_batch';
+                // Show items using bulk reel (each case spins before revealing)
                 bulkItems = data.items;
                 bulkIndex = 0;
                 showBulkReel();
