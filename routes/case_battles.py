@@ -50,6 +50,8 @@ class QueueRequest(BaseModel):
     fee: float
     rounds: int = 3
     win_condition: str = "total_value"
+    player_count: int = 2   # 2, 3, 4 for FFA; 4, 6, 8 for team (team_size>1)
+    team_size: int = 1      # 1=FFA, 2/3/4 for team battles
 
 class PvERequest(BaseModel):
     fee: float
@@ -63,8 +65,8 @@ class PvERequest(BaseModel):
 
 class BattleManager:
     def __init__(self):
-        # fee → asyncio.Queue of waiting players
-        self.queues:         Dict[float, asyncio.Queue] = {}
+        # (fee, player_count, team_size) → asyncio.Queue of waiting players
+        self.queues:         Dict[tuple, asyncio.Queue] = {}
         # user_ids currently waiting in any queue (prevents self-match / double-deduction)
         self.queued_users:   Set[int]                   = set()
         # battle_id → room state dict
@@ -80,10 +82,11 @@ class BattleManager:
         self._shutdown = False
 
     # ── Queue helpers ──────────────────────────────────────
-    def get_queue(self, fee: float) -> asyncio.Queue:
-        if fee not in self.queues:
-            self.queues[fee] = asyncio.Queue()
-        return self.queues[fee]
+    def get_queue(self, fee: float, player_count: int = 2, team_size: int = 1) -> asyncio.Queue:
+        key = (fee, player_count, team_size)
+        if key not in self.queues:
+            self.queues[key] = asyncio.Queue()
+        return self.queues[key]
 
     # ── WS registry ───────────────────────────────────────
     def add_ws(self, battle_id: int, ws: WebSocket):
@@ -109,33 +112,24 @@ class BattleManager:
             try:
                 pool = await get_db()
                 async with pool.acquire() as conn:
-                    row = await conn.fetchval(
-                        "SELECT fee_tiers FROM battle_settings LIMIT 1"
-                    )
-                    if not row:
-                        continue
-                    for fee in row:
-                        queue = self.queues.get(float(fee))
-                        if not queue or queue.qsize() < 2:
+                    # Iterate over all active queues keyed by (fee, player_count, team_size)
+                    for key, queue in list(self.queues.items()):
+                        fee, player_count, team_size = key
+                        if queue.qsize() < player_count:
                             continue
-                        p1 = await queue.get()
-                        p2 = await queue.get()
-                        self.queued_users.discard(p1['user_id'])
-                        self.queued_users.discard(p2['user_id'])
-                        # Only proceed if both WS are still alive
+                        players = [await queue.get() for _ in range(player_count)]
+                        for p in players:
+                            self.queued_users.discard(p['user_id'])
                         battle_id = await self._create_pvp_battle(
-                            conn, p1, p2, float(fee)
+                            conn, players, float(fee)
                         )
                         if battle_id:
-                            await self._notify_match_found(p1['ws'], battle_id, p1)
-                            await self._notify_match_found(p2['ws'], battle_id, p2)
+                            for p in players:
+                                await self._notify_match_found(p['ws'], battle_id, p)
                         else:
-                            # Battle creation failed (e.g. a player's balance dropped
-                            # between queue check and deduction). Notify both so they
-                            # can re-join the queue rather than waiting silently.
-                            for _p in (p1, p2):
+                            for p in players:
                                 try:
-                                    await _p['ws'].send_json({
+                                    await p['ws'].send_json({
                                         'type':    'match_failed',
                                         'message': 'Match could not be created — '
                                                    'please re-join the queue.',
@@ -145,48 +139,54 @@ class BattleManager:
             except Exception as e:
                 logger.error(f"Matchmaking loop error: {e}")
 
-    async def _create_pvp_battle(self, conn, p1, p2, fee: float) -> Optional[int]:
+    async def _create_pvp_battle(self, conn, players: list, fee: float) -> Optional[int]:
+        """Create a PvP battle for 2–8 players (FFA or team modes)."""
         try:
-            rounds        = p1.get('rounds', 3)
-            win_condition = p1.get('win_condition', 'total_value')
+            rounds        = players[0].get('rounds', 3)
+            win_condition = players[0].get('win_condition', 'total_value')
+            player_count  = len(players)
+            team_size     = int(players[0].get('team_size', 1))
 
             async with conn.transaction():
-                for player in (p1, p2):
+                for player in players:
                     deducted = await conn.fetchval("""
                         UPDATE users SET balance = balance - $1
                         WHERE user_id = $2 AND balance >= $1
                         RETURNING user_id
                     """, fee, player['user_id'])
                     if not deducted:
-                        # Raise so the transaction rolls back rather than
-                        # committing the first player's deduction without a battle.
                         raise ValueError(f"Insufficient balance for user {player['user_id']}")
 
                 battle_id = await conn.fetchval("""
                     INSERT INTO case_battles
-                        (battle_type, status, entry_fee, total_rounds, win_condition)
-                    VALUES ('pvp', 'waiting', $1, $2, $3)
+                        (battle_type, status, entry_fee, total_rounds,
+                         win_condition, player_count, team_size)
+                    VALUES ('pvp', 'waiting', $1, $2, $3, $4, $5)
                     RETURNING id
-                """, fee, rounds, win_condition)
+                """, fee, rounds, win_condition, player_count, team_size)
 
-                await conn.executemany("""
-                    INSERT INTO case_battle_participants (battle_id, user_id)
-                    VALUES ($1, $2)
-                """, [(battle_id, p1['user_id']), (battle_id, p2['user_id'])])
+                for i, player in enumerate(players):
+                    team_id = (i // team_size) + 1  # 1-indexed team
+                    await conn.execute("""
+                        INSERT INTO case_battle_participants (battle_id, user_id, team_id)
+                        VALUES ($1, $2, $3)
+                    """, battle_id, player['user_id'], team_id)
 
             self.rooms[battle_id] = {
                 'status':       'waiting',
                 'battle_type':  'pvp',
                 'players': {
-                    p1['user_id']: {'ws': p1['ws'], 'ready': False},
-                    p2['user_id']: {'ws': p2['ws'], 'ready': False},
+                    p['user_id']: {'ws': p['ws'], 'ready': False,
+                                   'team_id': (i // team_size) + 1}
+                    for i, p in enumerate(players)
                 },
                 'round':        0,
                 'total_rounds': rounds,
                 'win_condition': win_condition,
+                'team_size':    team_size,
                 'difficulty':   None,
             }
-            self.ws_connections[battle_id] = {p1['ws'], p2['ws']}
+            self.ws_connections[battle_id] = {p['ws'] for p in players}
             return battle_id
         except Exception as e:
             logger.error(f"Create PvP battle error: {e}")
@@ -439,50 +439,78 @@ class BattleManager:
     # ── Finish battle ─────────────────────────────────────
     async def _finish_battle(self, battle_id: int, conn):
         participants = await conn.fetch("""
-            SELECT user_id, total_value, gold_count, best_item_value, is_bot
+            SELECT user_id, total_value, gold_count, best_item_value, is_bot, team_id
             FROM case_battle_participants
             WHERE battle_id = $1
         """, battle_id)
 
         battle = await conn.fetchrow(
-            "SELECT win_condition, entry_fee, battle_type FROM case_battles WHERE id = $1",
+            "SELECT win_condition, entry_fee, battle_type, team_size FROM case_battles WHERE id = $1",
             battle_id
         )
         win_condition = battle['win_condition']
+        team_size     = int(battle['team_size'] or 1)
 
         col_map = {'best_item': 'best_item_value'}
         primary_col = col_map.get(win_condition, win_condition)
 
-        def sort_key(p):
-            primary   = float(p[primary_col])
-            secondary = float(p['gold_count'] if win_condition != 'gold_count' else p['total_value'])
-            return (primary, secondary)
+        entry_fee    = float(battle['entry_fee'])
+        total_pool   = round(entry_fee * len(participants) * 0.95, 2)
 
-        sorted_p = sorted(participants, key=sort_key, reverse=True)
-        winner   = sorted_p[0]
+        if team_size > 1:
+            # ── Team battle: group by team_id, highest team score wins ──
+            teams: Dict[int, Any] = {}
+            for p in participants:
+                tid = p['team_id'] or 1
+                if tid not in teams:
+                    teams[tid] = {'score': 0.0, 'members': []}
+                teams[tid]['score'] += float(p[primary_col])
+                teams[tid]['members'].append(p)
 
-        entry_fee = float(battle['entry_fee'])
-        prize     = round(entry_fee * len(participants) * 0.95, 2)  # 5% house edge
+            winning_team_id  = max(teams, key=lambda t: teams[t]['score'])
+            winning_team     = teams[winning_team_id]
+            prize_per_member = round(total_pool / team_size, 2)
+            winner           = winning_team['members'][0]
 
-        # Guard against _schedule_bot_open and _tick_loop both calling
-        # _finish_battle concurrently — only the first UPDATE wins.
-        async with conn.transaction():
-            updated = await conn.fetchval("""
-                UPDATE case_battles
-                SET status = 'completed', ended_at = NOW(), winner_id = $1
-                WHERE id = $2 AND status = 'active'
-                RETURNING id
-            """, winner['user_id'], battle_id)
+            async with conn.transaction():
+                updated = await conn.fetchval("""
+                    UPDATE case_battles SET status='completed', ended_at=NOW(), winner_id=$1
+                    WHERE id=$2 AND status='active' RETURNING id
+                """, winner['user_id'], battle_id)
+                if not updated:
+                    return
+                for member in winning_team['members']:
+                    if member['user_id'] > 0:
+                        await conn.execute(
+                            "UPDATE users SET balance=balance+$1 WHERE user_id=$2",
+                            prize_per_member, member['user_id']
+                        )
+            prize = prize_per_member
+        else:
+            # ── FFA / 1v1: individual highest score wins ──
+            def sort_key(p):
+                primary   = float(p[primary_col])
+                secondary = float(p['gold_count'] if win_condition != 'gold_count' else p['total_value'])
+                return (primary, secondary)
 
-            if not updated:
-                return  # Already finished by a concurrent call
+            sorted_p = sorted(participants, key=sort_key, reverse=True)
+            winner   = sorted_p[0]
+            prize    = total_pool
 
-            # Only pay real users (not bots)
-            if winner['user_id'] > 0:
-                await conn.execute(
-                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                    prize, winner['user_id']
-                )
+            async with conn.transaction():
+                updated = await conn.fetchval("""
+                    UPDATE case_battles
+                    SET status = 'completed', ended_at = NOW(), winner_id = $1
+                    WHERE id = $2 AND status = 'active'
+                    RETURNING id
+                """, winner['user_id'], battle_id)
+                if not updated:
+                    return
+                if winner['user_id'] > 0:
+                    await conn.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                        prize, winner['user_id']
+                    )
 
         winner_row = await conn.fetchrow(
             "SELECT username FROM users WHERE user_id = $1", winner['user_id']
@@ -494,21 +522,23 @@ class BattleManager:
                 "SELECT username FROM users WHERE user_id = $1", p['user_id']
             )
             scores.append({
-                'user_id':       p['user_id'],
-                'username':      user_row['username'] if user_row else f'User {p["user_id"]}',
-                'total_value':   float(p['total_value']),
-                'gold_count':    int(p['gold_count']),
+                'user_id':         p['user_id'],
+                'username':        user_row['username'] if user_row else f'User {p["user_id"]}',
+                'total_value':     float(p['total_value']),
+                'gold_count':      int(p['gold_count']),
                 'best_item_value': float(p['best_item_value']),
-                'is_bot':        p['is_bot'],
+                'is_bot':          p['is_bot'],
+                'team_id':         p['team_id'],
             })
 
         await self.broadcast(battle_id, {
-            'type':             'battle_complete',
-            'winner_id':        winner['user_id'],
-            'winner_username':  winner_row['username'] if winner_row else 'Unknown',
-            'prize':            prize,
-            'scores':           scores,
-            'battle_type':      battle['battle_type'],
+            'type':            'battle_complete',
+            'winner_id':       winner['user_id'],
+            'winner_username': winner_row['username'] if winner_row else 'Unknown',
+            'prize':           prize,
+            'team_size':       team_size,
+            'scores':          scores,
+            'battle_type':     battle['battle_type'],
         })
 
         # Clean up room after 2 minutes
@@ -687,14 +717,15 @@ async def _send_state(ws: WebSocket, battle_id: int, user_id: int):
     pool = await get_db()
     async with pool.acquire() as conn:
         battle = await conn.fetchrow("""
-            SELECT status, total_rounds, win_condition, battle_type
+            SELECT status, total_rounds, win_condition, battle_type,
+                   player_count, team_size
             FROM case_battles WHERE id = $1
         """, battle_id)
 
         participants = await conn.fetch("""
             SELECT cp.user_id, cp.total_value, cp.gold_count,
                    cp.best_item_value, cp.is_bot, cp.current_round,
-                   u.username
+                   cp.team_id, u.username
             FROM case_battle_participants cp
             LEFT JOIN users u ON cp.user_id = u.user_id
             WHERE cp.battle_id = $1
@@ -716,6 +747,8 @@ async def _send_state(ws: WebSocket, battle_id: int, user_id: int):
             'total_rounds':  battle['total_rounds'] if battle else 0,
             'win_condition': battle['win_condition'] if battle else 'total_value',
             'battle_type':   battle['battle_type'] if battle else 'pve',
+            'player_count':  battle['player_count'] if battle else 2,
+            'team_size':     battle['team_size'] if battle else 1,
             'participants':  convert_decimals([dict(p) for p in participants]),
             'rounds':        convert_decimals([dict(r) for r in rounds]),
         })
@@ -806,16 +839,16 @@ async def _handle_open(battle_id: int, user_id: int, case_id: Optional[str]):
             'value':    float(item['price']),
         })
 
-        # If opponent is a bot, schedule their open
-        opponent = await conn.fetchrow("""
-            SELECT id, is_bot, bot_difficulty
+        # Schedule opens for any bot opponents in this battle
+        bot_opponents = await conn.fetch("""
+            SELECT id, bot_difficulty
             FROM case_battle_participants
-            WHERE battle_id = $1 AND user_id != $2
+            WHERE battle_id = $1 AND user_id != $2 AND is_bot = TRUE
         """, battle_id, user_id)
-        if opponent and opponent['is_bot']:
+        for bot in bot_opponents:
             asyncio.create_task(_schedule_bot_open(
-                battle_id, opponent['id'], current_round,
-                opponent['bot_difficulty'] or 'normal'
+                battle_id, bot['id'], current_round,
+                bot['bot_difficulty'] or 'normal'
             ))
 
         await battle_manager._check_and_advance(battle_id, current_round, conn)
@@ -841,6 +874,11 @@ async def get_battle_settings(request: Request):
         }
 
 
+_VALID_MODES = {
+    (2, 1), (3, 1), (4, 1),   # FFA: 1v1, 1v1v1, 1v1v1v1
+    (4, 2), (6, 3), (8, 4),   # Team: 2v2, 3v3, 4v4
+}
+
 @router.post("/queue")
 async def join_queue(request: Request, req: QueueRequest):
     user_id = await get_user_id_from_session(request)
@@ -850,6 +888,12 @@ async def join_queue(request: Request, req: QueueRequest):
     _VALID_WIN_CONDITIONS = {'total_value', 'gold_count', 'best_item'}
     if req.win_condition not in _VALID_WIN_CONDITIONS:
         raise HTTPException(400, f"win_condition must be one of {sorted(_VALID_WIN_CONDITIONS)}")
+
+    player_count = int(req.player_count)
+    team_size    = int(req.team_size)
+    if (player_count, team_size) not in _VALID_MODES:
+        raise HTTPException(400, f"Invalid mode. Valid (player_count, team_size): {sorted(_VALID_MODES)}")
+
     rounds = max(1, min(req.rounds, 10))
 
     pool = await get_db()
@@ -859,9 +903,6 @@ async def join_queue(request: Request, req: QueueRequest):
         )
         if not settings or not settings['enabled']:
             raise HTTPException(400, "Battles are currently disabled")
-        # Bug 167 fix: validate fee against allowed tiers so an arbitrary fee
-        # can't create a queue that the matchmaking loop never drains, permanently
-        # locking the user out of the queue until server restart.
         valid_fees = {float(f) for f in (settings['fee_tiers'] or [])}
         if req.fee not in valid_fees:
             raise HTTPException(400, f"Fee must be one of: {sorted(valid_fees)}")
@@ -880,16 +921,27 @@ async def join_queue(request: Request, req: QueueRequest):
     if user_id in battle_manager.queued_users:
         raise HTTPException(400, "Already in matchmaking queue — please wait")
 
+    mode_label = {
+        (2,1):'1v1',(3,1):'1v1v1',(4,1):'1v1v1v1',
+        (4,2):'2v2',(6,3):'3v3',(8,4):'4v4',
+    }.get((player_count, team_size), f'{player_count}p')
+
     battle_manager.queued_users.add(user_id)
-    queue = battle_manager.get_queue(req.fee)
+    queue = battle_manager.get_queue(req.fee, player_count, team_size)
     await queue.put({
         'user_id':       user_id,
         'ws':            mm_ws,
         'fee':           req.fee,
         'rounds':        rounds,
         'win_condition': req.win_condition,
+        'player_count':  player_count,
+        'team_size':     team_size,
     })
-    return {"success": True, "message": "In queue — waiting for opponent"}
+    return {
+        "success":  True,
+        "message":  f"In {mode_label} queue — waiting for {player_count - 1} more player(s)",
+        "mode":     mode_label,
+    }
 
 
 @router.post("/pve/start")
@@ -994,7 +1046,8 @@ async def active_battles(request: Request):
         rows = await conn.fetch("""
             SELECT b.id, b.battle_type, b.entry_fee, b.total_rounds,
                    b.win_condition, b.status, b.created_at,
-                   COUNT(cp.id) AS player_count
+                   b.player_count, b.team_size,
+                   COUNT(cp.id) AS joined_count
             FROM case_battles b
             LEFT JOIN case_battle_participants cp ON cp.battle_id = b.id
             WHERE b.status IN ('waiting','active')
@@ -1128,4 +1181,14 @@ async def init_battle_tables():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Migrations for multi-player columns
+        for sql in [
+            "ALTER TABLE case_battles ADD COLUMN IF NOT EXISTS player_count INTEGER DEFAULT 2",
+            "ALTER TABLE case_battles ADD COLUMN IF NOT EXISTS team_size INTEGER DEFAULT 1",
+            "ALTER TABLE case_battle_participants ADD COLUMN IF NOT EXISTS team_id INTEGER DEFAULT 1",
+        ]:
+            try:
+                await conn.execute(sql)
+            except Exception:
+                pass
     logger.info("✅ Battle tables ready")
