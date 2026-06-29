@@ -621,9 +621,10 @@ async def rr_bot_pull(request: Request):
         if fired:
             # Bot hits the bullet — PLAYER WINS
             sess['active'] = False
-            _rr_sessions.pop(user_id, None)
             mult = rr_payout_mult(sess['player_pulls'])
             win  = round(sess['bet'] * mult, 2)
+            # Bug 178 fix: pop session AFTER DB commit so a DB failure doesn't
+            # silently discard the player's win with no recovery path.
             pool = await get_db()
             async with pool.acquire() as conn:
                 async with conn.transaction():
@@ -633,6 +634,7 @@ async def rr_bot_pull(request: Request):
                         'player_pulls': sess['player_pulls'],
                         'bot_fired_at': pull_num,
                     })
+            _rr_sessions.pop(user_id, None)
             return {
                 "success":      True,
                 "bot_fired":    True,
@@ -679,18 +681,20 @@ async def rr_cashout(request: Request):
         personality  = sess['personality']
         player_pulls = sess['player_pulls']
         sess['active'] = False
-        _rr_sessions.pop(user_id, None)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'russian_roulette', bet, win, {
-                'personality': personality,
-                'player_pulls': player_pulls,
-                'cashout': True,
-                'multiplier': mult,
-            })
+        # Bug 177 fix: do DB commit inside the lock and pop session only after
+        # the commit succeeds, so a DB failure cannot silently lose the win.
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                win = await _add_win(user_id, win, conn)
+                await log_game(conn, user_id, 'russian_roulette', bet, win, {
+                    'personality': personality,
+                    'player_pulls': player_pulls,
+                    'cashout': True,
+                    'multiplier': mult,
+                })
+        _rr_sessions.pop(user_id, None)
 
     return {
         "success":    True,
@@ -1078,6 +1082,12 @@ async def bj_action(req: BJActionRequest, request: Request):
         if action == 'insurance':
             if sess['insurance']:
                 raise HTTPException(400, "Insurance already purchased")
+            # Bug 180 fix: insurance only valid when dealer shows Ace and before
+            # any action (all player hands still at 2 cards, no splits yet).
+            if sess['dealer'][0]['rank'] != 'A':
+                raise HTTPException(400, "Insurance only available when dealer shows an Ace")
+            if len(sess['hands']) > 1 or len(sess['hands'][0]) > 2:
+                raise HTTPException(400, "Insurance must be purchased before any action")
             ins_cost = round(bet / 2, 2)
             pool = await get_db()
             async with pool.acquire() as conn:
@@ -1241,7 +1251,8 @@ async def _check_bj_completion(user_id: int, sess: Dict, current_hand: int) -> D
     if sess['insurance'] and d_bj:
         total_win += sess['insurance'] * 3
 
-    _bj_sessions.pop(user_id, None)
+    # Bug 176 fix: pop session AFTER DB commit so a DB failure doesn't silently
+    # discard a pending win with no recovery path.
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -1253,6 +1264,7 @@ async def _check_bj_completion(user_id: int, sess: Dict, current_hand: int) -> D
                 'dealer_value': dv,
                 'results': [r['result'] for r in results],
             })
+    _bj_sessions.pop(user_id, None)
 
     return {
         "success":       True,
