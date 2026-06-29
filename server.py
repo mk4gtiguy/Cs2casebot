@@ -821,19 +821,34 @@ async def _cleanup_game_sessions():
 # ============================================================
 
 @app.get("/auth/discord")
-async def auth_discord():
+async def auth_discord(response: Response):
     scope = "identify email guilds"
+    state = secrets.token_urlsafe(16)
     url = (
         f"https://discord.com/api/oauth2/authorize"
         f"?client_id={DISCORD_CLIENT_ID}"
         f"&redirect_uri={DISCORD_REDIRECT_URI}"
         f"&response_type=code&scope={scope}"
+        f"&state={state}"
     )
-    return RedirectResponse(url)
+    resp = RedirectResponse(url)
+    resp.set_cookie(
+        "oauth_state", state,
+        max_age=300,          # 5-minute window to complete login
+        httponly=True,
+        samesite="lax",
+        secure=os.getenv("SECURE_COOKIES", "true").lower() != "false",
+    )
+    return resp
 
 @app.get("/auth/discord/callback")
 @app.get("/auth/callback")   # keep old path as fallback
-async def auth_callback(code: str, request: Request, response: Response):
+async def auth_callback(code: str, request: Request, response: Response, state: str = ""):
+    # Bug 162 fix: verify CSRF state matches cookie to prevent Login CSRF
+    stored_state = request.cookies.get("oauth_state", "")
+    if not stored_state or not state or stored_state != state:
+        raise HTTPException(400, "OAuth state mismatch — possible CSRF attempt")
+
     async with httpx.AsyncClient() as client:
         # Exchange code for token
         token_resp = await client.post(
@@ -970,6 +985,9 @@ async def get_inventory(
     rarity: Optional[str] = None,
     item_type: Optional[str] = None,
 ):
+    # Bug 161 fix: cap limit/offset to prevent table-scan DoS
+    limit  = max(1, min(200, limit))
+    offset = max(0, offset)
     user_id = await require_auth(request)
     pool = await get_db()
     async with pool.acquire() as conn:
@@ -1255,17 +1273,22 @@ async def remove_favorite(request: Request):
     async with pool.acquire() as conn:
         try:
             import json
-            settings_raw = await conn.fetchval("SELECT settings FROM users WHERE user_id = $1", user_id)
-            if settings_raw is None:
-                settings = {}
-            else:
-                settings = json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
+            # Bug 163 fix: use a transaction with FOR UPDATE so concurrent add/remove calls
+            # cannot interleave their read-modify-write cycles and corrupt the settings JSON.
+            async with conn.transaction():
+                settings_raw = await conn.fetchval(
+                    "SELECT settings FROM users WHERE user_id = $1 FOR UPDATE", user_id
+                )
+                if settings_raw is None:
+                    settings = {}
+                else:
+                    settings = json.loads(settings_raw) if isinstance(settings_raw, str) else settings_raw
 
-            favs = settings.get("favorites", [])
-            if case_id in favs:
-                favs.remove(case_id)
-                settings["favorites"] = favs
-                await conn.execute("UPDATE users SET settings = $1 WHERE user_id = $2", json.dumps(settings), user_id)
+                favs = settings.get("favorites", [])
+                if case_id in favs:
+                    favs.remove(case_id)
+                    settings["favorites"] = favs
+                    await conn.execute("UPDATE users SET settings = $1 WHERE user_id = $2", json.dumps(settings), user_id)
             return {"success": True, "favorites": favs}
         except Exception as e:
             logger.exception("Remove favorite error")
