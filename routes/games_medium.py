@@ -1000,7 +1000,9 @@ def evaluate_roulette_bet(bet_type: str, bet_value: Any, result: int) -> float:
         nums = _parse_multi_number_bet(bet_value, 4)
         return 9.0 if r in nums else 0
 
-    return 0
+    # Bug 164 fix: reject unknown bet types so the player gets an error rather
+    # than silently losing their stake on a bet the house doesn't recognise.
+    raise HTTPException(400, f"Unknown roulette bet type: {bet_type!r}")
 
 class RouletteBet(BaseModel):
     type:   str     # bet type
