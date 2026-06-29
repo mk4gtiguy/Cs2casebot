@@ -324,10 +324,12 @@ async def jackpot_slots_spin(req: JackpotSlotsRequest, request: Request):
                 await log_game(conn, user_id, 'slots_jackpot', bet, win,
                                {'reels': reels, 'label': label, 'jackpot': bool(jackpot_won)})
     except Exception:
-        # DB failed — restore the claimed jackpot so it isn't lost
+        # DB failed — restore the claimed jackpot so it isn't lost.
+        # Use additive restore: pool may have grown since the claim (other
+        # concurrent bets feed in after the reset), so preserve those additions.
         if jackpot_won:
             async with _jackpot_lock:
-                _jackpot_pool = round(jackpot_won, 2)
+                _jackpot_pool = round(_jackpot_pool + jackpot_won - _jackpot_seed, 2)
         raise
 
     # DB committed — feed this bet's contribution into the pool

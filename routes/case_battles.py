@@ -892,6 +892,8 @@ async def start_pve(request: Request, req: PvERequest):
     pool = await get_db()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if req.fee <= 0:
+                raise HTTPException(400, "Fee must be positive")
             if req.fee > 750_000:
                 raise HTTPException(400, "Maximum battle fee is $750,000")
 

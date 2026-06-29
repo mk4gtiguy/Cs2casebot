@@ -1033,6 +1033,7 @@ async def admin_live_feed(
     limit: int = 20,
     admin_id: int = Depends(require_admin)
 ):
+    limit = max(1, min(200, limit))
     pool = await get_db()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
