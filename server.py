@@ -1827,6 +1827,7 @@ async def quick_trade(req: TradeRequest, request: Request):
         "Blue":   {"count": 10, "next": "Purple"},
         "Purple": {"count": 10, "next": "Pink"},
         "Pink":   {"count": 10, "next": "Red"},
+        "Red":    {"count": 5,  "next": "Gold"},
         "Gold":   {"count": 5,  "next": "Gold"},
     }
     cfg = rarity_config.get(req.rarity)
@@ -1864,6 +1865,30 @@ async def quick_trade(req: TradeRequest, request: Request):
                     "tier": next_tier, "is_stattrak": False, "float": 0.0,
                     "price": float(GOLD_VALUES.get(next_tier, 150)),
                 }
+            elif req.rarity == "Red":
+                # Red → Gold: pick a real glove/knife from the global Gold pool
+                gold_pool = shared.GOLD_ITEMS_POOL
+                if gold_pool:
+                    template = shared.secure_choice(gold_pool)
+                    is_st = shared.secure_random() < 0.1
+                    fv = generate_skin_float()
+                    cond = get_skin_condition(fv)
+                    price = calculate_item_value("Gold", cond, None, is_st)
+                    trade_img_file = os.path.basename(template.get("skin_image") or "") if template.get("skin_image") else None
+                    trade_img_url = f"/static/images/skins/{trade_img_file}" if trade_img_file else None
+                    new_item = {
+                        "name": f"{'StatTrak™ ' if is_st else ''}{template['name']}",
+                        "rarity": "Gold", "condition": cond,
+                        "tier": None, "is_stattrak": is_st,
+                        "float": fv, "price": price, "image_url": trade_img_url,
+                    }
+                else:
+                    new_item = {
+                        "name": "Mystery Gold Common",
+                        "rarity": "Gold", "condition": "Factory New",
+                        "tier": "Common", "is_stattrak": False, "float": 0.0,
+                        "price": float(GOLD_VALUES.get("Common", 150)),
+                    }
             else:
                 next_rarity = cfg["next"]
                 possible = ALL_ITEMS_BY_RARITY.get(next_rarity, [])

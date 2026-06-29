@@ -785,6 +785,25 @@ for collection_items in COLLECTION_ITEMS.values():
         ALL_ITEMS_BY_RARITY.setdefault(rarity, []).append(item)
 logger.info(f"✅ Built ALL_ITEMS_BY_RARITY: { {r: len(items) for r, items in ALL_ITEMS_BY_RARITY.items()} }")
 
+# ─── Build Gold pool: gloves/knives have collection=None so they're excluded
+#     from COLLECTION_ITEMS; build their pool directly from SKINS_DATA ──────
+GOLD_ITEMS_POOL: list = []
+for _gskin in SKINS_DATA:
+    if _gskin.get('rarity') not in ('CONTRABAND', 'EXTRAORDINARY'):
+        continue
+    _gweapon = ITEM_ID_TO_DISPLAY_NAME.get(_gskin.get('itemId', ''), _gskin.get('weaponType', ''))
+    GOLD_ITEMS_POOL.append({
+        'name':        f"{_gweapon} | {_gskin['name']}",
+        'rarity':      'Gold',
+        'float_min':   _gskin.get('floatTop',    0.06),
+        'float_max':   _gskin.get('floatBottom', 0.80),
+        'weapon_type': _gweapon,
+        'skin_name':   _gskin['name'],
+        'item_id':     _gskin.get('itemId'),
+        'skin_image':  _gskin.get('skinImage'),
+    })
+logger.info(f"✅ Built GOLD_ITEMS_POOL with {len(GOLD_ITEMS_POOL)} gloves/knives")
+
 # ============================================================
 # STICKER CAPSULES
 # ============================================================
@@ -1033,8 +1052,8 @@ def calculate_item_value(
     is_stattrak: bool = False,
 ) -> float:
     try:
-        if rarity == "Gold" and tier:
-            base_value = float(GOLD_VALUES.get(tier, 150))
+        if rarity == "Gold":
+            base_value = float(GOLD_VALUES.get(tier, 250)) if tier else 250.0
         elif rarity in WEAPON_BASE_VALUES:
             base_value = float(WEAPON_BASE_VALUES[rarity])
         else:
@@ -1086,13 +1105,16 @@ def get_random_item(case_id: str) -> Optional[Dict]:
 
         # Fallback if chosen rarity empty
         if chosen_rarity not in by_rarity or not by_rarity[chosen_rarity]:
-            for fallback in ['Blue', 'Purple', 'Pink', 'Red', 'Gold']:
-                if fallback in by_rarity and by_rarity[fallback]:
-                    chosen_rarity = fallback
-                    break
+            # Gold (gloves/knives) never belong to a collection — use the global pool
+            if chosen_rarity == 'Gold' and GOLD_ITEMS_POOL:
+                by_rarity['Gold'] = GOLD_ITEMS_POOL
             else:
-                # Shouldn't happen if pool is non-empty
-                return None
+                for fallback in ['Blue', 'Purple', 'Pink', 'Red']:
+                    if fallback in by_rarity and by_rarity[fallback]:
+                        chosen_rarity = fallback
+                        break
+                else:
+                    return None
 
         skin_template = secure_choice(by_rarity[chosen_rarity])
 
