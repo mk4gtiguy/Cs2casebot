@@ -714,12 +714,12 @@ async def hilo_guess(req: HiLoGuessRequest, request: Request):
         mult    = hilo_mult_for_guess(current, guess)
         if mult == 0:
             sess['active'] = False
-            _hilo_sessions.pop(user_id, None)
-            _hilo_locks.pop(user_id, None)
             async with (await get_db()).acquire() as conn:
                 await log_game(conn, user_id, 'hilo', sess['bet'], 0,
                                {'chain': sess['chain'], 'bust': True,
                                 'reason': 'impossible_guess'})
+            _hilo_sessions.pop(user_id, None)  # pop AFTER log
+            _hilo_locks.pop(user_id, None)
             raise HTTPException(400, "That guess is impossible from this card")
 
         new = new_card()
@@ -747,11 +747,11 @@ async def hilo_guess(req: HiLoGuessRequest, request: Request):
             # Bust — lose bet (already deducted at start)
             bet = sess['bet']
             sess['active'] = False
-            _hilo_sessions.pop(user_id, None)
-            _hilo_locks.pop(user_id, None)
             async with (await get_db()).acquire() as conn:
                 await log_game(conn, user_id, 'hilo', bet, 0,
                                {'chain': sess['chain'], 'bust': True})
+            _hilo_sessions.pop(user_id, None)  # pop AFTER log
+            _hilo_locks.pop(user_id, None)
             return {
                 "success":   True,
                 "correct":   False,

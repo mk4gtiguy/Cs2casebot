@@ -808,13 +808,13 @@ async def ladder_climb(request: Request):
 
         if failed:
             sess['active'] = False
-            _ladder_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 await log_game(conn, user_id, 'ladder', sess['bet'], 0, {
                     'rungs_climbed': rung_idx,
                     'bust_rung': rung_idx,
                 })
+            _ladder_sessions.pop(user_id, None)  # pop AFTER log
             return {
                 "success":       True,
                 "climbed":       False,
