@@ -1259,6 +1259,19 @@ async def init_admin_tables():
             )
         """)
 
+        # Schema migrations: add columns that may be missing from pre-existing tables
+        for migration_sql in [
+            "ALTER TABLE game_settings ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}'",
+            "ALTER TABLE game_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by BIGINT",
+            "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE announcements ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'info'",
+        ]:
+            try:
+                await conn.execute(migration_sql)
+            except Exception as e:
+                logger.warning(f"Schema migration skipped: {e}")
+
         # Fix 28: Performance indexes
         index_statements = [
             "CREATE INDEX IF NOT EXISTS idx_inventory_user_id    ON inventory (user_id)",
