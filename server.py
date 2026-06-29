@@ -2111,7 +2111,6 @@ async def claim_quests(request: Request):
 class TradeRequest(BaseModel):
     rarity: str
     item_ids: List[int]
-    is_gold_trade: bool = False
 
 @app.post("/api/quick-trade")
 async def quick_trade(req: TradeRequest, request: Request):
@@ -2121,7 +2120,6 @@ async def quick_trade(req: TradeRequest, request: Request):
         "Purple": {"count": 10, "next": "Pink"},
         "Pink":   {"count": 10, "next": "Red"},
         "Red":    {"count": 5,  "next": "Gold"},
-        "Gold":   {"count": 5,  "next": "Gold"},
     }
     cfg = rarity_config.get(req.rarity)
     if not cfg:
@@ -2145,20 +2143,7 @@ async def quick_trade(req: TradeRequest, request: Request):
                 "DELETE FROM inventory WHERE id = ANY($1::int[])", req.item_ids
             )
             # Generate new item
-            if req.is_gold_trade and req.rarity == "Gold":
-                # Advance to the next tier in the progression
-                try:
-                    tier_idx = GOLD_TIER_PROGRESSION.index(current_gold_tier or "Common")
-                except ValueError:
-                    tier_idx = 0
-                next_tier = GOLD_TIER_PROGRESSION[min(tier_idx + 1, len(GOLD_TIER_PROGRESSION) - 1)]
-                new_item = {
-                    "name": f"Mystery Gold {next_tier}",
-                    "rarity": "Gold", "condition": "Factory New",
-                    "tier": next_tier, "is_stattrak": False, "float": 0.0,
-                    "price": float(GOLD_VALUES.get(next_tier, 150)),
-                }
-            elif req.rarity == "Red":
+            if req.rarity == "Red":
                 # Red → Gold: pick a real glove/knife from the global Gold pool
                 gold_pool = shared.GOLD_ITEMS_POOL
                 if gold_pool:
