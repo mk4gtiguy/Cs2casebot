@@ -228,11 +228,11 @@ async def security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://js.stripe.com; "
+        "script-src 'self' 'unsafe-inline' https://js.stripe.com https://static.cloudflareinsights.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https://cdn.discordapp.com https://community.fastly.steamstatic.com https://*.steamstatic.com; "
-        "connect-src 'self' https://js.stripe.com; "
+        "connect-src 'self' https://js.stripe.com https://static.cloudflareinsights.com https://cloudflareinsights.com; "
         "frame-src https://js.stripe.com; "
         "object-src 'none';"
     )
