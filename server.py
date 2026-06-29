@@ -265,6 +265,7 @@ _safe_include("routes.premium")
 _safe_include("routes.referral")
 _safe_include("routes.friends")
 _safe_include("routes.ticket_games")
+_safe_include("routes.market")
 
 @app.get("/admin", include_in_schema=False)
 async def page_admin(request: Request):
@@ -311,6 +312,9 @@ async def page_battle_setup(): return _html("static/battle-setup.html")
 
 @app.get("/games",         include_in_schema=False)
 async def page_games():        return _html("static/games.html")
+
+@app.get("/market",        include_in_schema=False)
+async def page_market():       return _html("static/market.html")
 
 @app.get("/terms",         include_in_schema=False)
 async def page_terms():        return _html("static/terms.html")
@@ -864,6 +868,30 @@ async def _init_all_tables(pool):
                 created_at    TIMESTAMP DEFAULT NOW()
             )
         """)
+        # Inventory value history snapshots
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS inventory_value_snapshots (
+                id         SERIAL PRIMARY KEY,
+                user_id    BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                value      DECIMAL(15,2) NOT NULL,
+                item_count INTEGER NOT NULL,
+                snapped_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_inv_snapshots_user "
+                "ON inventory_value_snapshots(user_id, snapped_at DESC)"
+            )
+        except Exception:
+            pass
+        # Market listings table
+        try:
+            from routes.market import init_market_tables
+            await init_market_tables()
+            logger.info("✅ Market tables ready")
+        except Exception as e:
+            logger.warning(f"Market table init skipped: {e}")
     logger.info("✅ All database tables ready")
 
 # ============================================================
@@ -1259,6 +1287,9 @@ async def get_me(request: Request):
 
     if not user:
         raise HTTPException(404, "User not found")
+
+    # Fire-and-forget daily inventory value snapshot (non-blocking)
+    asyncio.create_task(_snapshot_inventory_value(user_id, pool))
 
     session = shared.get_session(request.cookies.get("session_token") or "") or {}
     primary = (user.get("primary_provider") or session.get("primary_provider") or "discord")
@@ -2482,26 +2513,80 @@ async def claim_weekly(request: Request):
 # LEADERBOARD
 # ============================================================
 
+@app.get("/api/leaderboard/game-wins")
+async def leaderboard_game_wins(game: str, limit: int = 10):
+    VALID_GAMES = {
+        "coinflip", "dice", "limbo", "hilo", "dragon_tiger", "keno",
+        "crash", "mines", "plinko", "tower", "shotgun", "ladder",
+        "roulette", "slide", "mystery_box", "russian_roulette",
+        "baccarat", "blackjack", "live_race",
+        "slots_classic", "slots_cs2", "slots_jackpot", "slots_bomb",
+    }
+    if game not in VALID_GAMES:
+        raise HTTPException(400, "Invalid game type")
+    limit = max(1, min(limit, 100))
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT u.user_id, u.username, COUNT(*) AS wins
+            FROM game_logs gl
+            JOIN users u ON gl.user_id = u.user_id
+            WHERE gl.game_type = $1 AND gl.result = 'win' AND u.user_id > 0
+            GROUP BY u.user_id, u.username
+            ORDER BY wins DESC
+            LIMIT $2
+        """, game, limit)
+    return {"users": [dict(r) for r in rows]}
+
+
 @app.get("/api/leaderboard/{board_type}")
 async def leaderboard(board_type: str, limit: int = 10):
     col_map = {
-        "money":  ("balance",     "💰"),
-        "opens":  ("total_opens", "📦"),
-        "golds":  ("total_golds", "⭐"),
-        "trades": ("total_trades","🔄"),
+        "money":   ("balance",           "💰"),
+        "opens":   ("total_opens",       "📦"),
+        "golds":   ("total_golds",       "⭐"),
+        "trades":  ("total_trades",      "🔄"),
+        "games":   ("total_games_played","🎮"),
+        "tickets": ("tickets",           "🎟️"),
+        "streak":  ("win_streak",        "🔥"),
     }
-    if board_type not in col_map:
-        raise HTTPException(400, "Invalid leaderboard type")
-    # Cap limit to prevent full-table-scan DoS from unauthenticated callers.
     limit = max(1, min(limit, 100))
-    col, _ = col_map[board_type]
+
     pool = await get_db()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"SELECT user_id, username, {col} as value FROM users "
-            f"WHERE user_id > 0 ORDER BY {col} DESC LIMIT $1",
-            limit
-        )
+        if board_type == "profit":
+            rows = await conn.fetch("""
+                SELECT u.user_id, u.username,
+                       COALESCE(SUM(gl.win_amount - gl.bet_amount), 0) AS value
+                FROM users u
+                LEFT JOIN game_logs gl ON gl.user_id = u.user_id
+                WHERE u.user_id > 0
+                GROUP BY u.user_id, u.username
+                ORDER BY value DESC
+                LIMIT $1
+            """, limit)
+        elif board_type == "ticket_wins":
+            rows = await conn.fetch("""
+                SELECT u.user_id, u.username,
+                       COALESCE(SUM(tg.tickets_won), 0) AS value
+                FROM users u
+                LEFT JOIN ticket_games tg ON tg.user_id = u.user_id
+                    AND tg.status = 'completed'
+                WHERE u.user_id > 0
+                GROUP BY u.user_id, u.username
+                ORDER BY value DESC
+                LIMIT $1
+            """, limit)
+        elif board_type in col_map:
+            col = col_map[board_type][0]
+            rows = await conn.fetch(
+                f"SELECT user_id, username, {col} AS value FROM users "
+                f"WHERE user_id > 0 ORDER BY {col} DESC LIMIT $1",
+                limit
+            )
+        else:
+            raise HTTPException(400, "Invalid leaderboard type")
+
     return {"users": [convert_decimals(dict(r)) for r in rows]}
 
 # ============================================================
@@ -2567,6 +2652,52 @@ async def live_feed(limit: int = 20):
             "SELECT * FROM live_feed ORDER BY created_at DESC LIMIT $1", limit
         )
     return [dict(r) for r in rows]
+
+# ============================================================
+# INVENTORY VALUE HISTORY
+# ============================================================
+
+@app.get("/api/profile/value-history")
+async def profile_value_history(request: Request):
+    user_id = await get_user_id_from_session(request)
+    if not user_id:
+        raise HTTPException(401, "Not authenticated")
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT value, item_count, snapped_at
+            FROM inventory_value_snapshots
+            WHERE user_id = $1
+            ORDER BY snapped_at ASC
+            LIMIT 30
+        """, user_id)
+    return [convert_decimals(dict(r)) for r in rows]
+
+async def _snapshot_inventory_value(user_id: int, pool):
+    """Take a daily inventory value snapshot for the given user."""
+    try:
+        async with pool.acquire() as conn:
+            # Only once per 20 hours to avoid daily clock drift issues
+            recent = await conn.fetchval("""
+                SELECT 1 FROM inventory_value_snapshots
+                WHERE user_id = $1 AND snapped_at > NOW() - INTERVAL '20 hours'
+                LIMIT 1
+            """, user_id)
+            if recent:
+                return
+            row = await conn.fetchrow("""
+                SELECT COALESCE(SUM(price), 0) AS total_value,
+                       COUNT(*) AS item_count
+                FROM inventory
+                WHERE user_id = $1 AND status = 'kept'
+            """, user_id)
+            if row:
+                await conn.execute("""
+                    INSERT INTO inventory_value_snapshots (user_id, value, item_count)
+                    VALUES ($1, $2, $3)
+                """, user_id, row['total_value'], row['item_count'])
+    except Exception as e:
+        logger.debug(f"Snapshot error for {user_id}: {e}")
 
 # ============================================================
 # SKIN IMAGE
