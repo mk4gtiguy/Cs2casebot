@@ -3769,11 +3769,12 @@ window.setInvTypeFilter = setInvTypeFilter;
         container.innerHTML = `
             <div class="card">
                 <h3>🔄 Weapon Trade-Up</h3>
-                <p style="color:#888;font-size:13px;margin-bottom:10px;">Select exactly 10 items of the same rarity to trade up</p>
+                <p style="color:#888;font-size:13px;margin-bottom:10px;">Select the required items of the same rarity to trade up</p>
                 <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
                     <button class="btn btn-blue btn-sm" onclick="loadTradeInventory('Blue')">🔵 Blue (10 → Purple)</button>
                     <button class="btn btn-purple btn-sm" onclick="loadTradeInventory('Purple')">🟪 Purple (10 → Pink)</button>
                     <button class="btn btn-danger btn-sm" onclick="loadTradeInventory('Pink')">💗 Pink (10 → Red)</button>
+                    <button class="btn btn-danger btn-sm" style="background:linear-gradient(135deg,#c0392b,#e74c3c);" onclick="loadTradeInventory('Red')">🔴 Red (5 → Gold)</button>
                     <button class="btn btn-gold btn-sm" onclick="loadTradeInventory('Gold')">⭐ Gold (5 → Next Tier)</button>
                     <button class="btn btn-secondary btn-sm" onclick="autoSelectTradeItems()">🤖 Auto-Fill</button>
                 </div>
@@ -3792,10 +3793,11 @@ async function loadTradeInventory(rarity) {
     document.getElementById('tradeConfirmBtn').disabled = true;
     
     const rarityMap = {
-        'Blue': { next: 'Purple', count: 10 },
-        'Purple': { next: 'Pink', count: 10 },
-        'Pink': { next: 'Red', count: 10 },
-        'Gold': { next: 'Next Tier', count: 5 }
+        'Blue':   { next: 'Purple',   count: 10 },
+        'Purple': { next: 'Pink',     count: 10 },
+        'Pink':   { next: 'Red',      count: 10 },
+        'Red':    { next: 'Gold',     count: 5  },
+        'Gold':   { next: 'Next Tier',count: 5  }
     };
     const config = rarityMap[rarity];
     
@@ -3849,14 +3851,14 @@ async function loadTradeInventory(rarity) {
     function updateTradeSelection() {
     const checkboxes = document.querySelectorAll('.trade-checkbox:checked');
     selectedTradeIds = Array.from(checkboxes).map(cb => parseInt(cb.value)); // ✅ parse to int
-    const rarityMap = { 'Blue': { count: 10 }, 'Purple': { count: 10 }, 'Pink': { count: 10 }, 'Gold': { count: 5 } };
+    const rarityMap = { 'Blue': { count: 10 }, 'Purple': { count: 10 }, 'Pink': { count: 10 }, 'Red': { count: 5 }, 'Gold': { count: 5 } };
     const config = rarityMap[tradeRarity] || { count: 10 };
     const countEl = document.getElementById('tradeSelectionCount');
     if (countEl) countEl.textContent = `Selected: ${selectedTradeIds.length} / ${config.count}`;
     const btn = document.getElementById('tradeConfirmBtn');
     btn.disabled = selectedTradeIds.length !== config.count;
     if (selectedTradeIds.length === config.count) {
-        const rarityMap2 = { 'Blue': { next: 'Purple', emoji: '🟪' }, 'Purple': { next: 'Pink', emoji: '💗' }, 'Pink': { next: 'Red', emoji: '🔴' }, 'Gold': { next: 'Next Tier', emoji: '⭐' } };
+        const rarityMap2 = { 'Blue': { next: 'Purple', emoji: '🟪' }, 'Purple': { next: 'Pink', emoji: '💗' }, 'Pink': { next: 'Red', emoji: '🔴' }, 'Red': { next: 'Gold', emoji: '⭐' }, 'Gold': { next: 'Next Tier', emoji: '⭐' } };
         const config2 = rarityMap2[tradeRarity];
         document.getElementById('tradePreview').innerHTML = `
             <div style="padding:10px;background:rgba(255,215,0,0.05);border-radius:8px;border:1px solid rgba(255,215,0,0.1);">
@@ -3871,7 +3873,7 @@ async function loadTradeInventory(rarity) {
 
     function autoSelectTradeItems() {
         const checkboxes = document.querySelectorAll('.trade-checkbox');
-        const rarityMap = { 'Blue': { count: 10 }, 'Purple': { count: 10 }, 'Pink': { count: 10 }, 'Gold': { count: 5 } };
+        const rarityMap = { 'Blue': { count: 10 }, 'Purple': { count: 10 }, 'Pink': { count: 10 }, 'Red': { count: 5 }, 'Gold': { count: 5 } };
         const config = rarityMap[state.tradeRarity] || { count: 10 };
         checkboxes.forEach(cb => cb.checked = false);
         const toSelect = Math.min(config.count, checkboxes.length);
@@ -3885,7 +3887,7 @@ async function loadTradeInventory(rarity) {
     }
 
 async function executeTrade() {
-    const rarityMap = { 'Blue': { count: 10 }, 'Purple': { count: 10 }, 'Pink': { count: 10 }, 'Gold': { count: 5 } };
+    const rarityMap = { 'Blue': { count: 10 }, 'Purple': { count: 10 }, 'Pink': { count: 10 }, 'Red': { count: 5 }, 'Gold': { count: 5 } };
     const config = rarityMap[tradeRarity];
     const isGold = tradeRarity === 'Gold';
     if (selectedTradeIds.length !== config.count) {
