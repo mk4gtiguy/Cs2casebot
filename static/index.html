@@ -41,6 +41,10 @@
             animation: shimmer 3s ease-in-out infinite;
         }
         @keyframes shimmer { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+        @keyframes aimPulse { from { transform: scale(1); } to { transform: scale(1.12); } }
+        @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.2; } }
+        #arcadeOverlay { display: none; }
+        #arcadeOverlay.open { display: flex; }
         .header h1 span { -webkit-text-fill-color: white; }
         .user-info {
             display: flex;
@@ -1398,6 +1402,7 @@
             <button class="btn" onclick="switchTab('leaderboard')">🏆 Leaderboard</button>
             <button class="btn" onclick="switchTab('achievements')">🏅 Achievements</button>
             <button class="btn" onclick="switchTab('profile')">👤 Profile</button>
+            <button class="btn" onclick="switchTab('friends')" id="friendsTabBtn">👥 Friends</button>
         </div>
 
         <!-- TAB: CASES -->
@@ -1619,6 +1624,49 @@
             </div>
 
             <div class="disclaimer-inline">⚠️ <strong>Disclaimer:</strong> VIP and Tickets are for entertainment purposes only. All in-platform currency has no real-world value.</div>
+
+            <!-- TICKET ARCADE -->
+            <div class="card">
+                <h3 style="margin-bottom:4px;">🕹️ Ticket Arcade</h3>
+                <p style="color:#888;font-size:12px;margin-bottom:16px;">Each game costs 1 ticket to play. Win based on your performance.</p>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+                    <!-- Reaction Time -->
+                    <div style="background:rgba(255,107,0,0.08);border:1px solid rgba(255,107,0,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">⚡</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Reaction Time</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Click when it turns green<br>Up to 8 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startReactionGame()">Play (1 🎟️)</button>
+                    </div>
+                    <!-- Aim Trainer -->
+                    <div style="background:rgba(76,175,80,0.08);border:1px solid rgba(76,175,80,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">🎯</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Aim Trainer</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Hit 20 targets in 30s<br>Up to 6 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startAimGame()">Play (1 🎟️)</button>
+                    </div>
+                    <!-- Bomb Defuse -->
+                    <div style="background:rgba(231,76,60,0.08);border:1px solid rgba(231,76,60,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">💣</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Bomb Defuse</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Cut the right wire<br>Win 3 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startBombGame()">Play (1 🎟️)</button>
+                    </div>
+                    <!-- Float Guesser -->
+                    <div style="background:rgba(66,133,244,0.08);border:1px solid rgba(66,133,244,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">🔬</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Float Guesser</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Guess the skin float<br>Up to 8 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startFloatGame()">Play (1 🎟️)</button>
+                    </div>
+                    <!-- Memory Sequence -->
+                    <div style="background:rgba(156,39,176,0.08);border:1px solid rgba(156,39,176,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">🧠</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Memory Sequence</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Repeat the flash pattern<br>Up to 6 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startMemoryGame()">Play (1 🎟️)</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- TAB: ACHIEVEMENTS -->
@@ -1655,7 +1703,43 @@
                 <div id="profileLinkedAccounts"></div>
             </div>
         </div>
-    </div>
+
+        <!-- TAB: FRIENDS -->
+        <div id="tab-friends" class="tab-content">
+            <!-- Add Friend -->
+            <div class="card">
+                <h3>👥 Friends</h3>
+                <div style="display:flex;gap:10px;margin-bottom:12px;">
+                    <input type="text" id="friendSearchInput" placeholder="Enter username or ID..." style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,215,0,0.2);border-radius:8px;color:#fff;font-family:inherit;font-size:13px;">
+                    <button class="btn btn-primary" onclick="sendFriendRequest()">➕ Add</button>
+                </div>
+                <div id="friendSearchResult" style="font-size:13px;"></div>
+            </div>
+
+            <!-- Incoming PvP Challenges -->
+            <div class="card" id="challengesCard" style="display:none;">
+                <h3>⚔️ PvP Challenges <span id="challengesBadge" style="background:#e74c3c;color:#fff;font-size:10px;padding:2px 7px;border-radius:10px;margin-left:6px;"></span></h3>
+                <div id="challengesList" style="display:flex;flex-direction:column;gap:8px;"></div>
+            </div>
+
+            <!-- Friend Requests -->
+            <div class="card" id="friendRequestsCard" style="display:none;">
+                <h3>📨 Friend Requests</h3>
+                <div id="incomingRequests" style="margin-bottom:12px;"></div>
+                <div id="outgoingRequests"></div>
+            </div>
+
+            <!-- Friends List -->
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                    <h3 style="margin:0;">🟢 Your Friends</h3>
+                    <span id="friendsOnlineCount" style="color:#888;font-size:12px;"></span>
+                </div>
+                <div id="friendsList" style="display:flex;flex-direction:column;gap:10px;"></div>
+            </div>
+        </div>
+
+    </div><!-- end #dashboard -->
 
     <!-- FOOTER -->
     <div class="footer">
@@ -1684,6 +1768,14 @@
             <label>Confetti</label><select id="confettiSelect" onchange="saveSettings()"><option value="always">🎉 Always</option><option value="gold">⭐ Gold Only</option><option value="never">🚫 Never</option></select>
             <div class="checkbox-row"><input type="checkbox" id="soundToggle" onchange="saveSettings()"><label for="soundToggle">🔊 Sound Effects</label></div>
             <button class="btn btn-primary" onclick="closeSettings()">Save & Close</button>
+        </div>
+    </div>
+
+    <!-- TICKET ARCADE MODALS -->
+    <div id="arcadeOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:2000;display:none;align-items:center;justify-content:center;padding:20px;">
+        <div id="arcadeModal" style="background:#12121e;border:2px solid #ffd700;border-radius:16px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;position:relative;padding:28px;">
+            <button onclick="closeArcade()" style="position:absolute;top:12px;right:14px;background:none;border:none;color:#888;font-size:20px;cursor:pointer;">✕</button>
+            <div id="arcadeBody"></div>
         </div>
     </div>
 
@@ -2054,6 +2146,7 @@
         if (tab === 'games') loadGameStats();
         if (tab === 'profile') loadProfile();
         if (tab === 'battles') { loadBattleHistory(); loadBattleFeeOptions(); }
+        if (tab === 'friends') loadFriendsTab();
     }
 
     // ============================================
@@ -5277,6 +5370,677 @@ window.switchTab = function(tab) {
     console.log('🔧 FIXED: Trade item IDs stored as strings (no truncation)');
 
     checkAuth();
+
+    // ============================================
+    // SECTION 99: FRIENDS SYSTEM
+    // ============================================
+
+    let _friendsLoaded = false;
+    async function loadFriendsTab() {
+        await Promise.all([loadFriends(), loadFriendRequests(), loadPvpChallenges()]);
+    }
+
+    async function loadFriends() {
+        try {
+            const data = await apiCall('/api/friends');
+            const list = document.getElementById('friendsList');
+            if (!list) return;
+            const online = data.friends.filter(f => f.online).length;
+            const countEl = document.getElementById('friendsOnlineCount');
+            if (countEl) countEl.textContent = `${online} online · ${data.friends.length} total`;
+            if (!data.friends.length) {
+                list.innerHTML = '<div style="color:#888;font-size:13px;text-align:center;padding:20px;">No friends yet — add someone by username!</div>';
+                return;
+            }
+            list.innerHTML = data.friends.map(f => `
+                <div style="display:flex;align-items:center;gap:12px;padding:12px;background:rgba(255,255,255,0.03);border-radius:10px;border:1px solid rgba(255,255,255,0.06);">
+                    <div style="position:relative;">
+                        <img src="${f.avatar_url || 'https://cdn.discordapp.com/embed/avatars/0.png'}" style="width:42px;height:42px;border-radius:50%;object-fit:cover;" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+                        <div style="position:absolute;bottom:0;right:0;width:12px;height:12px;border-radius:50%;border:2px solid #12121e;background:${f.online ? '#4caf50' : '#555'};"></div>
+                    </div>
+                    <div style="flex:1;">
+                        <div style="font-weight:600;font-size:14px;">${esc(f.username)}</div>
+                        <div style="color:#888;font-size:11px;">Level ${f.level} · ${f.online ? '<span style="color:#4caf50;">Online</span>' : 'Offline'}</div>
+                    </div>
+                    <div style="display:flex;gap:6px;">
+                        <button class="btn btn-sm" style="background:rgba(255,215,0,0.1);border-color:rgba(255,215,0,0.3);font-size:10px;" onclick="viewFriendProfile(${f.user_id})">👤 Profile</button>
+                        <button class="btn btn-sm" style="background:rgba(88,101,242,0.15);border-color:rgba(88,101,242,0.4);font-size:10px;" onclick="challengeFriend(${f.user_id}, '${esc(f.username)}')">⚔️ Challenge</button>
+                        <button class="btn btn-sm" style="background:rgba(231,76,60,0.1);border-color:rgba(231,76,60,0.3);font-size:10px;" onclick="removeFriend(${f.user_id}, '${esc(f.username)}')">✕</button>
+                    </div>
+                </div>
+            `).join('');
+        } catch(e) { console.error('loadFriends:', e); }
+    }
+
+    async function loadFriendRequests() {
+        try {
+            const data = await apiCall('/api/friends/requests');
+            const card = document.getElementById('friendRequestsCard');
+            const hasAny = data.incoming.length || data.outgoing.length;
+            if (card) card.style.display = hasAny ? 'block' : 'none';
+            if (!hasAny) return;
+
+            const inEl = document.getElementById('incomingRequests');
+            const outEl = document.getElementById('outgoingRequests');
+            if (inEl) {
+                inEl.innerHTML = data.incoming.length ? `
+                    <div style="color:#888;font-size:11px;margin-bottom:8px;text-transform:uppercase;">Incoming</div>
+                    ${data.incoming.map(r => `
+                        <div style="display:flex;align-items:center;gap:10px;padding:10px;background:rgba(76,175,80,0.06);border:1px solid rgba(76,175,80,0.2);border-radius:8px;margin-bottom:6px;">
+                            <img src="${r.avatar_url || 'https://cdn.discordapp.com/embed/avatars/0.png'}" style="width:34px;height:34px;border-radius:50%;" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+                            <span style="flex:1;font-size:13px;">${esc(r.username)}</span>
+                            <button class="btn btn-sm" style="background:#4caf50;color:#fff;font-size:10px;" onclick="acceptFriendRequest(${r.id})">✓ Accept</button>
+                            <button class="btn btn-sm" style="background:rgba(231,76,60,0.2);font-size:10px;" onclick="declineFriendRequest(${r.id})">✕ Decline</button>
+                        </div>
+                    `).join('')}
+                ` : '';
+            }
+            if (outEl) {
+                outEl.innerHTML = data.outgoing.length ? `
+                    <div style="color:#888;font-size:11px;margin-bottom:8px;text-transform:uppercase;">Sent</div>
+                    ${data.outgoing.map(r => `
+                        <div style="display:flex;align-items:center;gap:10px;padding:10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:6px;">
+                            <img src="${r.avatar_url || 'https://cdn.discordapp.com/embed/avatars/0.png'}" style="width:34px;height:34px;border-radius:50%;" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+                            <span style="flex:1;font-size:13px;">${esc(r.username)}</span>
+                            <span style="color:#888;font-size:11px;">Pending...</span>
+                        </div>
+                    `).join('')}
+                ` : '';
+            }
+        } catch(e) { console.error('loadFriendRequests:', e); }
+    }
+
+    async function loadPvpChallenges() {
+        try {
+            const data = await apiCall('/api/friends/challenges');
+            const card = document.getElementById('challengesCard');
+            const list = document.getElementById('challengesList');
+            const badge = document.getElementById('challengesBadge');
+            if (!card || !list) return;
+            card.style.display = data.challenges.length ? 'block' : 'none';
+            if (badge) badge.textContent = data.challenges.length || '';
+            if (!data.challenges.length) return;
+            list.innerHTML = data.challenges.map(c => `
+                <div style="display:flex;align-items:center;gap:12px;padding:12px;background:rgba(88,101,242,0.08);border:1px solid rgba(88,101,242,0.3);border-radius:10px;">
+                    <img src="${c.challenger_avatar || 'https://cdn.discordapp.com/embed/avatars/0.png'}" style="width:38px;height:38px;border-radius:50%;" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+                    <div style="flex:1;">
+                        <div style="font-size:13px;font-weight:600;">${esc(c.challenger_name)}</div>
+                        <div style="color:#888;font-size:11px;">Ticket coinflip · ${c.bet_tickets} 🎟️ each</div>
+                    </div>
+                    <button class="btn btn-sm" style="background:#4caf50;color:#fff;font-size:11px;" onclick="acceptPvpChallenge(${c.id})">Accept</button>
+                    <button class="btn btn-sm" style="background:rgba(231,76,60,0.2);font-size:11px;" onclick="declinePvpChallenge(${c.id})">Decline</button>
+                </div>
+            `).join('');
+        } catch(e) { console.error('loadPvpChallenges:', e); }
+    }
+
+    async function sendFriendRequest() {
+        const input = document.getElementById('friendSearchInput');
+        const result = document.getElementById('friendSearchResult');
+        const q = (input?.value || '').trim();
+        if (!q) return;
+        try {
+            const data = await apiCall('/api/friends/request', {method:'POST', body: JSON.stringify({username_or_id: q})});
+            if (result) result.innerHTML = `<span style="color:#4caf50;">${esc(data.message)}</span>`;
+            input.value = '';
+            setTimeout(() => { if(result) result.innerHTML=''; loadFriendRequests(); }, 2000);
+        } catch(e) {
+            if (result) result.innerHTML = `<span style="color:#e74c3c;">${e.message || 'Error sending request'}</span>`;
+        }
+    }
+
+    async function acceptFriendRequest(id) {
+        try {
+            await apiCall(`/api/friends/accept/${id}`, {method:'POST'});
+            showToast('Friend request accepted!', 'success');
+            loadFriendsTab();
+        } catch(e) { showToast(e.message || 'Error', 'error'); }
+    }
+
+    async function declineFriendRequest(id) {
+        try {
+            await apiCall(`/api/friends/decline/${id}`, {method:'POST'});
+            loadFriendRequests();
+        } catch(e) { showToast(e.message || 'Error', 'error'); }
+    }
+
+    async function removeFriend(friendId, name) {
+        if (!confirm(`Remove ${name} from friends?`)) return;
+        try {
+            await apiCall(`/api/friends/${friendId}`, {method:'DELETE'});
+            showToast(`Removed ${name}`, 'info');
+            loadFriends();
+        } catch(e) { showToast(e.message || 'Error', 'error'); }
+    }
+
+    async function viewFriendProfile(friendId) {
+        try {
+            const p = await apiCall(`/api/friends/${friendId}/profile`);
+            const rarityColor = {Gold:'#ffd700',Red:'#e74c3c',Pink:'#e040fb',Purple:'#9c27b0',Blue:'#2196f3'};
+            openArcade(`
+                <div style="text-align:center;">
+                    <div style="position:relative;display:inline-block;margin-bottom:12px;">
+                        <img src="${p.avatar_url || 'https://cdn.discordapp.com/embed/avatars/0.png'}" style="width:80px;height:80px;border-radius:50%;border:3px solid #ffd700;" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+                        <div style="position:absolute;bottom:2px;right:2px;width:16px;height:16px;border-radius:50%;border:2px solid #12121e;background:${p.online ? '#4caf50' : '#555'};"></div>
+                    </div>
+                    <div style="font-size:20px;font-weight:700;margin-bottom:4px;">${esc(p.username)}</div>
+                    <div style="color:#888;font-size:12px;margin-bottom:16px;">${p.online ? '🟢 Online' : '⚫ Offline'}</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:20px;">
+                        <div style="background:rgba(255,215,0,0.08);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:12px;">
+                            <div style="font-size:22px;font-weight:700;color:#ffd700;">${p.level}</div>
+                            <div style="color:#888;font-size:10px;">Level</div>
+                        </div>
+                        <div style="background:rgba(255,215,0,0.08);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:12px;">
+                            <div style="font-size:22px;font-weight:700;color:#ffd700;">${p.prestige}</div>
+                            <div style="color:#888;font-size:10px;">Prestige</div>
+                        </div>
+                        <div style="background:rgba(255,215,0,0.08);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:12px;">
+                            <div style="font-size:22px;font-weight:700;color:#ffd700;">${p.item_count}</div>
+                            <div style="color:#888;font-size:10px;">Items</div>
+                        </div>
+                    </div>
+                    ${p.recent_drops.length ? `
+                        <div style="text-align:left;">
+                            <div style="color:#888;font-size:11px;text-transform:uppercase;margin-bottom:8px;">Recent Drops</div>
+                            ${p.recent_drops.map(d => `
+                                <div style="padding:6px 10px;background:rgba(255,255,255,0.03);border-radius:6px;margin-bottom:4px;font-size:12px;border-left:3px solid ${rarityColor[d.rarity]||'#555'};">
+                                    ${esc(d.name)} <span style="color:${rarityColor[d.rarity]||'#888'};font-size:10px;">${d.rarity}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : '<div style="color:#888;font-size:13px;">No drops yet</div>'}
+                    <button class="btn btn-primary" style="margin-top:16px;width:100%;" onclick="closeArcade();challengeFriend(${p.user_id},'${esc(p.username)}')">⚔️ Challenge to Ticket Coinflip</button>
+                </div>
+            `);
+        } catch(e) { showToast(e.message || 'Error loading profile', 'error'); }
+    }
+
+    async function challengeFriend(friendId, name) {
+        openArcade(`
+            <h3 style="margin-bottom:16px;">⚔️ Challenge ${esc(name)}</h3>
+            <p style="color:#888;font-size:13px;margin-bottom:20px;">Winner takes all — ticket coinflip (50/50). Your tickets are held until the challenge expires or is resolved.</p>
+            <div style="margin-bottom:16px;">
+                <label style="color:#888;font-size:12px;display:block;margin-bottom:6px;">Tickets to wager (1–10)</label>
+                <input type="number" id="challengeBetInput" min="1" max="10" value="1"
+                    style="width:100%;padding:10px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,215,0,0.3);border-radius:8px;color:#fff;font-size:16px;text-align:center;">
+            </div>
+            <button class="btn btn-gold" style="width:100%;font-size:15px;" onclick="_submitChallenge(${friendId})">Send Challenge ⚔️</button>
+        `);
+    }
+
+    async function _submitChallenge(friendId) {
+        const bet = parseInt(document.getElementById('challengeBetInput')?.value || 1);
+        try {
+            await apiCall(`/api/friends/${friendId}/challenge`, {method:'POST', body: JSON.stringify({bet_tickets: bet})});
+            openArcade(`<div style="text-align:center;padding:20px;">
+                <div style="font-size:48px;margin-bottom:12px;">⚔️</div>
+                <div style="font-size:18px;font-weight:700;margin-bottom:8px;">Challenge Sent!</div>
+                <div style="color:#888;font-size:13px;">Waiting for them to accept. ${bet} ticket${bet>1?'s':''} held.</div>
+                <button class="btn btn-primary" style="margin-top:16px;" onclick="closeArcade()">Done</button>
+            </div>`);
+            loadTicketBalance();
+        } catch(e) { showToast(e.message || 'Error', 'error'); }
+    }
+
+    async function acceptPvpChallenge(id) {
+        try {
+            const data = await apiCall(`/api/friends/challenges/${id}/accept`, {method:'POST'});
+            if (data.you_won) {
+                spawnConfetti('Gold', 80);
+                openArcade(`<div style="text-align:center;padding:20px;">
+                    <div style="font-size:56px;margin-bottom:12px;">🏆</div>
+                    <div style="font-size:22px;font-weight:700;color:#ffd700;margin-bottom:8px;">You Won!</div>
+                    <div style="color:#888;font-size:14px;">+${data.tickets_won} tickets added to your balance</div>
+                    <button class="btn btn-gold" style="margin-top:16px;" onclick="closeArcade()">Collect</button>
+                </div>`);
+            } else {
+                openArcade(`<div style="text-align:center;padding:20px;">
+                    <div style="font-size:56px;margin-bottom:12px;">😔</div>
+                    <div style="font-size:22px;font-weight:700;margin-bottom:8px;">You Lost</div>
+                    <div style="color:#888;font-size:14px;">Better luck next time!</div>
+                    <button class="btn btn-primary" style="margin-top:16px;" onclick="closeArcade()">Close</button>
+                </div>`);
+            }
+            loadTicketBalance();
+            loadPvpChallenges();
+        } catch(e) { showToast(e.message || 'Error', 'error'); }
+    }
+
+    async function declinePvpChallenge(id) {
+        try {
+            await apiCall(`/api/friends/challenges/${id}/decline`, {method:'POST'});
+            showToast('Challenge declined — tickets refunded to challenger', 'info');
+            loadPvpChallenges();
+        } catch(e) { showToast(e.message || 'Error', 'error'); }
+    }
+
+    // ============================================
+    // SECTION 100: TICKET ARCADE
+    // ============================================
+
+    function openArcade(html) {
+        const overlay = document.getElementById('arcadeOverlay');
+        const body = document.getElementById('arcadeBody');
+        if (!overlay || !body) return;
+        body.innerHTML = html;
+        overlay.style.display = 'flex';
+    }
+
+    function closeArcade() {
+        const overlay = document.getElementById('arcadeOverlay');
+        if (overlay) overlay.style.display = 'none';
+        const body = document.getElementById('arcadeBody');
+        if (body) body.innerHTML = '';
+    }
+
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeArcade(); });
+
+    // ── Reaction Time ─────────────────────────────────────────
+
+    let _reactionState = null;
+
+    async function startReactionGame() {
+        try {
+            const data = await apiCall('/api/ticket-games/reaction/start', {method:'POST'});
+            _reactionState = {token: data.token, startTime: null, waiting: true};
+            loadTicketBalance();
+            const delay = 2000 + Math.random() * 3000;
+            openArcade(`
+                <h3 style="margin-bottom:20px;text-align:center;">⚡ Reaction Time</h3>
+                <div id="reactionBox" onclick="recordReaction()" style="
+                    height:220px;border-radius:14px;background:#e74c3c;
+                    display:flex;align-items:center;justify-content:center;
+                    cursor:pointer;user-select:none;transition:background 0.2s;font-size:18px;font-weight:700;">
+                    Wait for green...
+                </div>
+                <div id="reactionMsg" style="text-align:center;color:#888;font-size:13px;margin-top:12px;">Get ready...</div>
+            `);
+            setTimeout(() => {
+                if (!_reactionState) return;
+                const box = document.getElementById('reactionBox');
+                if (box) {
+                    box.style.background = '#4caf50';
+                    box.textContent = 'CLICK NOW!';
+                    _reactionState.startTime = performance.now();
+                    _reactionState.waiting = false;
+                }
+            }, delay);
+        } catch(e) { showToast(e.message || 'Not enough tickets', 'error'); }
+    }
+
+    async function recordReaction() {
+        if (!_reactionState) return;
+        if (_reactionState.waiting) {
+            // Clicked too early — penalise
+            const box = document.getElementById('reactionBox');
+            const msg = document.getElementById('reactionMsg');
+            if (box) { box.style.background='#e74c3c'; box.textContent='Too early! Wait for green.'; }
+            if (msg) msg.textContent = 'Restarting...';
+            setTimeout(() => closeArcade(), 1500);
+            try { await apiCall('/api/ticket-games/reaction/submit', {method:'POST', body: JSON.stringify({token: _reactionState.token, ms: 9999})}); } catch(_){}
+            _reactionState = null;
+            return;
+        }
+        const ms = Math.round(performance.now() - _reactionState.startTime);
+        const token = _reactionState.token;
+        _reactionState = null;
+        try {
+            const res = await apiCall('/api/ticket-games/reaction/submit', {method:'POST', body: JSON.stringify({token, ms})});
+            const won = res.tickets_won;
+            const label = ms < 150 ? 'SUPERHUMAN!' : ms < 250 ? 'Lightning Fast' : ms < 400 ? 'Quick!' : ms < 600 ? 'Not Bad' : 'Too Slow';
+            openArcade(`<div style="text-align:center;padding:10px;">
+                <div style="font-size:52px;margin-bottom:10px;">${won >= 5 ? '⚡' : won >= 2 ? '🟡' : won === 0 ? '🐢' : '✅'}</div>
+                <div style="font-size:26px;font-weight:700;margin-bottom:6px;">${ms} ms</div>
+                <div style="color:#ffd700;font-size:15px;margin-bottom:14px;">${label}</div>
+                ${won > 0
+                    ? `<div style="font-size:18px;color:#4caf50;font-weight:700;margin-bottom:6px;">+${won} tickets won!</div>`
+                    : `<div style="color:#888;font-size:14px;margin-bottom:6px;">No tickets — react faster next time</div>`}
+                <div style="color:#555;font-size:11px;margin-bottom:20px;">&lt;150ms=8🎟 · &lt;200ms=5🎟 · &lt;300ms=3🎟 · &lt;450ms=2🎟 · &lt;600ms=1🎟</div>
+                <div style="display:flex;gap:10px;justify-content:center;">
+                    <button class="btn btn-primary" onclick="startReactionGame()">Play Again (1 🎟️)</button>
+                    <button class="btn" onclick="closeArcade()">Done</button>
+                </div>
+            </div>`);
+            if (won > 0) { loadTicketBalance(); spawnConfetti('Blue', 40); }
+        } catch(e) { showToast(e.message || 'Error', 'error'); closeArcade(); }
+    }
+
+    // ── Aim Trainer ───────────────────────────────────────────
+
+    let _aimState = null;
+
+    async function startAimGame() {
+        try {
+            const data = await apiCall('/api/ticket-games/aim/start', {method:'POST'});
+            loadTicketBalance();
+            _aimState = {token: data.token, targets: data.targets, hits: 0, idx: 0, timer: null, deadline: Date.now() + 30000};
+            openArcade(`
+                <h3 style="text-align:center;margin-bottom:8px;">🎯 Aim Trainer</h3>
+                <div style="display:flex;justify-content:space-between;margin-bottom:8px;font-size:13px;">
+                    <span>Hits: <strong id="aimHits">0</strong>/20</span>
+                    <span>Time: <strong id="aimTimer">30</strong>s</span>
+                </div>
+                <div id="aimArea" style="position:relative;height:280px;background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.1);border-radius:10px;overflow:hidden;cursor:crosshair;"></div>
+            `);
+            _runAimTimer();
+            _showNextTarget();
+        } catch(e) { showToast(e.message || 'Not enough tickets', 'error'); }
+    }
+
+    function _runAimTimer() {
+        if (!_aimState) return;
+        const el = document.getElementById('aimTimer');
+        const remaining = Math.max(0, Math.ceil((_aimState.deadline - Date.now()) / 1000));
+        if (el) el.textContent = remaining;
+        if (remaining <= 0) { _endAimGame(); return; }
+        _aimState.timer = setTimeout(_runAimTimer, 250);
+    }
+
+    function _showNextTarget() {
+        if (!_aimState || _aimState.idx >= _aimState.targets.length) { _endAimGame(); return; }
+        const area = document.getElementById('aimArea');
+        if (!area) { _endAimGame(); return; }
+        const t = _aimState.targets[_aimState.idx];
+        const dot = document.createElement('div');
+        dot.style.cssText = `position:absolute;left:${t.x}%;top:${t.y}%;width:${t.r*2}px;height:${t.r*2}px;
+            margin-left:-${t.r}px;margin-top:-${t.r}px;border-radius:50%;
+            background:radial-gradient(circle,#ff6b00,#e74c3c);cursor:crosshair;
+            box-shadow:0 0 ${t.r}px rgba(255,107,0,0.6);animation:aimPulse 0.4s ease infinite alternate;`;
+        dot.onclick = (e) => {
+            e.stopPropagation();
+            if (!_aimState) return;
+            _aimState.hits++;
+            _aimState.idx++;
+            const hitsEl = document.getElementById('aimHits');
+            if (hitsEl) hitsEl.textContent = _aimState.hits;
+            dot.remove();
+            _showNextTarget();
+        };
+        area.innerHTML = '';
+        area.appendChild(dot);
+    }
+
+    async function _endAimGame() {
+        if (!_aimState) return;
+        clearTimeout(_aimState.timer);
+        const {token, hits} = _aimState;
+        _aimState = null;
+        try {
+            const res = await apiCall('/api/ticket-games/aim/submit', {method:'POST', body: JSON.stringify({token, hits})});
+            const won = res.tickets_won;
+            openArcade(`<div style="text-align:center;padding:10px;">
+                <div style="font-size:52px;margin-bottom:10px;">${hits >= 18 ? '🎯' : hits >= 12 ? '✅' : '💨'}</div>
+                <div style="font-size:30px;font-weight:700;margin-bottom:6px;">${hits}/20</div>
+                <div style="color:#888;font-size:14px;margin-bottom:14px;">Targets hit</div>
+                ${won > 0
+                    ? `<div style="font-size:18px;color:#4caf50;font-weight:700;margin-bottom:6px;">+${won} tickets won!</div>`
+                    : `<div style="color:#888;font-size:14px;margin-bottom:6px;">Hit more targets to win tickets</div>`}
+                <div style="color:#555;font-size:11px;margin-bottom:20px;">20=6🎟 · 18+=4🎟 · 15+=3🎟 · 10+=2🎟 · 5+=1🎟</div>
+                <div style="display:flex;gap:10px;justify-content:center;">
+                    <button class="btn btn-primary" onclick="startAimGame()">Play Again (1 🎟️)</button>
+                    <button class="btn" onclick="closeArcade()">Done</button>
+                </div>
+            </div>`);
+            if (won > 0) { loadTicketBalance(); spawnConfetti('Blue', 40); }
+        } catch(e) { showToast(e.message || 'Error', 'error'); closeArcade(); }
+    }
+
+    // ── Bomb Defuse ───────────────────────────────────────────
+
+    let _bombState = null;
+
+    async function startBombGame() {
+        try {
+            const data = await apiCall('/api/ticket-games/bomb/start', {method:'POST'});
+            loadTicketBalance();
+            _bombState = {token: data.token, countdown: 10, timer: null, done: false};
+            const wireColors = {red:'#e74c3c',blue:'#3498db',green:'#2ecc71',yellow:'#f1c40f',white:'#ecf0f1'};
+            openArcade(`
+                <h3 style="text-align:center;margin-bottom:4px;">💣 Bomb Defuse</h3>
+                <p style="text-align:center;color:#888;font-size:12px;margin-bottom:16px;">Cut the correct wire before time runs out. 3 tickets if right.</p>
+                <div style="text-align:center;margin-bottom:20px;">
+                    <div id="bombTimer" style="font-size:52px;font-weight:900;color:#e74c3c;font-family:monospace;">10</div>
+                    <div style="color:#888;font-size:12px;">seconds</div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:10px;">
+                    ${data.wires.map(w => `
+                        <div onclick="cutWire('${w}')" style="
+                            display:flex;align-items:center;gap:14px;padding:14px 18px;
+                            border:2px solid ${wireColors[w]};border-radius:10px;cursor:pointer;
+                            background:rgba(${w==='white'?'255,255,255':'0,0,0'},0.05);
+                            transition:all 0.15s;" id="wire-${w}"
+                            onmouseenter="this.style.background='rgba(255,255,255,0.08)'"
+                            onmouseleave="this.style.background='rgba(${w==='white'?'255,255,255':'0,0,0'},0.05)'">
+                            <div style="width:36px;height:8px;background:${wireColors[w]};border-radius:4px;flex-shrink:0;box-shadow:0 0 10px ${wireColors[w]}66;"></div>
+                            <span style="font-size:14px;font-weight:600;color:${wireColors[w]};text-transform:capitalize;">${w} wire</span>
+                            <span style="margin-left:auto;color:#555;font-size:20px;">✂️</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `);
+            _bombState.timer = setInterval(() => {
+                if (!_bombState || _bombState.done) return;
+                _bombState.countdown--;
+                const el = document.getElementById('bombTimer');
+                if (el) {
+                    el.textContent = _bombState.countdown;
+                    if (_bombState.countdown <= 3) el.style.animation = 'blink 0.5s infinite';
+                }
+                if (_bombState.countdown <= 0) {
+                    clearInterval(_bombState.timer);
+                    _bombState.done = true;
+                    cutWire('__timeout__');
+                }
+            }, 1000);
+        } catch(e) { showToast(e.message || 'Not enough tickets', 'error'); }
+    }
+
+    async function cutWire(color) {
+        if (!_bombState || _bombState.done) return;
+        _bombState.done = true;
+        clearInterval(_bombState.timer);
+        const token = _bombState.token;
+        _bombState = null;
+        try {
+            const res = await apiCall('/api/ticket-games/bomb/submit', {method:'POST', body: JSON.stringify({token, wire: color})});
+            if (res.won) {
+                spawnConfetti('Gold', 80);
+                openArcade(`<div style="text-align:center;padding:20px;">
+                    <div style="font-size:56px;margin-bottom:12px;">💚</div>
+                    <div style="font-size:22px;font-weight:700;color:#4caf50;margin-bottom:8px;">Bomb Defused!</div>
+                    <div style="color:#888;margin-bottom:12px;">You cut the ${esc(res.safe_wire)} wire — correct!</div>
+                    <div style="font-size:18px;color:#ffd700;font-weight:700;margin-bottom:20px;">+3 tickets won!</div>
+                    <div style="display:flex;gap:10px;justify-content:center;">
+                        <button class="btn btn-primary" onclick="startBombGame()">Play Again (1 🎟️)</button>
+                        <button class="btn" onclick="closeArcade()">Done</button>
+                    </div>
+                </div>`);
+                loadTicketBalance();
+            } else {
+                const msg = color === '__timeout__' ? "Time's up! 💥" : `Wrong wire! You cut ${esc(res.chose)} — it was ${esc(res.safe_wire)}.`;
+                openArcade(`<div style="text-align:center;padding:20px;">
+                    <div style="font-size:56px;margin-bottom:12px;">💥</div>
+                    <div style="font-size:22px;font-weight:700;color:#e74c3c;margin-bottom:8px;">BOOM!</div>
+                    <div style="color:#888;margin-bottom:20px;">${msg}</div>
+                    <div style="display:flex;gap:10px;justify-content:center;">
+                        <button class="btn btn-primary" onclick="startBombGame()">Try Again (1 🎟️)</button>
+                        <button class="btn" onclick="closeArcade()">Done</button>
+                    </div>
+                </div>`);
+            }
+        } catch(e) { showToast(e.message || 'Error', 'error'); closeArcade(); }
+    }
+
+    // ── Float Guesser ─────────────────────────────────────────
+
+    async function startFloatGame() {
+        try {
+            const data = await apiCall('/api/ticket-games/float/start', {method:'POST'});
+            loadTicketBalance();
+            const fmin = data.float_min.toFixed(4), fmax = data.float_max.toFixed(4);
+            openArcade(`
+                <h3 style="text-align:center;margin-bottom:4px;">🔬 Float Guesser</h3>
+                <p style="text-align:center;color:#888;font-size:12px;margin-bottom:16px;">Guess the float value of this skin.</p>
+                ${data.skin_image ? `<div style="text-align:center;margin-bottom:12px;"><img src="${data.skin_image}" style="max-height:120px;max-width:100%;object-fit:contain;" onerror="this.style.display='none'"></div>` : ''}
+                <div style="text-align:center;font-size:15px;font-weight:600;margin-bottom:16px;">${esc(data.skin_name)}</div>
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:4px;">
+                    <span>Min: ${fmin}</span><span>Max: ${fmax}</span>
+                </div>
+                <input type="range" id="floatSlider" min="${fmin}" max="${fmax}" step="0.0001" value="${((parseFloat(fmin)+parseFloat(fmax))/2).toFixed(4)}"
+                    style="width:100%;accent-color:#ffd700;margin-bottom:8px;"
+                    oninput="document.getElementById('floatGuessDisplay').textContent=parseFloat(this.value).toFixed(4)">
+                <div style="text-align:center;font-size:22px;font-weight:700;color:#ffd700;margin-bottom:20px;" id="floatGuessDisplay">${((parseFloat(fmin)+parseFloat(fmax))/2).toFixed(4)}</div>
+                <div style="color:#555;font-size:11px;text-align:center;margin-bottom:16px;">±0.01=8🎟 · ±0.03=5🎟 · ±0.05=3🎟 · ±0.10=1🎟</div>
+                <button class="btn btn-gold" style="width:100%;" onclick="_submitFloat('${data.token}')">Lock In Guess</button>
+            `);
+        } catch(e) { showToast(e.message || 'Not enough tickets', 'error'); }
+    }
+
+    async function _submitFloat(token) {
+        const guess = parseFloat(document.getElementById('floatSlider')?.value || 0);
+        try {
+            const res = await apiCall('/api/ticket-games/float/submit', {method:'POST', body: JSON.stringify({token, guess})});
+            const won = res.tickets_won;
+            const diffStr = res.diff.toFixed(4);
+            openArcade(`<div style="text-align:center;padding:10px;">
+                <div style="font-size:52px;margin-bottom:10px;">${won >= 5 ? '🎯' : won >= 1 ? '✅' : '😬'}</div>
+                <div style="margin-bottom:6px;">Actual: <strong style="color:#ffd700;">${res.actual.toFixed(4)}</strong></div>
+                <div style="margin-bottom:6px;">Your guess: <strong>${res.guess.toFixed(4)}</strong></div>
+                <div style="color:#888;font-size:13px;margin-bottom:14px;">Difference: ${diffStr}</div>
+                ${won > 0
+                    ? `<div style="font-size:18px;color:#4caf50;font-weight:700;margin-bottom:6px;">+${won} tickets!</div>`
+                    : `<div style="color:#888;margin-bottom:6px;">So close! Try again.</div>`}
+                <div style="display:flex;gap:10px;justify-content:center;margin-top:16px;">
+                    <button class="btn btn-primary" onclick="startFloatGame()">Play Again (1 🎟️)</button>
+                    <button class="btn" onclick="closeArcade()">Done</button>
+                </div>
+            </div>`);
+            if (won > 0) { loadTicketBalance(); spawnConfetti('Blue', 40); }
+        } catch(e) { showToast(e.message || 'Error', 'error'); closeArcade(); }
+    }
+
+    // ── Memory Sequence ───────────────────────────────────────
+
+    let _memState = null;
+
+    async function startMemoryGame() {
+        try {
+            const data = await apiCall('/api/ticket-games/memory/start', {method:'POST'});
+            loadTicketBalance();
+            _memState = {token: data.token, serverSeq: data.sequence, phase: 'watch', round: 1, userInput: []};
+            openArcade(`
+                <h3 style="text-align:center;margin-bottom:4px;">🧠 Memory Sequence</h3>
+                <p style="text-align:center;color:#888;font-size:12px;margin-bottom:14px;" id="memMsg">Watch the sequence...</p>
+                <div id="memGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;max-width:300px;margin:0 auto 16px;"></div>
+                <div style="text-align:center;color:#888;font-size:11px;" id="memStatus">Round 1 / 10</div>
+            `);
+            _buildMemGrid();
+            _memNextRound();
+        } catch(e) { showToast(e.message || 'Not enough tickets', 'error'); }
+    }
+
+    function _buildMemGrid() {
+        const grid = document.getElementById('memGrid');
+        if (!grid) return;
+        grid.innerHTML = '';
+        for (let i = 0; i < 16; i++) {
+            const cell = document.createElement('div');
+            cell.id = `mc-${i}`;
+            cell.style.cssText = 'width:100%;aspect-ratio:1;border-radius:8px;background:rgba(255,255,255,0.06);border:2px solid rgba(255,255,255,0.1);cursor:not-allowed;transition:all 0.15s;';
+            cell.onclick = () => _memCellClick(i);
+            grid.appendChild(cell);
+        }
+    }
+
+    function _memFlash(idx, color, duration) {
+        const c = document.getElementById(`mc-${idx}`);
+        if (!c) return;
+        c.style.background = color;
+        c.style.boxShadow = `0 0 15px ${color}`;
+        setTimeout(() => { c.style.background = 'rgba(255,255,255,0.06)'; c.style.boxShadow = 'none'; }, duration);
+    }
+
+    function _memNextRound() {
+        if (!_memState) return;
+        const round = _memState.round;
+        const statusEl = document.getElementById('memStatus');
+        const msgEl = document.getElementById('memMsg');
+        const grid = document.getElementById('memGrid');
+        if (statusEl) statusEl.textContent = `Round ${round} / 10`;
+        if (msgEl) msgEl.textContent = 'Watch the sequence...';
+        // Disable clicks during playback
+        if (grid) grid.querySelectorAll('div').forEach(c => c.style.cursor = 'not-allowed');
+
+        const toShow = _memState.serverSeq.slice(0, round);
+        let delay = 400;
+        for (const idx of toShow) {
+            setTimeout(() => _memFlash(idx, '#ffd700', 500), delay);
+            delay += 750;
+        }
+        setTimeout(() => {
+            if (!_memState) return;
+            _memState.phase = 'input';
+            _memState.userInput = [];
+            if (msgEl) msgEl.textContent = `Your turn — repeat ${round} cell${round > 1 ? 's' : ''}`;
+            if (grid) grid.querySelectorAll('div').forEach(c => c.style.cursor = 'pointer');
+        }, delay);
+    }
+
+    function _memCellClick(idx) {
+        if (!_memState || _memState.phase !== 'input') return;
+        _memFlash(idx, '#4caf50', 300);
+        _memState.userInput.push(idx);
+        const expected = _memState.serverSeq.slice(0, _memState.round);
+        const pos = _memState.userInput.length - 1;
+        if (_memState.userInput[pos] !== expected[pos]) {
+            // Wrong — flash red and end
+            _memFlash(idx, '#e74c3c', 600);
+            _memState.phase = 'done';
+            const roundsCompleted = _memState.round - 1;
+            const token = _memState.token;
+            const seq = _memState.serverSeq;
+            _memState = null;
+            setTimeout(() => _submitMemory(token, seq, roundsCompleted), 800);
+            return;
+        }
+        if (_memState.userInput.length === _memState.round) {
+            if (_memState.round >= 10) {
+                const token = _memState.token;
+                const seq = _memState.serverSeq;
+                _memState = null;
+                setTimeout(() => _submitMemory(token, seq, 10), 400);
+            } else {
+                _memState.round++;
+                _memState.phase = 'watch';
+                setTimeout(_memNextRound, 700);
+            }
+        }
+    }
+
+    async function _submitMemory(token, seq, correct) {
+        try {
+            const res = await apiCall('/api/ticket-games/memory/submit', {
+                method: 'POST',
+                body: JSON.stringify({token, sequence: seq.slice(0, correct)})
+            });
+            const won = res.tickets_won;
+            const c = res.correct;
+            openArcade(`<div style="text-align:center;padding:10px;">
+                <div style="font-size:52px;margin-bottom:10px;">${c >= 8 ? '🏆' : c >= 4 ? '🧠' : '😅'}</div>
+                <div style="font-size:28px;font-weight:700;margin-bottom:6px;">${c}/10</div>
+                <div style="color:#888;font-size:13px;margin-bottom:14px;">Rounds completed</div>
+                ${won > 0
+                    ? `<div style="font-size:18px;color:#4caf50;font-weight:700;margin-bottom:6px;">+${won} tickets won!</div>`
+                    : `<div style="color:#888;margin-bottom:6px;">Complete more rounds to win tickets</div>`}
+                <div style="color:#555;font-size:11px;margin-bottom:20px;">8+=6🎟 · 6+=4🎟 · 4+=3🎟 · 2+=1🎟</div>
+                <div style="display:flex;gap:10px;justify-content:center;">
+                    <button class="btn btn-primary" onclick="startMemoryGame()">Play Again (1 🎟️)</button>
+                    <button class="btn" onclick="closeArcade()">Done</button>
+                </div>
+            </div>`);
+            if (won > 0) { loadTicketBalance(); spawnConfetti('Blue', 40); }
+        } catch(e) { showToast(e.message || 'Error', 'error'); closeArcade(); }
+    }
 
     console.log('🎰 CS2CaseBot Dashboard Loaded!');
     console.log('🎮 Games: Coinflip, 3D Dice, Mines, Slots');
