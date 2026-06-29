@@ -490,6 +490,8 @@ async def _init_all_tables(pool):
             "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS tier TEXT",
             "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS source TEXT",
             "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS acquired_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS applied_stickers JSONB DEFAULT '[]'::jsonb",
+            "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS in_loadout BOOLEAN DEFAULT FALSE",
         ]:
             try:
                 await conn.execute(col_def)
@@ -1337,6 +1339,16 @@ async def get_inventory(
         clean = _re.sub(r'^[\U0001F300-\U0001FFFF\U00002600-\U000027BF\U0000FE00-\U0000FEFF\s🟦🟪🟥🟨🟩⬛⬜🟫🔥⭐💫👑✨]+', '', raw_name).strip()
         d["display_name"] = clean or raw_name
         d["name"]         = clean or raw_name
+        # Parse applied_stickers from JSONB (comes back as string or list)
+        import json as _json
+        raw_stickers = d.get("applied_stickers")
+        if isinstance(raw_stickers, str):
+            try:
+                d["applied_stickers"] = _json.loads(raw_stickers)
+            except Exception:
+                d["applied_stickers"] = []
+        elif raw_stickers is None:
+            d["applied_stickers"] = []
         # Populate image_url for items that predate the image_url column
         if not d.get("image_url"):
             item_type = (d.get("item_type") or "").lower()
@@ -1359,6 +1371,121 @@ async def get_inventory(
         "total": int(total or 0),
         "count": int(total or 0),
     }
+
+# ─── Sticker application ─────────────────────────────────────
+
+@app.post("/api/inventory/{weapon_id}/sticker")
+async def apply_sticker(weapon_id: int, request: Request):
+    import json as _json
+    user_id = await require_auth(request)
+    body = await request.json()
+    sticker_id = int(body.get("sticker_id", 0))
+    slot = int(body.get("slot", 0))
+    if slot not in (0, 1, 2, 3):
+        raise HTTPException(400, "Slot must be 0–3")
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            weapon = await conn.fetchrow(
+                "SELECT id, item_type, applied_stickers FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept' FOR UPDATE",
+                weapon_id, user_id
+            )
+            if not weapon:
+                raise HTTPException(404, "Weapon not found")
+            if (weapon["item_type"] or "weapon") not in ("weapon", "gold"):
+                raise HTTPException(400, "Can only apply stickers to weapons")
+            sticker = await conn.fetchrow(
+                "SELECT id, item_name, rarity, image_url FROM inventory WHERE id=$1 AND user_id=$2 AND item_type='sticker' AND status='kept' FOR UPDATE",
+                sticker_id, user_id
+            )
+            if not sticker:
+                raise HTTPException(404, "Sticker not found")
+
+            raw = weapon["applied_stickers"]
+            current = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            # Check slot not already occupied
+            if any(s.get("slot") == slot for s in current):
+                raise HTTPException(400, f"Slot {slot} already has a sticker")
+            if len(current) >= 4:
+                raise HTTPException(400, "All 4 sticker slots are full")
+
+            current.append({
+                "slot":          slot,
+                "sticker_id":    sticker_id,
+                "sticker_name":  sticker["item_name"],
+                "sticker_image": sticker["image_url"] or "",
+                "rarity":        sticker["rarity"] or "",
+            })
+            await conn.execute(
+                "UPDATE inventory SET applied_stickers=$1 WHERE id=$2",
+                _json.dumps(current), weapon_id
+            )
+            # Consume the sticker
+            await conn.execute("UPDATE inventory SET status='sold' WHERE id=$1", sticker_id)
+    return {"success": True, "applied_stickers": current}
+
+
+@app.delete("/api/inventory/{weapon_id}/sticker/{slot}")
+async def remove_sticker(weapon_id: int, slot: int, request: Request):
+    import json as _json
+    user_id = await require_auth(request)
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            weapon = await conn.fetchrow(
+                "SELECT id, applied_stickers FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept' FOR UPDATE",
+                weapon_id, user_id
+            )
+            if not weapon:
+                raise HTTPException(404, "Weapon not found")
+            raw = weapon["applied_stickers"]
+            current = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+            updated = [s for s in current if s.get("slot") != slot]
+            await conn.execute(
+                "UPDATE inventory SET applied_stickers=$1 WHERE id=$2",
+                _json.dumps(updated), weapon_id
+            )
+    return {"success": True, "applied_stickers": updated}
+
+
+# ─── Loadout ──────────────────────────────────────────────────
+
+@app.post("/api/inventory/{item_id}/loadout")
+async def toggle_loadout(item_id: int, request: Request):
+    user_id = await require_auth(request)
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, in_loadout FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept'",
+            item_id, user_id
+        )
+        if not row:
+            raise HTTPException(404, "Item not found")
+        new_val = not bool(row["in_loadout"])
+        await conn.execute("UPDATE inventory SET in_loadout=$1 WHERE id=$2", new_val, item_id)
+    return {"success": True, "in_loadout": new_val}
+
+
+@app.get("/api/loadout")
+async def get_loadout(request: Request):
+    user_id = await require_auth(request)
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM inventory WHERE user_id=$1 AND in_loadout=TRUE AND status='kept' ORDER BY created_at DESC",
+            user_id
+        )
+    import json as _json, re as _re
+    def _enrich_loadout(r):
+        d = convert_decimals(dict(r))
+        raw = d.get("item_name", "")
+        clean = _re.sub(r'^[\U0001F300-\U0001FFFF\U00002600-\U000027BF\U0000FE00-\U0000FEFF\s🟦🟪🟥🟨🟩⬛⬜🟫🔥⭐💫👑✨]+', '', raw).strip()
+        d["display_name"] = clean or raw
+        raw_st = d.get("applied_stickers")
+        d["applied_stickers"] = _json.loads(raw_st) if isinstance(raw_st, str) else (raw_st or [])
+        return d
+    return {"items": [_enrich_loadout(r) for r in rows]}
+
 
 # ─── New endpoints for frontend ──────────────────────────────
 
