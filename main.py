@@ -2988,30 +2988,37 @@ async def reroll_giveaway(interaction: discord.Interaction, giveaway_id: int):
 # DASHBOARD COMMAND
 # ============================================
 
-@bot.tree.command(name="dashboard", description="Get the link to the bot's web dashboard")
+@bot.tree.command(name="dashboard", description="Open the CS2CaseBot web dashboard — cases, games, inventory & more")
 async def dashboard(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🌐 CS2CaseBot Dashboard",
-        description="**Take your case opening experience to the next level!**",
+        description="Everything in one place — open cases, play games, manage your inventory, trade up skins, and more.",
         color=discord.Color.blue()
     )
     embed.add_field(
-        name="🎰 Live Slot Machine Animation",
-        value="Watch the reels spin with **realistic slot machine animations** as you open cases! Every pull feels like the real thing with smooth spinning and dramatic reveals.",
+        name="📦 Cases & Drops",
+        value="Open 37+ cases with live spinning reels, float values, and confetti on rare drops.",
         inline=False
     )
     embed.add_field(
-        name="✨ Premium Features",
-        value="• **Live spinning reels** with authentic slot feel\n"
-              "• **Real-time item reveals** with glow effects\n"
-              "• **Confetti & particle bursts** on rare pulls\n"
-              "• **Float values & conditions** for every skin\n"
-              "• **Instant inventory management** with one click",
+        name="🎮 22+ Games",
+        value="Crash · Mines · Coinflip · Dice · Slots · Roulette · Plinko · Blackjack · Poker · and more.\n"
+              "**All games are available exclusively on the dashboard.**",
         inline=False
     )
     embed.add_field(
-        name="🔗 Try It Now",
-        value="[**Click here to open the dashboard → cs2casebot.xyz**](https://cs2casebot.xyz/)",
+        name="🎟️ Ticket Arcade",
+        value="Spend tickets to play skill-based mini-games: Reaction Time, Aim Trainer, Bomb Defuse, Float Guesser, Memory Sequence.",
+        inline=False
+    )
+    embed.add_field(
+        name="👥 Friends & PvP",
+        value="Add friends, view profiles, and send ticket challenges for PvP coinflips.",
+        inline=False
+    )
+    embed.add_field(
+        name="🔗 Open Now",
+        value="[**cs2casebot.xyz →**](https://cs2casebot.xyz/)",
         inline=False
     )
     embed.set_footer(text="💖 Support us on Ko-fi")
@@ -3029,21 +3036,36 @@ async def help_command(interaction: discord.Interaction):
     await interaction.response.defer()
 
     embed = discord.Embed(title="🎮 CS2CaseBot Commands", color=discord.Color.blue())
-    embed.add_field(name="💰 Economy", value="`/balance` `/daily` `/transfer`", inline=False)
+    embed.add_field(name="💰 Economy", value="`/balance` `/daily` `/hourly` `/weekly` `/transfer`", inline=False)
     embed.add_field(name="📦 Cases (37)", value="`/cases` `/open <case>` `/bulkopen <case> 5/10/15/20/25`", inline=False)
     embed.add_field(name="⭐ Stickers (5)", value="`/capsules` `/sticker <capsule>`", inline=False)
-    embed.add_field(name="🔄 Trade-Up", value="`/tradeup <ids>` (10 Blue→Purple)\n`/tradeup_purple <ids>` (10 Purple→Pink)\n`/tradeup_pink <ids>` (10 Pink→Red)\n`/quicktrade blue/purple/pink` (Random)\n`/goldtrade <ids>` (5 Golds)\n`/stickertrade <ids>` (5 stickers)", inline=False)
+    embed.add_field(name="🔄 Trade-Up", value="`/tradeup <ids>` (10 Blue→Purple)\n`/tradeup_purple <ids>` (10 Purple→Pink)\n`/tradeup_pink <ids>` (10 Pink→Red)\n`/quicktrade blue/purple/pink` (Random)\n`/stickertrade <ids>` (5 stickers)", inline=False)
     embed.add_field(name="📋 Quests", value="`/quests` `/claim`", inline=False)
     embed.add_field(name="🎁 Giveaways", value="`/giveaway_create` `/giveaway_reroll` (Admin)", inline=False)
-    embed.add_field(name="🎮 Inventory", value="`/inventory` `/sell <id>`", inline=False)
+    embed.add_field(name="📦 Inventory", value="`/inventory` `/sell <id>` `/profile`", inline=False)
     embed.add_field(name="🏆 Leaderboards", value="`/leaderboard_money` `/leaderboard_opens` `/leaderboard_golds` `/leaderboard_trades`", inline=False)
     embed.add_field(name="🎲 Jackpot", value="`/jackpot <amount>`", inline=False)
-    embed.add_field(name="🌐 Dashboard", value="`/dashboard`", inline=False)
+    embed.add_field(name="🎮 Games — Play on the Dashboard", value="**22+ games** (Crash, Mines, Coinflip, Dice, Slots, Roulette, Plinko, Blackjack, Poker & more)\n🎟️ **Ticket Arcade** (Reaction Time, Aim Trainer, Bomb Defuse, Float Guesser, Memory Sequence)\n→ [**cs2casebot.xyz**](https://cs2casebot.xyz/)", inline=False)
+    embed.add_field(name="🌐 Dashboard", value="`/dashboard` — Full feature overview + link", inline=False)
     embed.add_field(name="📊 Admin", value="`/stats` `/setchannel` `/removechannel`", inline=False)
     embed.add_field(name="💎 Bulk Discounts", value="5:5%, 10:10%, 15:15%, 20:20%, 25:25%", inline=False)
     embed.add_field(name="💬 Join Our Community", value=f"[Click here to join our Discord!]({DISCORD_INVITE_URL})", inline=False)
     embed.set_footer(text=f"💖 Support us on Ko-fi: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
     await interaction.followup.send(embed=embed)
+
+# ============================================
+# GAME REDIRECT HELPER
+# ============================================
+
+async def _game_redirect(interaction: discord.Interaction, game_name: str):
+    embed = discord.Embed(
+        title=f"🎮 {game_name} — Play on the Dashboard",
+        description=f"**{game_name}** and 22+ other games are available on the CS2CaseBot web dashboard with full animations, live multipliers, and a much better experience than Discord commands.",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="🔗 Play Now", value="[**cs2casebot.xyz →**](https://cs2casebot.xyz/)", inline=False)
+    embed.set_footer(text="💖 Support us on Ko-fi!")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ============================================
 # GAME HELPER FUNCTIONS
@@ -3401,118 +3423,19 @@ async def cashout_mines(game_id: int, user_id: int) -> dict:
         return {'success': False, 'error': f'Error: {str(e)}'}
 
 
-@bot.tree.command(name="mines", description="Start a mines game")
-async def cmd_mines(interaction: discord.Interaction, amount: float, grid_size: int = 5, mine_count: int = 3):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    logger.info(f"🎮 User {interaction.user.id} starting mines game with ${amount}")
-    
-    result = await start_mines_game(interaction.user.id, amount, grid_size, mine_count)
-    
-    if not result['success']:
-        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-        return
-    
-    total_tiles = grid_size * grid_size
-    
-    embed = discord.Embed(
-        title="💣 Mines Game Started!",
-        description=f"Bet: ${amount:,.2f}\nGrid: {grid_size}x{grid_size}\nMines: {mine_count}",
-        color=discord.Color.purple()
-    )
-    embed.add_field(name="🎮 Game ID", value=f"`{result['game_id']}`", inline=False)
-    embed.add_field(
-        name="📖 How to Play", 
-        value=f"Use `/mines_reveal game_id:{result['game_id']} tile:0` to reveal a tile!\nTile numbers go from 0 to {total_tiles - 1}",
-        inline=False
-    )
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    
-    await interaction.followup.send(embed=embed)
+@bot.tree.command(name="mines", description="Play Mines on the CS2CaseBot dashboard")
+async def cmd_mines(interaction: discord.Interaction):
+    await _game_redirect(interaction, "Mines")
 
 
-@bot.tree.command(name="mines_reveal", description="Reveal a tile in your mines game")
-async def cmd_mines_reveal(interaction: discord.Interaction, game_id: int, tile: int):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    logger.info(f"🎮 User {interaction.user.id} revealing tile {tile} in game {game_id}")
-    
-    try:
-        result = await reveal_mines_tile(game_id, interaction.user.id, tile)
-        
-        if not result['success']:
-            if result.get('exploded'):
-                embed = discord.Embed(
-                    title="💥 BOOM!",
-                    description="You hit a mine! Game over! 😢",
-                    color=discord.Color.red()
-                )
-                await interaction.followup.send(embed=embed)
-            else:
-                await interaction.followup.send(f"❌ {result.get('error', 'Something went wrong')}", ephemeral=True)
-            return
-        
-        if result.get('game_won'):
-            embed = discord.Embed(
-                title="🎉 MINES WON! 🎉",
-                description=f"You revealed all safe tiles and won **${result['win_amount']:,.2f}**!",
-                color=discord.Color.gold()
-            )
-            embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
-            embed.add_field(name="Tiles Revealed", value=str(len(result['revealed'])), inline=True)
-            await interaction.followup.send(embed=embed)
-            return
-        
-        embed = discord.Embed(
-            title="✅ Tile Revealed!",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Safe Tiles Remaining", value=str(result['remaining']), inline=True)
-        embed.add_field(name="Current Multiplier", value=f"{result['multiplier']}x", inline=True)
-        embed.add_field(name="💰 Cash Out Value", value=f"${result['cash_out_amount']:,.2f}", inline=True)
-        embed.add_field(name="💡 Next Step", value="Use `/mines_cashout` to cash out or reveal another tile!", inline=False)
-        embed.set_footer(text="💖 Support us on Ko-fi!")
-        
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        logger.error(f"cmd_mines_reveal error: {e}")
-        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+@bot.tree.command(name="mines_reveal", description="Play Mines on the CS2CaseBot dashboard")
+async def cmd_mines_reveal(interaction: discord.Interaction):
+    await _game_redirect(interaction, "Mines")
 
 
-@bot.tree.command(name="mines_cashout", description="Cash out your mines game")
-async def cmd_mines_cashout(interaction: discord.Interaction, game_id: int):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    logger.info(f"💰 User {interaction.user.id} cashing out mines game {game_id}")
-    
-    try:
-        result = await cashout_mines(game_id, interaction.user.id)
-        
-        if not result['success']:
-            await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-            return
-        
-        embed = discord.Embed(
-            title="💰 Mines Cashed Out!",
-            description=f"You cashed out for **${result['win_amount']:,.2f}**!",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
-        embed.set_footer(text="💖 Support us on Ko-fi!")
-        
-        await interaction.followup.send(embed=embed)
-    except Exception as e:
-        logger.error(f"cmd_mines_cashout error: {e}")
-        await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
+@bot.tree.command(name="mines_cashout", description="Play Mines on the CS2CaseBot dashboard")
+async def cmd_mines_cashout(interaction: discord.Interaction):
+    await _game_redirect(interaction, "Mines")
 
 # ============================================
 # SLOTS HELPERS
@@ -3595,136 +3518,25 @@ async def play_slots(user_id: int, amount: float) -> dict:
 # COINFLIP COMMANDS - VS COMPUTER
 # ============================================
 
-@bot.tree.command(name="coinflip", description="Flip a coin against the computer!")
-async def cmd_coinflip(interaction: discord.Interaction, amount: float):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    if amount < 100:
-        await interaction.followup.send("❌ Minimum bet is $100!", ephemeral=True)
-        return
-    
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            await ensure_user_exists(interaction.user.id, interaction.user.display_name, conn)
-
-            # Atomic deduct: WHERE balance >= $1 prevents negative balance under concurrency.
-            deducted = await conn.fetchval(
-                "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1 RETURNING balance",
-                amount, interaction.user.id
-            )
-            if deducted is None:
-                await interaction.followup.send("❌ Insufficient balance!", ephemeral=True)
-                return
-            
-            # Computer flips coin - 50/50 chance
-            user_wins = secure_random() < 0.5
-            
-            if user_wins:
-                win_amount = int(amount * 1.95)  # 95% payout
-                await conn.execute(
-                    "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
-                    win_amount, interaction.user.id
-                )
-                result = "win"
-                await update_quest_progress(interaction.user.id, "jackpot_win", 1)
-            else:
-                win_amount = 0
-                result = "lose"
-            
-            # Save game record - opponent_id is NULL for VS Computer games
-            await conn.execute(
-                """INSERT INTO coinflip_games 
-                   (creator_id, amount, status, completed_at, opponent_id, winner_id) 
-                   VALUES ($1, $2, 'complete', NOW(), NULL, $3)""",
-                interaction.user.id, amount, interaction.user.id if user_wins else None
-            )
-            
-            embed = discord.Embed(
-                title="🪙 Coinflip vs Computer!",
-                color=discord.Color.gold() if user_wins else discord.Color.red()
-            )
-            embed.add_field(name="Your Bet", value=f"${amount:,.2f}", inline=True)
-            embed.add_field(name="Result", value="🎉 YOU WON!" if user_wins else "😢 Computer Wins!", inline=True)
-            if user_wins:
-                embed.add_field(name="You Won", value=f"${win_amount:,.2f}", inline=True)
-            embed.set_footer(text="💖 Support us on Ko-fi!")
-            await interaction.followup.send(embed=embed)
+@bot.tree.command(name="coinflip", description="Play Coinflip on the CS2CaseBot dashboard")
+async def cmd_coinflip(interaction: discord.Interaction):
+    await _game_redirect(interaction, "Coinflip")
 
 # ============================================
 # DICE COMMANDS
 # ============================================
 
-@bot.tree.command(name="dice", description="Play dice - bet over or under a number")
-async def cmd_dice(interaction: discord.Interaction, amount: float, bet_type: str, bet_number: int):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    bet_type = bet_type.lower()
-    
-    result = await play_dice(interaction.user.id, amount, bet_type, bet_number)
-    
-    if not result['success']:
-        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-        return
-    
-    embed = discord.Embed(
-        title="🎲 Dice Roll!",
-        color=discord.Color.green() if result['win'] else discord.Color.red()
-    )
-    embed.add_field(name="Bet Amount", value=f"${result['amount']:,.2f}", inline=True)
-    embed.add_field(name="Bet Type", value=result['bet_type'].upper(), inline=True)
-    embed.add_field(name="Bet Number", value=str(result['bet_number']), inline=True)
-    embed.add_field(name="Roll", value=str(result['roll']), inline=True)
-    embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
-    
-    if result['win']:
-        embed.add_field(name="💰 Won", value=f"${result['win_amount']:,.2f}", inline=True)
-    else:
-        embed.add_field(name="❌ Lost", value=f"${result['amount']:,.2f}", inline=True)
-    
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    await interaction.followup.send(embed=embed)
+@bot.tree.command(name="dice", description="Play Dice on the CS2CaseBot dashboard")
+async def cmd_dice(interaction: discord.Interaction):
+    await _game_redirect(interaction, "Dice")
 
 # ============================================
 # SLOTS COMMANDS
 # ============================================
 
-@bot.tree.command(name="slots", description="Play the slot machine")
-async def cmd_slots(interaction: discord.Interaction, amount: float):
-    if not await is_bot_channel(interaction):
-        return
-    
-    await interaction.response.defer()
-    
-    result = await play_slots(interaction.user.id, amount)
-    
-    if not result['success']:
-        await interaction.followup.send(f"❌ {result['error']}", ephemeral=True)
-        return
-    
-    symbols = ' '.join(result['symbols'])
-    
-    embed = discord.Embed(
-        title="🎰 SLOTS!",
-        description=f"**[ {symbols} ]**",
-        color=discord.Color.green() if result['win_amount'] > 0 else discord.Color.red()
-    )
-    embed.add_field(name="Bet", value=f"${result['bet_amount']:,.2f}", inline=True)
-    
-    if result['win_amount'] > 0:
-        embed.add_field(name="💰 Won", value=f"${result['win_amount']:,.2f}", inline=True)
-        embed.add_field(name="Multiplier", value=f"{result['multiplier']}x", inline=True)
-        embed.color = discord.Color.gold()
-    else:
-        embed.add_field(name="❌ Lost", value=f"${result['bet_amount']:,.2f}", inline=True)
-    
-    embed.set_footer(text="💖 Support us on Ko-fi!")
-    await interaction.followup.send(embed=embed)
+@bot.tree.command(name="slots", description="Play Slots on the CS2CaseBot dashboard")
+async def cmd_slots(interaction: discord.Interaction):
+    await _game_redirect(interaction, "Slots")
 
 # ============================================
 # SKIN UPGRADE COMMANDS
