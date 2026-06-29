@@ -807,6 +807,7 @@ body {
 <div class="toast" id="toast"></div>
 
 <script>
+// Bug 179 fix: XSS-safe HTML escaping helper for case names/emojis in innerHTML.
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 // ── STATE ────────────────────────────────────────────────────
