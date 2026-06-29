@@ -1554,6 +1554,44 @@
                 <div id="vipTiersGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;"></div>
             </div>
 
+            <!-- TICKET ARCADE -->
+            <div class="card" style="margin-bottom:16px;">
+                <h3 style="margin-bottom:4px;">🕹️ Ticket Arcade</h3>
+                <p style="color:#888;font-size:12px;margin-bottom:16px;">Each game costs 1 ticket to play. Win based on your performance.</p>
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+                    <div style="background:rgba(255,107,0,0.08);border:1px solid rgba(255,107,0,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">⚡</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Reaction Time</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Click when it turns green<br>Up to 8 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startReactionGame()">Play (1 🎟️)</button>
+                    </div>
+                    <div style="background:rgba(76,175,80,0.08);border:1px solid rgba(76,175,80,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">🎯</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Aim Trainer</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Hit 20 targets in 30s<br>Up to 6 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startAimGame()">Play (1 🎟️)</button>
+                    </div>
+                    <div style="background:rgba(231,76,60,0.08);border:1px solid rgba(231,76,60,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">💣</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Bomb Defuse</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Cut the right wire<br>Win 3 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startBombGame()">Play (1 🎟️)</button>
+                    </div>
+                    <div style="background:rgba(66,133,244,0.08);border:1px solid rgba(66,133,244,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">🔬</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Float Guesser</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Guess the skin float<br>Up to 8 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startFloatGame()">Play (1 🎟️)</button>
+                    </div>
+                    <div style="background:rgba(156,39,176,0.08);border:1px solid rgba(156,39,176,0.3);border-radius:10px;padding:16px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:6px;">🧠</div>
+                        <div style="font-weight:700;margin-bottom:4px;">Memory Sequence</div>
+                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Repeat the flash pattern<br>Up to 6 tickets</div>
+                        <button class="btn btn-primary btn-sm" onclick="startMemoryGame()">Play (1 🎟️)</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- PREMIUM BATCH OPENER -->
             <div class="card" style="margin-bottom:16px;">
                 <h3 style="margin-bottom:8px;">⚡ Premium Case Batch</h3>
@@ -1624,49 +1662,6 @@
             </div>
 
             <div class="disclaimer-inline">⚠️ <strong>Disclaimer:</strong> VIP and Tickets are for entertainment purposes only. All in-platform currency has no real-world value.</div>
-
-            <!-- TICKET ARCADE -->
-            <div class="card">
-                <h3 style="margin-bottom:4px;">🕹️ Ticket Arcade</h3>
-                <p style="color:#888;font-size:12px;margin-bottom:16px;">Each game costs 1 ticket to play. Win based on your performance.</p>
-                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
-                    <!-- Reaction Time -->
-                    <div style="background:rgba(255,107,0,0.08);border:1px solid rgba(255,107,0,0.3);border-radius:10px;padding:16px;text-align:center;">
-                        <div style="font-size:28px;margin-bottom:6px;">⚡</div>
-                        <div style="font-weight:700;margin-bottom:4px;">Reaction Time</div>
-                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Click when it turns green<br>Up to 8 tickets</div>
-                        <button class="btn btn-primary btn-sm" onclick="startReactionGame()">Play (1 🎟️)</button>
-                    </div>
-                    <!-- Aim Trainer -->
-                    <div style="background:rgba(76,175,80,0.08);border:1px solid rgba(76,175,80,0.3);border-radius:10px;padding:16px;text-align:center;">
-                        <div style="font-size:28px;margin-bottom:6px;">🎯</div>
-                        <div style="font-weight:700;margin-bottom:4px;">Aim Trainer</div>
-                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Hit 20 targets in 30s<br>Up to 6 tickets</div>
-                        <button class="btn btn-primary btn-sm" onclick="startAimGame()">Play (1 🎟️)</button>
-                    </div>
-                    <!-- Bomb Defuse -->
-                    <div style="background:rgba(231,76,60,0.08);border:1px solid rgba(231,76,60,0.3);border-radius:10px;padding:16px;text-align:center;">
-                        <div style="font-size:28px;margin-bottom:6px;">💣</div>
-                        <div style="font-weight:700;margin-bottom:4px;">Bomb Defuse</div>
-                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Cut the right wire<br>Win 3 tickets</div>
-                        <button class="btn btn-primary btn-sm" onclick="startBombGame()">Play (1 🎟️)</button>
-                    </div>
-                    <!-- Float Guesser -->
-                    <div style="background:rgba(66,133,244,0.08);border:1px solid rgba(66,133,244,0.3);border-radius:10px;padding:16px;text-align:center;">
-                        <div style="font-size:28px;margin-bottom:6px;">🔬</div>
-                        <div style="font-weight:700;margin-bottom:4px;">Float Guesser</div>
-                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Guess the skin float<br>Up to 8 tickets</div>
-                        <button class="btn btn-primary btn-sm" onclick="startFloatGame()">Play (1 🎟️)</button>
-                    </div>
-                    <!-- Memory Sequence -->
-                    <div style="background:rgba(156,39,176,0.08);border:1px solid rgba(156,39,176,0.3);border-radius:10px;padding:16px;text-align:center;">
-                        <div style="font-size:28px;margin-bottom:6px;">🧠</div>
-                        <div style="font-weight:700;margin-bottom:4px;">Memory Sequence</div>
-                        <div style="color:#888;font-size:11px;margin-bottom:12px;">Repeat the flash pattern<br>Up to 6 tickets</div>
-                        <button class="btn btn-primary btn-sm" onclick="startMemoryGame()">Play (1 🎟️)</button>
-                    </div>
-                </div>
-            </div>
         </div>
 
         <!-- TAB: ACHIEVEMENTS -->
