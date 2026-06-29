@@ -2916,8 +2916,11 @@ async def _run_giveaway(giveaway_id: int, delay_seconds: float):
     if delay_seconds > 0:
         await asyncio.sleep(delay_seconds)
     async with db_pool.acquire() as conn:
+        # Atomic claim: only one concurrent caller (timer vs startup recovery) wins;
+        # the second sees no row returned and exits early.
         giveaway = await conn.fetchrow(
-            "SELECT * FROM giveaways WHERE id = $1 AND ended = false", giveaway_id
+            "UPDATE giveaways SET ended = true WHERE id = $1 AND ended = false RETURNING *",
+            giveaway_id
         )
         if not giveaway:
             return
@@ -2941,7 +2944,6 @@ async def _run_giveaway(giveaway_id: int, delay_seconds: float):
             result_embed.add_field(name="Winners", value=", ".join(winner_mentions), inline=False)
             result_embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
             await channel.send(embed=result_embed)
-        await conn.execute("UPDATE giveaways SET ended = true WHERE id = $1", giveaway_id)
 
 @bot.tree.command(name="giveaway_reroll", description="Reroll a giveaway (Admin only)")
 @app_commands.default_permissions(administrator=True)
@@ -3360,7 +3362,7 @@ async def cashout_mines(game_id: int, user_id: int) -> dict:
                 await ensure_user_exists(user_id, conn=conn)
                 
                 game = await conn.fetchrow(
-                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active'",
+                    "SELECT * FROM mines_games WHERE id = $1 AND user_id = $2 AND status = 'active' FOR UPDATE",
                     game_id, user_id
                 )
                 if not game:
