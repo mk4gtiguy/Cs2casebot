@@ -177,13 +177,13 @@ async def mines_reveal(req: MinesRevealRequest, request: Request):
             bet = sess['bet']
             mines_count = sess['mines']
             revealed_count = len(sess['revealed'])
-            _mine_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 await log_game(conn, user_id, 'mines', bet, 0, {
                     'mines': mines_count, 'revealed': revealed_count,
                     'bust_tile': tile,
                 })
+            _mine_sessions.pop(user_id, None)
             return {
                 "success":   True,
                 "hit_mine":  True,
@@ -443,7 +443,6 @@ async def tower_pick(req: TowerPickRequest, request: Request):
 
         if hit_bomb:
             sess['active'] = False
-            _tower_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 await log_game(conn, user_id, 'tower', sess['bet'], 0, {
@@ -451,6 +450,7 @@ async def tower_pick(req: TowerPickRequest, request: Request):
                     'floors_cleared': floor_idx,
                     'bust_floor': floor_idx,
                 })
+            _tower_sessions.pop(user_id, None)
             return {
                 "success":      True,
                 "hit_bomb":     True,
@@ -628,7 +628,6 @@ async def shotgun_pull(request: Request):
 
         if is_loaded:
             sess['active'] = False
-            _shotgun_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 await log_game(conn, user_id, 'shotgun', sess['bet'], 0, {
@@ -636,6 +635,7 @@ async def shotgun_pull(request: Request):
                     'survived': pull_num,
                     'fired_at': pull_num,
                 })
+            _shotgun_sessions.pop(user_id, None)
             return {
                 "success":   True,
                 "fired":     True,
