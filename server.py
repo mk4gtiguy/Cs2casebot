@@ -33,6 +33,9 @@ DATABASE_URL          = os.getenv('DATABASE_URL', '')
 DISCORD_CLIENT_ID     = os.getenv('DISCORD_CLIENT_ID', '')
 DISCORD_CLIENT_SECRET = os.getenv('DISCORD_CLIENT_SECRET', '')
 DISCORD_REDIRECT_URI  = os.getenv('DISCORD_REDIRECT_URI', 'https://cs2casebot.xyz/auth/discord/callback')
+GOOGLE_CLIENT_ID      = os.getenv('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET  = os.getenv('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_REDIRECT_URI   = os.getenv('GOOGLE_REDIRECT_URI', 'https://cs2casebot.xyz/auth/google/callback')
 
 # ─── Load admin / moderator IDs from env ─────────────────────
 _admin_env = os.getenv('ADMIN_USER_IDS', '')
@@ -427,16 +430,26 @@ async def _init_all_tables(pool):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS prestige INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_email TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_avatar_url TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS primary_provider TEXT DEFAULT 'discord'",
         ]:
             try:
                 await conn.execute(col_sql)
             except Exception:
                 pass
-        # Unique index for referral codes (separate try so it doesn't block other migrations)
+        for idx_sql in [
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL",
+        ]:
+            try:
+                await conn.execute(idx_sql)
+            except Exception:
+                pass
+        # Sequence used to generate user_ids for Google-first accounts
         try:
-            await conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL"
-            )
+            await conn.execute("CREATE SEQUENCE IF NOT EXISTS google_user_id_seq START WITH 1000000 INCREMENT BY 1")
         except Exception:
             pass
         # Inventory
@@ -944,29 +957,51 @@ async def auth_callback(code: str, request: Request, response: Response, state: 
             raise HTTPException(400, "Failed to fetch Discord user")
         discord_user = user_resp.json()
 
-    user_id  = int(discord_user["id"])
-    username = discord_user.get("global_name") or discord_user.get("username", "Unknown")
-    avatar   = discord_user.get("avatar")
-    avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else None
+    discord_id = int(discord_user["id"])
+    username   = discord_user.get("global_name") or discord_user.get("username", "Unknown")
+    avatar     = discord_user.get("avatar")
+    avatar_url = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar}.png" if avatar else None
 
-    # Upsert user — persist avatar_url so it survives server restarts
     pool = await get_db()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (user_id, username, balance, avatar_url, created_at, updated_at)
-            VALUES ($1, $2, 1000, $3, NOW(), NOW())
-            ON CONFLICT (user_id) DO UPDATE
-            SET username = $2, avatar_url = COALESCE($3, users.avatar_url), updated_at = NOW()
-        """, user_id, username, avatar_url)
 
-    # Create session — use Redis-backed helper (falls back to in-memory if no Redis)
+    # Link-mode: Google-primary user is adding Discord as a secondary provider
+    link_mode = request.cookies.get("discord_link_mode") == "1"
+    current_uid = await get_user_id_from_session(request) if link_mode else None
+
+    async with pool.acquire() as conn:
+        if link_mode and current_uid:
+            # Check Discord ID not already used by another account
+            existing = await conn.fetchval("SELECT user_id FROM users WHERE user_id=$1", discord_id)
+            if existing and existing != current_uid:
+                resp = RedirectResponse("/?error=discord_already_linked")
+                resp.delete_cookie("discord_link_mode")
+                return resp
+            # Migrate primary account: copy Discord ID in as the account's user_id alias
+            # We store discord_id on the google-primary user for display purposes
+            await conn.execute("""
+                UPDATE users SET avatar_url=COALESCE($1, avatar_url), username=$2, updated_at=NOW()
+                WHERE user_id=$3
+            """, avatar_url, username, current_uid)
+            resp = RedirectResponse("/?linked=discord")
+            resp.delete_cookie("discord_link_mode")
+            return resp
+
+        # Normal Discord login — upsert by Discord ID (primary provider)
+        await conn.execute("""
+            INSERT INTO users (user_id, username, balance, avatar_url, primary_provider, created_at, updated_at)
+            VALUES ($1, $2, 1000, $3, 'discord', NOW(), NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET username=$2, avatar_url=COALESCE($3, users.avatar_url), updated_at=NOW()
+        """, discord_id, username, avatar_url)
+
     token = secrets.token_urlsafe(32)
     shared.create_session(token, {
-        "user_id":    int(user_id),   # always store as int
-        "username":   username,
-        "avatar":     avatar,
-        "avatar_url": avatar_url,
-        "created_at": datetime.now().isoformat(),
+        "user_id":          int(discord_id),
+        "username":         username,
+        "avatar":           avatar,
+        "avatar_url":       avatar_url,
+        "primary_provider": "discord",
+        "created_at":       datetime.now().isoformat(),
     })
 
     resp = RedirectResponse(url="/")
@@ -977,6 +1012,144 @@ async def auth_callback(code: str, request: Request, response: Response, state: 
         samesite="lax",
         secure=os.getenv("SECURE_COOKIES", "true").lower() != "false",
     )
+    return resp
+
+
+# ============================================================
+# GOOGLE OAUTH
+# ============================================================
+
+@app.get("/auth/google")
+async def google_login(request: Request):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(503, "Google login not configured")
+    from urllib.parse import urlencode
+    state = secrets.token_urlsafe(16)
+    is_logged_in = bool(await get_user_id_from_session(request))
+    params = urlencode({
+        "client_id":     GOOGLE_CLIENT_ID,
+        "redirect_uri":  GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope":         "openid email profile",
+        "state":         state,
+        "access_type":   "online",
+    })
+    resp = RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+    resp.set_cookie("google_oauth_state", state, max_age=300, httponly=True, samesite="lax",
+                    secure=os.getenv("SECURE_COOKIES", "true").lower() != "false")
+    resp.set_cookie("google_link_mode", "1" if is_logged_in else "0",
+                    max_age=300, httponly=True, samesite="lax",
+                    secure=os.getenv("SECURE_COOKIES", "true").lower() != "false")
+    return resp
+
+@app.get("/auth/google/callback")
+async def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    if error:
+        return RedirectResponse("/?error=google_denied")
+    stored_state = request.cookies.get("google_oauth_state", "")
+    if not stored_state or stored_state != state:
+        raise HTTPException(400, "OAuth state mismatch")
+
+    link_mode = request.cookies.get("google_link_mode", "0") == "1"
+
+    async with httpx.AsyncClient() as client:
+        tok = await client.post("https://oauth2.googleapis.com/token", data={
+            "client_id":     GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "code":          code,
+            "grant_type":    "authorization_code",
+            "redirect_uri":  GOOGLE_REDIRECT_URI,
+        })
+        if tok.status_code != 200:
+            raise HTTPException(400, "Google token exchange failed")
+        ginfo = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {tok.json()['access_token']}"},
+        )
+        if ginfo.status_code != 200:
+            raise HTTPException(400, "Failed to fetch Google user info")
+        gu = ginfo.json()
+
+    google_id     = gu["id"]
+    google_email  = gu.get("email", "")
+    google_name   = gu.get("name") or google_email.split("@")[0] or "User"
+    google_avatar = gu.get("picture", "")
+
+    pool = await get_db()
+    _secure = os.getenv("SECURE_COOKIES", "true").lower() != "false"
+
+    def _clear_google_cookies(r):
+        r.delete_cookie("google_oauth_state")
+        r.delete_cookie("google_link_mode")
+        return r
+
+    if link_mode:
+        current_uid = await get_user_id_from_session(request)
+        if not current_uid:
+            return _clear_google_cookies(RedirectResponse("/?error=session_expired"))
+        async with pool.acquire() as conn:
+            clash = await conn.fetchval(
+                "SELECT user_id FROM users WHERE google_id=$1 AND user_id!=$2", google_id, current_uid
+            )
+            if clash:
+                return _clear_google_cookies(RedirectResponse("/?error=google_already_linked"))
+            await conn.execute("""
+                UPDATE users SET google_id=$1, google_email=$2, google_avatar_url=$3, updated_at=NOW()
+                WHERE user_id=$4
+            """, google_id, google_email, google_avatar, current_uid)
+        return _clear_google_cookies(RedirectResponse("/?linked=google"))
+
+    # Standalone Google login / signup
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT user_id FROM users WHERE google_id=$1", google_id)
+        if row:
+            user_id = row["user_id"]
+            await conn.execute("""
+                UPDATE users SET google_avatar_url=$1, google_email=$2, updated_at=NOW()
+                WHERE user_id=$3
+            """, google_avatar, google_email, user_id)
+        else:
+            user_id = await conn.fetchval("SELECT nextval('google_user_id_seq')")
+            await conn.execute("""
+                INSERT INTO users (user_id, username, balance, google_id, google_email,
+                                   google_avatar_url, primary_provider, created_at, updated_at)
+                VALUES ($1, $2, 1000, $3, $4, $5, 'google', NOW(), NOW())
+            """, user_id, google_name, google_id, google_email, google_avatar)
+
+    token = secrets.token_urlsafe(32)
+    shared.create_session(token, {
+        "user_id":          int(user_id),
+        "username":         google_name,
+        "avatar":           None,
+        "avatar_url":       google_avatar,
+        "primary_provider": "google",
+        "created_at":       datetime.now().isoformat(),
+    })
+    resp = RedirectResponse("/")
+    resp.set_cookie("session_token", token, max_age=7*24*3600, httponly=True,
+                    samesite="lax", secure=_secure)
+    return _clear_google_cookies(resp)
+
+
+@app.get("/auth/discord/link")
+async def discord_link(request: Request):
+    """Start Discord OAuth in link mode for Google-primary users."""
+    if not await get_user_id_from_session(request):
+        return RedirectResponse("/")
+    from urllib.parse import urlencode
+    state = secrets.token_urlsafe(16)
+    params = urlencode({
+        "client_id":     DISCORD_CLIENT_ID,
+        "redirect_uri":  DISCORD_REDIRECT_URI,
+        "response_type": "code",
+        "scope":         "identify",
+        "state":         state,
+    })
+    resp = RedirectResponse(f"https://discord.com/api/oauth2/authorize?{params}")
+    resp.set_cookie("oauth_state",        state, max_age=300, httponly=True, samesite="lax",
+                    secure=os.getenv("SECURE_COOKIES", "true").lower() != "false")
+    resp.set_cookie("discord_link_mode", "1",   max_age=300, httponly=True, samesite="lax",
+                    secure=os.getenv("SECURE_COOKIES", "true").lower() != "false")
     return resp
 
 @app.post("/api/logout")
@@ -1017,28 +1190,37 @@ async def get_me(request: Request):
     if not user:
         raise HTTPException(404, "User not found")
 
-    avatar_url = None
     session = shared.get_session(request.cookies.get("session_token") or "") or {}
-    # Prefer session avatar (fresh from OAuth), fall back to DB-persisted value
-    avatar = session.get("avatar")
-    if avatar:
-        avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png"
-    elif session.get("avatar_url"):
-        avatar_url = session.get("avatar_url")
-    elif user.get("avatar_url"):
-        avatar_url = user["avatar_url"]
+    primary = (user.get("primary_provider") or session.get("primary_provider") or "discord")
+
+    # Build avatar URL: prefer Google avatar for Google-primary users
+    avatar_url = None
+    if primary == "google":
+        avatar_url = (user.get("google_avatar_url") or session.get("avatar_url")
+                      or user.get("avatar_url"))
+    else:
+        avatar = session.get("avatar")
+        if avatar:
+            avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png"
+        avatar_url = avatar_url or session.get("avatar_url") or user.get("avatar_url")
 
     return {
-        "user_id":     str(user["user_id"]),
-        "username":    user["username"],
-        "balance":     float(user["balance"] or 0),
-        "tickets":     int(user["tickets"] or 0),
-        "xp":          int(user["xp"] or 0),
-        "level":       int(user["level"] or 1),
-        "prestige":    int(user["prestige"] or 0),
-        "total_opens": int(user["total_opens"] or 0),
-        "total_golds": int(user["total_golds"] or 0),
-        "avatar_url":  avatar_url,
+        "user_id":          str(user["user_id"]),
+        "username":         user["username"],
+        "balance":          float(user["balance"] or 0),
+        "tickets":          int(user["tickets"] or 0),
+        "xp":               int(user["xp"] or 0),
+        "level":            int(user["level"] or 1),
+        "prestige":         int(user["prestige"] or 0),
+        "total_opens":      int(user["total_opens"] or 0),
+        "total_golds":      int(user["total_golds"] or 0),
+        "avatar_url":       avatar_url,
+        "avatar":           session.get("avatar"),
+        "primary_provider": primary,
+        "google_linked":    bool(user.get("google_id")),
+        "discord_linked":   primary == "discord" or bool(user.get("avatar_url")),
+        "google_email":     user.get("google_email") or "",
+        "is_google":        primary == "google",
     }
 
 # Alias for frontend compatibility
