@@ -239,18 +239,21 @@ async def _run_daily_award():
             cfg = VIP_TIERS.get(row['vip_tier'], {})
             daily = cfg.get('daily_tickets', 0)
             if daily > 0:
-                already = await conn.fetchval("""
-                    SELECT 1 FROM ticket_transactions
-                    WHERE user_id = $1 AND source = 'daily'
-                      AND created_at::date = CURRENT_DATE
-                """, row['user_id'])
-                if already:
-                    continue
-                await grant_tickets(
-                    row['user_id'], daily, 'daily',
-                    {'tier': row['vip_tier']}, conn=conn
-                )
-                awarded += 1
+                # Bug 170 fix: wrap check+grant in a transaction (savepoint when
+                # nested) so two concurrent award runs can't both pass the
+                # idempotency check and double-grant tickets.
+                async with conn.transaction():
+                    already = await conn.fetchval("""
+                        SELECT 1 FROM ticket_transactions
+                        WHERE user_id = $1 AND source = 'daily'
+                          AND created_at::date = CURRENT_DATE
+                    """, row['user_id'])
+                    if not already:
+                        await grant_tickets(
+                            row['user_id'], daily, 'daily',
+                            {'tier': row['vip_tier']}, conn=conn
+                        )
+                        awarded += 1
         logger.info(f"✅ Daily tickets awarded to {awarded} VIP users")
 
 # ============================================================
@@ -283,9 +286,9 @@ async def vip_tiers():
     }
 
 class SubscribeBody(BaseModel):
-    tier: str                          # silver | gold | platinum
-    success_url: str = "https://cs2casebot.xyz/vip/success"
-    cancel_url:  str = "https://cs2casebot.xyz/vip"
+    tier: str  # silver | gold | platinum
+    # Bug 169 fix: success_url / cancel_url removed from client input to prevent
+    # open-redirect attacks where a user crafts a malicious post-payment destination.
 
 @router.post("/api/vip/subscribe")
 async def vip_subscribe(body: SubscribeBody, request: Request):
@@ -315,8 +318,8 @@ async def vip_subscribe(body: SubscribeBody, request: Request):
     checkout_kwargs = {
         "mode":         "subscription",
         "line_items":   [{"price": price_id, "quantity": 1}],
-        "success_url":  body.success_url + "?session_id={CHECKOUT_SESSION_ID}",
-        "cancel_url":   body.cancel_url,
+        "success_url":  "https://cs2casebot.xyz/vip/success?session_id={CHECKOUT_SESSION_ID}",
+        "cancel_url":   "https://cs2casebot.xyz/vip",
         "metadata":     {"user_id": str(user_id), "tier": body.tier},
         "subscription_data": {"metadata": {"user_id": str(user_id), "tier": body.tier}},
     }
@@ -381,9 +384,8 @@ async def ticket_packs():
     return {"packs": TICKET_PACKS}
 
 class BuyPackBody(BaseModel):
-    pack_id:     str
-    success_url: str = "https://cs2casebot.xyz/tickets/success"
-    cancel_url:  str = "https://cs2casebot.xyz/"
+    pack_id: str
+    # Bug 169 fix: success_url / cancel_url removed from client input (see SubscribeBody)
 
 @router.post("/api/tickets/buy")
 async def tickets_buy(body: BuyPackBody, request: Request):
@@ -415,8 +417,8 @@ async def tickets_buy(body: BuyPackBody, request: Request):
             },
             "quantity": 1,
         }],
-        success_url = body.success_url + "?session_id={CHECKOUT_SESSION_ID}",
-        cancel_url  = body.cancel_url,
+        success_url = "https://cs2casebot.xyz/tickets/success?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url  = "https://cs2casebot.xyz/",
         metadata    = {
             "user_id": str(user_id),
             "tickets": str(pack['tickets']),
@@ -669,6 +671,7 @@ async def ticket_balance_endpoint(request: Request):
 @router.get("/api/tickets/history")
 async def ticket_history(request: Request, limit: int = 20):
     user_id = await require_auth(request)
+    limit = max(1, min(100, limit))  # Bug 168 fix: clamp to prevent table-scan DoS
     pool = await get_db()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""

@@ -840,18 +840,24 @@ async def join_queue(request: Request, req: QueueRequest):
 
     pool = await get_db()
     async with pool.acquire() as conn:
-        enabled = await conn.fetchval(
-            "SELECT enabled FROM battle_settings LIMIT 1"
+        settings = await conn.fetchrow(
+            "SELECT enabled, fee_tiers FROM battle_settings LIMIT 1"
         )
-        if not enabled:
+        if not settings or not settings['enabled']:
             raise HTTPException(400, "Battles are currently disabled")
+        # Bug 167 fix: validate fee against allowed tiers so an arbitrary fee
+        # can't create a queue that the matchmaking loop never drains, permanently
+        # locking the user out of the queue until server restart.
+        valid_fees = {float(f) for f in (settings['fee_tiers'] or [])}
+        if req.fee not in valid_fees:
+            raise HTTPException(400, f"Fee must be one of: {sorted(valid_fees)}")
+        if req.fee > 750_000:
+            raise HTTPException(400, "Maximum battle fee is $750,000")
         user = await conn.fetchrow(
             "SELECT balance FROM users WHERE user_id = $1", user_id
         )
         if not user or float(user['balance']) < req.fee:
             raise HTTPException(400, "Insufficient balance")
-        if req.fee > 750_000:
-            raise HTTPException(400, "Maximum battle fee is $750,000")
 
     mm_ws = battle_manager.matchmaking_ws.get(user_id)
     if not mm_ws:
