@@ -814,9 +814,25 @@ async def _cleanup_game_sessions():
                     if s.get('created_at', datetime.utcnow()) < cutoff
                 ]
                 for uid in expired:
-                    sessions_dict.pop(uid, None)
+                    sess = sessions_dict.pop(uid, None)
                     locks_dict.pop(uid, None)
                     total_cleaned += 1
+
+                    # Refund the in-flight bet so the player doesn't lose money
+                    # just because their session timed out before they could finish.
+                    bet = (sess or {}).get('bet', 0)
+                    if bet and bet > 0:
+                        try:
+                            _pool = await get_db()
+                            async with _pool.acquire() as _conn:
+                                await add_balance(uid, bet, _conn)
+                            logger.info(
+                                f"🧹 Refunded ${bet} to user {uid} (session TTL expired)"
+                            )
+                        except Exception as _e:
+                            logger.warning(
+                                f"Session cleanup refund failed for user {uid}: {_e}"
+                            )
 
             if total_cleaned:
                 logger.info(f"🧹 Cleaned {total_cleaned} expired game sessions")
@@ -1113,26 +1129,46 @@ async def grant_xp(user_id: int, amount: int, conn=None) -> dict:
     Works inside an existing conn (no transaction) or opens its own.
     """
     async def _do(c):
-        row = await c.fetchrow("SELECT xp, level, prestige FROM users WHERE user_id=$1", user_id)
-        if not row:
-            return {"xp": 0, "level": 1, "leveled_up": False}
-        xp    = (row["xp"] or 0) + amount
-        level = row["level"] or 1
-        leveled_up = False
-        # Level-up loop
-        while True:
-            xp_needed = level * 50 + 100
-            if xp >= xp_needed:
-                xp -= xp_needed
-                level += 1
-                leveled_up = True
-            else:
-                break
-        await c.execute(
-            "UPDATE users SET xp=$1, level=$2 WHERE user_id=$3",
-            xp, level, user_id
-        )
-        return {"xp": xp, "level": level, "leveled_up": leveled_up}
+        # FOR UPDATE inside a (possibly savepoint) transaction prevents a
+        # TOCTOU race where two concurrent grant_xp calls both read the same
+        # xp value and each overwrites the other's increment.
+        async with c.transaction():
+            row = await c.fetchrow(
+                "SELECT xp, level, prestige FROM users WHERE user_id=$1 FOR UPDATE",
+                user_id,
+            )
+            if not row:
+                return {"xp": 0, "level": 1, "leveled_up": False}
+            xp      = (row["xp"] or 0) + amount
+            level   = row["level"] or 1
+            prestige = row["prestige"] or 0
+            leveled_up = False
+            # Level-up loop — grants balance reward and prestige bonus per level
+            while True:
+                xp_needed = level * 50 + 100
+                if xp >= xp_needed:
+                    xp -= xp_needed
+                    level += 1
+                    leveled_up = True
+                    reward = level * 50
+                    await c.execute(
+                        "UPDATE users SET balance = balance + $1 WHERE user_id = $2",
+                        reward, user_id
+                    )
+                    if level % 50 == 0:
+                        prestige += 1
+                        prestige_bonus = prestige * 5000
+                        await c.execute(
+                            "UPDATE users SET balance = balance + $1, prestige = $2 WHERE user_id = $3",
+                            prestige_bonus, prestige, user_id
+                        )
+                else:
+                    break
+            await c.execute(
+                "UPDATE users SET xp=$1, level=$2 WHERE user_id=$3",
+                xp, level, user_id
+            )
+            return {"xp": xp, "level": level, "leveled_up": leveled_up, "prestige": prestige}
 
     pool = await get_db()
     if conn:

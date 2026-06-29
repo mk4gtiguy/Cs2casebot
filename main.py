@@ -1691,7 +1691,7 @@ async def daily(interaction: discord.Interaction):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
 
-            if last_daily and (now - last_daily).days == 1:
+            if last_daily and last_daily.date() == (now - timedelta(days=1)).date():
                 streak += 1
             else:
                 streak = 1
