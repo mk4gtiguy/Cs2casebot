@@ -304,7 +304,10 @@ for _game in _GAME_PAGES:
 # ─── Also serve game pages with .html extension ──────────────
 @app.get("/games/{game_name}.html", include_in_schema=False)
 async def serve_game_with_ext(game_name: str):
-    return _html(f"static/games/{game_name}.html")
+    # Bug 181 fix: strip any directory components from game_name to prevent path
+    # traversal attacks (e.g. "../admin" → "admin.html" serving admin panel to anyone).
+    safe_name = os.path.basename(game_name)
+    return _html(f"static/games/{safe_name}.html")
 
 def _safe_static_path(base_dir: str, filename: str) -> str | None:
     """Return resolved path only if it stays within base_dir; else None."""
@@ -2172,7 +2175,9 @@ async def admin_give_balance(request: Request, _=Depends(require_admin)):
 async def admin_reset_balance(request: Request, _=Depends(require_admin)):
     body = await request.json()
     target_id = int(body.get("user_id", 0))
-    amount    = float(body.get("amount", 1000))
+    # Bug 185 fix: floor at 0 so an admin can't accidentally set a negative
+    # balance, which would lock the user out of all game/case-open endpoints.
+    amount    = max(0.0, float(body.get("amount", 1000)))
     pool = await get_db()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -2283,7 +2288,8 @@ async def coinflip_create(request: Request):
     """Coinflip game in index.html — simple PvC."""
     body = await request.json()
     user_id = await require_auth(request)
-    amount = float(body.get("amount", 100))
+    # Bug 182 fix: clamp to max bet like all route-file games (MAX_BET = 750_000).
+    amount = max(10.0, min(750_000.0, float(body.get("amount", 100))))
     if amount < 10:
         raise HTTPException(400, "Minimum bet is $10")
     pool = await get_db()
@@ -2310,7 +2316,7 @@ async def dice_play(request: Request):
     """Dice game in index.html."""
     body = await request.json()
     user_id = await require_auth(request)
-    amount     = float(body.get("amount", 100))
+    amount     = max(10.0, min(750_000.0, float(body.get("amount", 100))))
     bet_type   = body.get("bet_type", "over")   # 'over' | 'under' | 'exact'
     bet_number = int(body.get("bet_number", 7))
     if amount < 10:
@@ -2360,7 +2366,7 @@ async def slots_play(request: Request):
     """Slots game in index.html."""
     body = await request.json()
     user_id = await require_auth(request)
-    amount = float(body.get("amount", 100))
+    amount = max(10.0, min(750_000.0, float(body.get("amount", 100))))
     if amount < 10:
         raise HTTPException(400, "Minimum bet is $10")
     symbols = [shared.secure_choice(SLOT_SYMBOLS) for _ in range(3)]
@@ -2392,7 +2398,7 @@ async def mines_start(request: Request):
     """Mines mini-game in index.html."""
     body = await request.json()
     user_id = await require_auth(request)
-    amount     = float(body.get("amount", 100))
+    amount     = max(10.0, min(750_000.0, float(body.get("amount", 100))))
     grid_size  = int(body.get("grid_size", 5))
     mine_count = int(body.get("mine_count", 3))
     if amount < 10:
@@ -2500,7 +2506,9 @@ async def open_premium_case(request: Request):
     body = await request.json()
     user_id = await require_auth(request)
     case_id  = body.get("case_id")
-    quantity = int(body.get("quantity", 1))
+    # Bug 183/184 fix: clamp quantity to [1, 25] so negative values can't exploit
+    # "tickets - (-n)" to grant free tickets, and large values can't DoS the DB.
+    quantity = max(1, min(25, int(body.get("quantity", 1))))
     case = CASES.get(case_id)
     if not case:
         raise HTTPException(400, "Invalid case")
