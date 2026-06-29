@@ -1211,7 +1211,7 @@ async function saveBattleSettingsAdmin() {
         });
         if (data) {
             toast(`✅ ${data.message}`, 'success');
-            document.getElementById('depositResult').innerHTML = `<span style="color:var(--green);">${data.message}</span>`;
+            document.getElementById('depositResult').innerHTML = `<span style="color:var(--green);">${esc(data.message)}</span>`;
         }
     }
 
