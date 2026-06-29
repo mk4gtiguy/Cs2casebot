@@ -36,12 +36,17 @@ async def init_market_tables():
                 condition   TEXT,
                 is_stattrak BOOLEAN DEFAULT FALSE,
                 float_value DECIMAL(10,4),
+                image_url   TEXT,
                 price       DECIMAL(15,2) NOT NULL,
                 created_at  TIMESTAMP DEFAULT NOW(),
                 status      TEXT DEFAULT 'active'
                             CHECK (status IN ('active','sold','cancelled'))
             )
         """)
+        try:
+            await conn.execute("ALTER TABLE market_listings ADD COLUMN IF NOT EXISTS image_url TEXT")
+        except Exception:
+            pass
         for sql in [
             "CREATE INDEX IF NOT EXISTS idx_market_active ON market_listings(created_at DESC) WHERE status='active'",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_market_item ON market_listings(item_id) WHERE status='active'",
@@ -59,6 +64,7 @@ async def init_market_tables():
 @router.get("/listings")
 async def get_listings(
     rarity: Optional[str] = None,
+    search: Optional[str] = None,
     sort: str = "newest",
     limit: int = 40,
     offset: int = 0,
@@ -80,12 +86,15 @@ async def get_listings(
         if rarity:
             args.append(rarity)
             filters += f" AND ml.rarity = ${len(args)}"
+        if search:
+            args.append(f"%{search}%")
+            filters += f" AND ml.item_name ILIKE ${len(args)}"
 
         args += [limit, offset]
         rows = await conn.fetch(f"""
             SELECT ml.id, ml.seller_id, ml.item_name, ml.rarity, ml.condition,
                    ml.is_stattrak, ml.float_value, ml.price, ml.created_at,
-                   u.username AS seller_name
+                   ml.image_url, u.username AS seller_name
             FROM market_listings ml
             JOIN users u ON ml.seller_id = u.user_id
             WHERE {filters}
@@ -122,7 +131,7 @@ async def list_item(request: Request, req: ListingRequest):
     async with pool.acquire() as conn:
         # Verify item belongs to user and is not already listed
         item = await conn.fetchrow("""
-            SELECT id, item_name, rarity, condition, is_stattrak, float_value, status, item_type
+            SELECT id, item_name, rarity, condition, is_stattrak, float_value, status, item_type, image_url
             FROM inventory
             WHERE id = $1 AND user_id = $2
         """, req.item_id, user_id)
@@ -149,11 +158,12 @@ async def list_item(request: Request, req: ListingRequest):
             listing_id = await conn.fetchval("""
                 INSERT INTO market_listings
                     (seller_id, item_id, item_name, rarity, condition,
-                     is_stattrak, float_value, price)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                     is_stattrak, float_value, price, image_url)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                 RETURNING id
             """, user_id, req.item_id, item['item_name'], item['rarity'],
-                item['condition'], item['is_stattrak'], item['float_value'], price)
+                item['condition'], item['is_stattrak'], item['float_value'], price,
+                item['image_url'])
 
     return {"success": True, "listing_id": listing_id, "price": price}
 
