@@ -216,6 +216,25 @@ app.add_middleware(
 # Fix 17: Per-user rate limiting on all /api/games/* endpoints
 app.add_middleware(PerUserRateLimitMiddleware, requests_per_second=10)
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://js.stripe.com; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: blob: https://cdn.discordapp.com https://community.fastly.steamstatic.com https://*.steamstatic.com; "
+        "connect-src 'self' https://js.stripe.com; "
+        "frame-src https://js.stripe.com; "
+        "object-src 'none';"
+    )
+    return response
+
 # ============================================================
 # MOUNT GAME ROUTERS
 # ============================================================
@@ -240,6 +259,7 @@ _safe_include("routes.games_heavy")
 _safe_include("routes.games_poker")
 _safe_include("routes.admin")
 _safe_include("routes.premium")
+_safe_include("routes.referral")
 
 @app.get("/admin", include_in_schema=False)
 async def page_admin(request: Request):
@@ -405,11 +425,20 @@ async def _init_all_tables(pool):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp INTEGER DEFAULT 0",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS level INTEGER DEFAULT 1",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS prestige INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT",
         ]:
             try:
                 await conn.execute(col_sql)
             except Exception:
                 pass
+        # Unique index for referral codes (separate try so it doesn't block other migrations)
+        try:
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code) WHERE referral_code IS NOT NULL"
+            )
+        except Exception:
+            pass
         # Inventory
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
@@ -440,6 +469,20 @@ async def _init_all_tables(pool):
                 await conn.execute(col_def)
             except Exception:
                 pass
+        # Referral tracking
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                id          SERIAL PRIMARY KEY,
+                referrer_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+                referred_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE UNIQUE,
+                created_at  TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        try:
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)")
+        except Exception:
+            pass
+
         # Guild settings
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS guild_settings (
