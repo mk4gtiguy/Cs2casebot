@@ -1506,6 +1506,8 @@ async def get_case(case_id: str):
 class OpenCaseRequest(BaseModel):
     case_id: str
     quantity: int = 1
+    use_guarantee: bool = False
+    use_insurance: bool = False
 
 @app.post("/api/open-case")
 async def open_case(req: OpenCaseRequest, request: Request):
@@ -1526,11 +1528,36 @@ async def open_case(req: OpenCaseRequest, request: Request):
             if not ok:
                 raise HTTPException(400, "Insufficient balance")
 
+            # Power-up: Rarity Guarantee — costs 2 tickets, rerolls any Blue result
+            if req.use_guarantee:
+                from routes.premium import deduct_ticket as _dt
+                ok1 = await _dt(user_id, 'spend_case', {'action': 'rarity_guarantee'}, conn)
+                ok2 = await _dt(user_id, 'spend_case', {'action': 'rarity_guarantee'}, conn) if ok1 else False
+                if not (ok1 and ok2):
+                    raise HTTPException(400, "Rarity Guarantee requires 2 tickets")
+
+            # Power-up: Case Insurance — costs 1 ticket, refunds cost of any Blue roll
+            if req.use_insurance:
+                from routes.premium import deduct_ticket as _dt2
+                if not await _dt2(user_id, 'spend_case', {'action': 'case_insurance'}, conn):
+                    raise HTTPException(400, "Case Insurance requires 1 ticket")
+
             items = []
+            cost_per_item = round(case["price"] * discount, 2)
             for _ in range(qty):
                 item = get_random_item(req.case_id)
                 if not item:
                     continue
+                # Rarity Guarantee: reroll Blues up to 20 times
+                if req.use_guarantee and item['rarity'] == 'Blue':
+                    for _retry in range(20):
+                        rerolled = get_random_item(req.case_id)
+                        if rerolled and rerolled['rarity'] != 'Blue':
+                            item = rerolled
+                            break
+                # Insurance: refund if still Blue
+                if req.use_insurance and item['rarity'] == 'Blue':
+                    await add_balance(user_id, cost_per_item, conn)
                 # Build image_url for skins at insert time so inventory can display it later
                 skin_img_file = item.get('image_filename')
                 skin_img_url = f"/static/images/skins/{skin_img_file}" if skin_img_file else None
