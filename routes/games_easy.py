@@ -773,14 +773,14 @@ async def hilo_cashout(request: Request):
         mult = sess['multiplier']
         win  = round(bet * mult, 2)
         sess['active'] = False
-        _hilo_sessions.pop(user_id, None)
-        _hilo_locks.pop(user_id, None)
 
         async with (await get_db()).acquire() as conn:
             async with conn.transaction():
                 win = await _add_win(user_id, win, conn)
                 await log_game(conn, user_id, 'hilo', bet, win,
                                {'chain': sess['chain'], 'multiplier': mult})
+        _hilo_sessions.pop(user_id, None)
+        _hilo_locks.pop(user_id, None)
 
         return {
             "success":    True,

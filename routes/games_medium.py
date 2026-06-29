@@ -223,15 +223,15 @@ async def mines_cashout(request: Request):
         revealed_tiles = list(sess['revealed'])
         mine_positions = list(sess['positions'])
         sess['active'] = False
-        _mine_sessions.pop(user_id, None)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'mines', bet, win, {
-                'mines': mines, 'revealed': n_safe, 'multiplier': mult,
-            })
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                win = await _add_win(user_id, win, conn)
+                await log_game(conn, user_id, 'mines', bet, win, {
+                    'mines': mines, 'revealed': n_safe, 'multiplier': mult,
+                })
+        _mine_sessions.pop(user_id, None)
 
     return {
         "success":     True,
@@ -470,7 +470,6 @@ async def tower_pick(req: TowerPickRequest, request: Request):
         if at_top:
             # Auto-cashout at top
             sess['active'] = False
-            _tower_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 async with conn.transaction():
@@ -480,6 +479,7 @@ async def tower_pick(req: TowerPickRequest, request: Request):
                         'floors_cleared': new_floor,
                         'max_floor': True,
                     })
+            _tower_sessions.pop(user_id, None)
             return {
                 "success":        True,
                 "hit_bomb":       False,
@@ -520,17 +520,17 @@ async def tower_cashout(request: Request):
         diff   = sess['difficulty']
         floors = sess['floor']
         sess['active'] = False
-        _tower_sessions.pop(user_id, None)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'tower', bet, win, {
-                'difficulty': diff,
-                'floors_cleared': floors,
-                'multiplier': mult,
-            })
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                win = await _add_win(user_id, win, conn)
+                await log_game(conn, user_id, 'tower', bet, win, {
+                    'difficulty': diff,
+                    'floors_cleared': floors,
+                    'multiplier': mult,
+                })
+        _tower_sessions.pop(user_id, None)
 
     return {"success": True, "win": win, "multiplier": mult, "floors": floors}
 
@@ -653,7 +653,6 @@ async def shotgun_pull(request: Request):
         if last_safe:
             # All safe chambers survived — auto cashout
             sess['active'] = False
-            _shotgun_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 async with conn.transaction():
@@ -663,6 +662,7 @@ async def shotgun_pull(request: Request):
                         'survived': sess['pulled'],
                         'cleared': True,
                     })
+            _shotgun_sessions.pop(user_id, None)
             return {
                 "success":       True,
                 "fired":         False,
@@ -700,17 +700,17 @@ async def shotgun_cashout(request: Request):
         chambers = sess['chambers']
         survived = sess['pulled']
         sess['active'] = False
-        _shotgun_sessions.pop(user_id, None)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'shotgun', bet, win, {
-                'chambers': chambers,
-                'survived': survived,
-                'multiplier': mult,
-            })
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                win = await _add_win(user_id, win, conn)
+                await log_game(conn, user_id, 'shotgun', bet, win, {
+                    'chambers': chambers,
+                    'survived': survived,
+                    'multiplier': mult,
+                })
+        _shotgun_sessions.pop(user_id, None)
 
     return {"success": True, "win": win, "multiplier": mult, "survived": survived}
 
@@ -832,7 +832,6 @@ async def ladder_climb(request: Request):
         if at_top:
             # Auto-cashout at summit
             sess['active'] = False
-            _ladder_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 async with conn.transaction():
@@ -841,6 +840,7 @@ async def ladder_climb(request: Request):
                         'rungs_climbed': new_rung, 'summit': True,
                         'multiplier': sess['mult'],
                     })
+            _ladder_sessions.pop(user_id, None)
             return {
                 "success":       True,
                 "climbed":       True,
@@ -877,16 +877,16 @@ async def ladder_cashout(request: Request):
         mult = sess['mult']
         rung = sess['rung']
         sess['active'] = False
-        _ladder_sessions.pop(user_id, None)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'ladder', bet, win, {
-                'rungs_climbed': rung,
-                'multiplier':    mult,
-            })
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                win = await _add_win(user_id, win, conn)
+                await log_game(conn, user_id, 'ladder', bet, win, {
+                    'rungs_climbed': rung,
+                    'multiplier':    mult,
+                })
+        _ladder_sessions.pop(user_id, None)
 
     return {
         "success":    True,

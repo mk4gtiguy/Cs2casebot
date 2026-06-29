@@ -310,7 +310,6 @@ async def mystery_open(req: MysteryOpenRequest, request: Request):
 
         if all_cleared:
             sess['active'] = False
-            _mystery_sessions.pop(user_id, None)
             win = apply_house(pot_win)
             pool = await get_db()
             async with pool.acquire() as conn:
@@ -322,6 +321,7 @@ async def mystery_open(req: MysteryOpenRequest, request: Request):
                         'total_mult': sess['total_mult'],
                         'cleared': True,
                     })
+            _mystery_sessions.pop(user_id, None)
             return {
                 "success":       True,
                 "type":          "mult",
@@ -365,17 +365,17 @@ async def mystery_cashout(request: Request):
         opened     = list(sess['opened'])
         total_mult = sess['total_mult']
         sess['active'] = False
-        _mystery_sessions.pop(user_id, None)
 
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            win = await _add_win(user_id, win, conn)
-            await log_game(conn, user_id, 'mystery_box', bet, win, {
-                'difficulty': difficulty,
-                'boxes_opened': len(opened),
-                'total_mult': total_mult,
-            })
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                win = await _add_win(user_id, win, conn)
+                await log_game(conn, user_id, 'mystery_box', bet, win, {
+                    'difficulty': difficulty,
+                    'boxes_opened': len(opened),
+                    'total_mult': total_mult,
+                })
+        _mystery_sessions.pop(user_id, None)
 
     return {
         "success":    True,
