@@ -2273,10 +2273,11 @@
                             : `/api/skin-image?name=${encodeURIComponent(cleanName)}&t=${Date.now()}`;
                         // For display: show the clean name only (no emoji prefix)
                         const displayText = cleanName || ri.name || '';
-                        return `<div class="reel-item" data-index="${i}" data-role="${ri.role || ''}" data-rarity="${ri.rarity || ''}">
-                            <img class="reel-img" src="${imgSrc}" alt="${displayText}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
-                            <div class="reel-name">${displayText}</div>
-                            <div class="reel-rarity-label">${ri.rarity || 'Common'}</div>
+                        // Bug 165 fix: escape item name and rarity before injecting into innerHTML
+                        return `<div class="reel-item" data-index="${i}" data-role="${ri.role || ''}" data-rarity="${esc(ri.rarity || '')}">
+                            <img class="reel-img" src="${imgSrc}" alt="${esc(displayText)}" onerror="this.src='/static/images/Default CS2 Weapons/weapon_ak47.png'">
+                            <div class="reel-name">${esc(displayText)}</div>
+                            <div class="reel-rarity-label">${esc(ri.rarity || 'Common')}</div>
                         </div>`;
                     }).join('')}
                 </div>
