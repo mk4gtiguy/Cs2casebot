@@ -697,7 +697,10 @@ def _get_ticket_case_item() -> Optional[dict]:
             chosen_rarity = rarity
             break
 
-    pool = shared.ALL_ITEMS_BY_RARITY.get(chosen_rarity, [])
+    if chosen_rarity == 'Gold':
+        pool = shared.GOLD_ITEMS_POOL or shared.ALL_ITEMS_BY_RARITY.get('Red', [])
+    else:
+        pool = shared.ALL_ITEMS_BY_RARITY.get(chosen_rarity, [])
     if not pool:
         pool = shared.ALL_ITEMS_BY_RARITY.get('Purple', [])
     if not pool:
