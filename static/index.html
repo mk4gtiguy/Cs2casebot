@@ -43,6 +43,15 @@
         @keyframes shimmer { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
         @keyframes aimPulse { from { transform: scale(1); } to { transform: scale(1.12); } }
         @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.2; } }
+        /* Live feed ticker */
+        @keyframes tickerMove { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+        .live-ticker { overflow:hidden; background:rgba(5,5,12,0.95); border-bottom:1px solid rgba(255,215,0,0.12); padding:7px 0; white-space:nowrap; }
+        .ticker-track { display:inline-flex; gap:0; animation:tickerMove 40s linear infinite; }
+        .ticker-track:hover { animation-play-state:paused; }
+        .ticker-item { display:inline-flex; align-items:center; gap:6px; padding:0 28px; font-size:11px; border-right:1px solid rgba(255,255,255,0.06); }
+        /* Value history sparkline */
+        #valueHistoryChart { width:100%; height:80px; margin-top:14px; }
+        /* Market nav link */
         #arcadeOverlay { display: none; }
         #arcadeOverlay.open { display: flex; }
         .header h1 span { -webkit-text-fill-color: white; }
@@ -1361,6 +1370,13 @@
             </div>
         </div>
 
+        <!-- LIVE FEED TICKER -->
+        <div class="live-ticker" id="liveTicker">
+            <div class="ticker-track" id="tickerTrack">
+                <span class="ticker-item" style="color:#555;">Loading recent drops…</span>
+            </div>
+        </div>
+
         <!-- LOGIN SECTION -->
         <div id="loginSection" class="card login-card">
             <h2>🔐 Sign In</h2>
@@ -1422,6 +1438,7 @@
             <button class="btn" onclick="switchTab('achievements')">🏅 Achievements</button>
             <button class="btn" onclick="switchTab('profile')">👤 Profile</button>
             <button class="btn" onclick="switchTab('friends')" id="friendsTabBtn">👥 Friends</button>
+            <button class="btn" onclick="location.href='/market'">🛒 Market</button>
         </div>
 
         <!-- TAB: CASES -->
@@ -1722,6 +1739,19 @@
                     </div>
                 </div>
                 <div id="profileLinkedAccounts"></div>
+            </div>
+            <!-- Inventory Value History -->
+            <div class="card" id="valueHistoryCard" style="display:none;">
+                <h3 style="margin-bottom:4px;">📈 Inventory Value History</h3>
+                <p style="color:#888;font-size:12px;margin-bottom:10px;">Daily snapshot of your total inventory value. Logged once per day on login.</p>
+                <div style="position:relative;height:90px;" id="valueChartWrap">
+                    <svg id="valueHistoryChart" viewBox="0 0 400 80" preserveAspectRatio="none" style="width:100%;height:80px;"></svg>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:10px;color:#555;margin-top:4px;">
+                    <span id="valueChartMin"></span>
+                    <span id="valueChartMax"></span>
+                </div>
+                <div style="margin-top:8px;font-size:12px;color:#888;">Current: <strong style="color:#ffd700;" id="valueChartCurrent">$0</strong></div>
             </div>
         </div>
 
@@ -2166,7 +2196,7 @@
         if (tab === 'capsules') loadCapsules();
         if (tab === 'achievements') loadAchievements();
         if (tab === 'games') loadGameStats();
-        if (tab === 'profile') loadProfile();
+        if (tab === 'profile') { loadProfile(); }
         if (tab === 'battles') { loadBattleHistory(); loadBattleFeeOptions(); }
         if (tab === 'friends') loadFriendsTab();
     }
@@ -3964,6 +3994,7 @@ window.setInvTypeFilter = setInvTypeFilter;
                 <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
                     <div style="background:rgba(255,215,0,0.08);border:1px solid rgba(255,215,0,0.25);border-radius:8px;padding:10px 16px;font-family:monospace;font-size:18px;letter-spacing:3px;color:#ffd700;font-weight:700;">${d.code || '...'}</div>
                     <button class="btn btn-sm btn-primary" onclick="copyReferralCode('${d.code}')">📋 Copy Code</button>
+                    <button class="btn btn-sm btn-outline" onclick="copyReferralLink('${d.code}')">🔗 Share Link</button>
                 </div>
                 <div style="display:flex;gap:20px;margin-bottom:14px;flex-wrap:wrap;">
                     <div style="text-align:center;"><div style="font-size:22px;font-weight:700;color:#ffd700;">${d.referral_count}</div><div style="font-size:11px;color:#888;">Referrals</div></div>
@@ -3997,6 +4028,19 @@ window.setInvTypeFilter = setInvTypeFilter;
             document.execCommand('copy');
             document.body.removeChild(inp);
             showToast('✅ Code copied!');
+        });
+    }
+
+    function copyReferralLink(code) {
+        const url = 'https://cs2casebot.xyz/?ref=' + encodeURIComponent(code);
+        navigator.clipboard.writeText(url).then(() => showToast('🔗 Share link copied!')).catch(() => {
+            const inp = document.createElement('input');
+            inp.value = url;
+            document.body.appendChild(inp);
+            inp.select();
+            document.execCommand('copy');
+            document.body.removeChild(inp);
+            showToast('🔗 Share link copied!');
         });
     }
 
@@ -5041,7 +5085,63 @@ async function executeTrade() {
                         </div>
                     </div>`;
             }
+            // Load inventory value history chart
+            loadValueHistory();
         } catch (e) { console.error('Load profile error:', e); }
+    }
+
+    async function loadValueHistory() {
+        try {
+            const rows = await apiCall('/api/profile/value-history');
+            const card = document.getElementById('valueHistoryCard');
+            if (!card) return;
+            if (!rows || rows.length < 2) {
+                // Show card but indicate data accumulates over time
+                card.style.display = '';
+                const wrap = document.getElementById('valueChartWrap');
+                if (wrap) wrap.innerHTML = '<div style="color:#555;font-size:12px;padding:20px 0;text-align:center;">Data accumulates daily. Check back tomorrow!</div>';
+                return;
+            }
+            card.style.display = '';
+            const values = rows.map(r => parseFloat(r.value) || 0);
+            const minV = Math.min(...values);
+            const maxV = Math.max(...values);
+            const range = maxV - minV || 1;
+            const W = 400, H = 80, pad = 4;
+
+            const pts = values.map((v, i) => {
+                const x = pad + (i / (values.length - 1)) * (W - pad * 2);
+                const y = H - pad - ((v - minV) / range) * (H - pad * 2);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            });
+
+            const svg = document.getElementById('valueHistoryChart');
+            if (!svg) return;
+            const latestV = values[values.length - 1];
+            const prevV   = values[values.length - 2];
+            const lineColor = latestV >= prevV ? '#22c55e' : '#ef4444';
+            const fillColor = latestV >= prevV ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)';
+            const firstPt = pts[0].split(',');
+            const lastPt  = pts[pts.length - 1].split(',');
+
+            svg.innerHTML = `
+                <defs>
+                    <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="${lineColor}" stop-opacity="0.3"/>
+                        <stop offset="100%" stop-color="${lineColor}" stop-opacity="0"/>
+                    </linearGradient>
+                </defs>
+                <path d="M${pts.join('L')}L${lastPt[0]},${H - pad}L${firstPt[0]},${H - pad}Z" fill="url(#chartGrad)"/>
+                <polyline points="${pts.join(' ')}" fill="none" stroke="${lineColor}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+                <circle cx="${lastPt[0]}" cy="${lastPt[1]}" r="3" fill="${lineColor}"/>
+            `;
+            const minEl = document.getElementById('valueChartMin');
+            const maxEl = document.getElementById('valueChartMax');
+            const curEl = document.getElementById('valueChartCurrent');
+            if (minEl) minEl.textContent = '$' + minV.toFixed(2);
+            if (maxEl) maxEl.textContent = '$' + maxV.toFixed(2);
+            if (curEl) curEl.textContent = '$' + latestV.toFixed(2);
+        } catch (e) { /* ignore */ }
     }
 
     // ============================================
@@ -5554,7 +5654,52 @@ window.switchTab = function(tab) {
             const fn = arcadeMap[arcade];
             if (fn) setTimeout(fn, 600);
         }
+
+        // Auto-apply referral code from ?ref=CODE URL param
+        const refCode = params.get('ref');
+        if (refCode) {
+            history.replaceState(null, '', '/');
+            // Wait for auth to load, then apply the code
+            setTimeout(async () => {
+                try {
+                    const d = await apiCall('/api/referral/apply', {
+                        method: 'POST',
+                        body: JSON.stringify({ code: refCode.toUpperCase() })
+                    });
+                    showToast('🎉 Referral applied! +$500 bonus added.');
+                    loadTicketBalance();
+                } catch(e) {
+                    // Silently ignore if already referred or invalid
+                }
+            }, 2000);
+        }
     })();
+
+    // ── Live feed ticker ──────────────────────────────────────────
+    const _RARITY_TICKER_COLORS = { Gold:'#ffd700', Red:'#eb4b4b', Pink:'#d32ce6', Purple:'#8847ff', Blue:'#4b69ff' };
+
+    async function loadLiveTicker() {
+        try {
+            const data = await fetch('/api/live-feed?limit=20').then(r => r.json());
+            const track = document.getElementById('tickerTrack');
+            if (!track || !Array.isArray(data) || !data.length) return;
+            const items = data.map(item => {
+                const color = _RARITY_TICKER_COLORS[item.rarity] || '#aaa';
+                const emoji = item.rarity_emoji || '';
+                const val   = parseFloat(item.value || item.float_value || 0).toFixed(2);
+                return `<span class="ticker-item"><span style="color:${color};">${emoji} <strong>${item.username || 'Player'}</strong> opened <strong>${item.item_name}</strong></span><span style="color:#555;margin-left:6px;">$${val}</span></span>`;
+            });
+            // Duplicate for seamless infinite scroll
+            const html = [...items, ...items].join('');
+            track.innerHTML = html;
+            // Adjust animation duration based on content width
+            track.style.animationDuration = (items.length * 4) + 's';
+        } catch(e) { /* silently ignore ticker errors */ }
+    }
+
+    // Poll ticker every 20 seconds
+    loadLiveTicker();
+    setInterval(loadLiveTicker, 20000);
 
     // ============================================
     // SECTION 99: FRIENDS SYSTEM

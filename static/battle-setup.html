@@ -694,6 +694,20 @@ body {
       </div>
     </div>
 
+    <!-- Battle Format (PvP only) -->
+    <div class="field" id="formatField">
+      <label>Battle Format</label>
+      <div class="chip-group" id="formatChips">
+        <div class="chip active"  onclick="setFormat(2,1,this)"  title="Classic 1v1">1v1</div>
+        <div class="chip"         onclick="setFormat(3,1,this)"  title="3-player FFA">1v1v1</div>
+        <div class="chip"         onclick="setFormat(4,1,this)"  title="4-player FFA">1v1v1v1</div>
+        <div class="chip"         onclick="setFormat(4,2,this)"  title="2 teams of 2">2v2</div>
+        <div class="chip"         onclick="setFormat(6,3,this)"  title="2 teams of 3">3v3</div>
+        <div class="chip"         onclick="setFormat(8,4,this)"  title="2 teams of 4">4v4</div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px;" id="formatDesc">Classic 1v1 — winner takes the pot</div>
+    </div>
+
     <!-- Difficulty (PvE only) -->
     <div class="field" id="diffField" style="display:none;">
       <label>Bot Difficulty</label>
@@ -812,14 +826,16 @@ const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 
 // ── STATE ────────────────────────────────────────────────────
 const S = {
-  mode:       'pvp',
-  fee:        1000,
-  rounds:     3,
-  winCond:    'total_value',
-  difficulty: 'normal',
-  caseId:     null,
-  username:   '',
-  avatarUrl:  null,
+  mode:        'pvp',
+  fee:         1000,
+  rounds:      3,
+  winCond:     'total_value',
+  difficulty:  'normal',
+  playerCount: 2,
+  teamSize:    1,
+  caseId:      null,
+  username:    '',
+  avatarUrl:   null,
   matchmakingWS: null,
   queueSeconds:  0,
   queueTimer:    null,
@@ -915,11 +931,31 @@ async function loadCases() {
 }
 
 // ── MODE / DIFFICULTY ────────────────────────────────────────
+const FORMAT_DESCS = {
+  '2,1':  'Classic 1v1 — winner takes the pot',
+  '3,1':  '1v1v1 — 3-player FFA, highest score wins',
+  '4,1':  '1v1v1v1 — 4-player FFA, highest score wins',
+  '4,2':  '2v2 — team with highest combined value wins',
+  '6,3':  '3v3 — team with highest combined value wins',
+  '8,4':  '4v4 — team with highest combined value wins',
+};
+
+function setFormat(pc, ts, el) {
+  S.playerCount = pc;
+  S.teamSize = ts;
+  document.querySelectorAll('#formatChips .chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  const descEl = document.getElementById('formatDesc');
+  if (descEl) descEl.textContent = FORMAT_DESCS[`${pc},${ts}`] || '';
+  updateSummary();
+}
+
 function setMode(mode) {
   S.mode = mode;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.mode-btn.${mode}`).classList.add('active');
   document.getElementById('diffField').style.display = mode === 'pve' ? 'block' : 'none';
+  document.getElementById('formatField').style.display = mode === 'pvp' ? 'block' : 'none';
   const btn = document.getElementById('launchBtn');
   btn.className = `btn-launch ${mode}-mode`;
   btn.textContent = mode === 'pvp' ? '⚔️  FIND OPPONENT' : '🤖  FIGHT BOT';
@@ -996,8 +1032,8 @@ function showWaitroom() {
   // Set fee / rounds display
   document.getElementById('wrFee').textContent    = '$' + Number(S.fee).toLocaleString();
   document.getElementById('wrRounds').textContent = S.rounds;
-  document.getElementById('wrQueueSize').textContent = '1';
-  document.getElementById('wrStatus').textContent    = 'Searching for opponent…';
+  document.getElementById('wrQueueSize').textContent = '1/' + S.playerCount;
+  document.getElementById('wrStatus').textContent    = `Searching for ${S.playerCount - 1} more player(s)…`;
 
   // Reset arena
   document.getElementById('arena').classList.remove('matched');
@@ -1043,13 +1079,20 @@ function openMatchmakingWS() {
   S.matchmakingWS = ws;
 
   ws.onopen = () => {
-    document.getElementById('wrStatus').textContent = 'In queue — waiting for opponent…';
+    const modeLabels = {
+      '2,1':'1v1','3,1':'1v1v1','4,1':'1v1v1v1','4,2':'2v2','6,3':'3v3','8,4':'4v4'
+    };
+    const modeLabel = modeLabels[`${S.playerCount},${S.teamSize}`] || '1v1';
+    document.getElementById('wrStatus').textContent = `In ${modeLabel} queue — waiting for players…`;
+    document.getElementById('wrModeBadge').textContent = modeLabel.toUpperCase() + ' MATCH';
     // Send queue request
     api('/api/battles/queue', {
       method: 'POST',
       body: JSON.stringify({
         fee: S.fee, rounds: S.rounds,
         win_condition: document.getElementById('winCondition').value,
+        player_count: S.playerCount,
+        team_size: S.teamSize,
       }),
     }).then(d => {
       if (!d.success) {

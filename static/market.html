@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🛒 Market — CS2CaseBot</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #07080f;
+  --surface: rgba(13,13,28,0.92);
+  --gold: #ffd700;
+  --green: #22c55e;
+  --red: #ef4444;
+  --purple: #9b4dff;
+  --border: rgba(255,215,0,0.13);
+  --text: #e8e8f0;
+  --muted: #666880;
+  --font: 'Orbitron','Segoe UI',sans-serif;
+}
+html,body { min-height:100vh; background:var(--bg); color:var(--text); font-family:var(--font); }
+body { background-image: radial-gradient(ellipse 80% 40% at 50% 0%, rgba(155,77,255,0.06) 0%, transparent 60%); }
+
+.header {
+  display:flex; align-items:center; gap:14px; padding:14px 20px;
+  border-bottom:1px solid var(--border); position:sticky; top:0;
+  background:rgba(7,8,15,0.95); backdrop-filter:blur(12px); z-index:10;
+}
+.btn-back { display:flex; align-items:center; gap:6px; color:var(--muted); text-decoration:none; font-size:11px; letter-spacing:1px; transition:color .2s; }
+.btn-back:hover { color:var(--gold); }
+.header-title { flex:1; font-size:15px; font-weight:900; background:linear-gradient(90deg,var(--gold),#ff9500); -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:2px; }
+.balance-display { font-size:13px; font-weight:700; color:var(--gold); }
+
+.page { max-width:1100px; margin:0 auto; padding:20px 16px 60px; }
+
+.tabs { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+.tab { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 18px; font-size:11px; font-family:var(--font); color:var(--muted); cursor:pointer; transition:all .2s; letter-spacing:1px; }
+.tab.active { background:rgba(255,215,0,0.12); border-color:var(--gold); color:var(--gold); }
+.tab:hover:not(.active) { border-color:rgba(255,255,255,0.2); color:var(--text); }
+
+.filters { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+.select-input { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:8px 12px; color:var(--text); font-family:var(--font); font-size:11px; cursor:pointer; min-width:120px; }
+.select-input option { background:#12121e; }
+
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; }
+
+.listing-card {
+  background:var(--surface); border:1px solid var(--border); border-radius:12px;
+  padding:14px; cursor:pointer; transition:all .25s; position:relative;
+}
+.listing-card:hover { border-color:var(--gold); transform:translateY(-2px); box-shadow:0 8px 24px rgba(255,215,0,0.08); }
+.listing-rarity { font-size:9px; font-weight:700; letter-spacing:2px; text-transform:uppercase; margin-bottom:6px; }
+.listing-name { font-size:12px; font-weight:700; margin-bottom:4px; line-height:1.3; word-break:break-word; }
+.listing-meta { font-size:10px; color:var(--muted); margin-bottom:10px; }
+.listing-price { font-size:18px; font-weight:900; color:var(--gold); margin-bottom:10px; }
+.listing-seller { font-size:10px; color:var(--muted); }
+.btn-buy { width:100%; background:linear-gradient(135deg,#22c55e,#16a34a); border:none; border-radius:8px; color:#fff; padding:8px; font-family:var(--font); font-size:11px; font-weight:700; cursor:pointer; letter-spacing:1px; transition:all .2s; }
+.btn-buy:hover { transform:scale(1.03); box-shadow:0 4px 16px rgba(34,197,94,0.3); }
+.btn-buy:disabled { opacity:0.4; cursor:not-allowed; transform:none; }
+
+.rarity-Blue   { color:#4b69ff; }
+.rarity-Purple { color:#8847ff; }
+.rarity-Pink   { color:#d32ce6; }
+.rarity-Red    { color:#eb4b4b; }
+.rarity-Gold   { color:#ffd700; }
+
+/* ── LIST FORM ── */
+.list-form { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:20px; }
+.list-form h3 { color:var(--gold); font-size:14px; margin-bottom:14px; }
+.field-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }
+.field label { display:block; font-size:10px; color:var(--muted); margin-bottom:6px; letter-spacing:1px; text-transform:uppercase; }
+.field input, .field select { width:100%; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:10px 12px; color:var(--text); font-family:var(--font); font-size:12px; }
+.field input:focus, .field select:focus { outline:none; border-color:var(--gold); }
+.btn-list { background:linear-gradient(135deg,var(--gold),#f0a500); color:#0a0a0f; border:none; border-radius:8px; padding:10px 24px; font-family:var(--font); font-size:12px; font-weight:900; cursor:pointer; letter-spacing:1px; transition:all .2s; }
+.btn-list:hover { transform:scale(1.03); box-shadow:0 4px 16px rgba(255,215,0,0.3); }
+
+/* ── MY LISTINGS ── */
+.my-listing-row { display:flex; align-items:center; gap:12px; padding:12px 14px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:10px; margin-bottom:8px; flex-wrap:wrap; }
+.ml-name { flex:1; font-size:12px; font-weight:700; min-width:120px; }
+.ml-price { color:var(--gold); font-weight:700; font-size:13px; white-space:nowrap; }
+.ml-status { font-size:10px; padding:3px 8px; border-radius:20px; white-space:nowrap; }
+.ml-status.active   { background:rgba(34,197,94,0.15); color:var(--green); }
+.ml-status.sold     { background:rgba(155,77,255,0.15); color:var(--purple); }
+.ml-status.cancelled{ background:rgba(100,100,120,0.15); color:var(--muted); }
+.btn-cancel-sm { background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); color:var(--red); border-radius:6px; padding:5px 12px; font-family:var(--font); font-size:10px; cursor:pointer; transition:all .2s; }
+.btn-cancel-sm:hover { background:rgba(239,68,68,0.2); }
+
+.empty { text-align:center; color:var(--muted); padding:40px 20px; font-size:13px; }
+.load-more { display:flex; justify-content:center; margin-top:16px; }
+.btn-load { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:10px 28px; color:var(--muted); font-family:var(--font); font-size:11px; cursor:pointer; transition:all .2s; }
+.btn-load:hover { border-color:var(--gold); color:var(--gold); }
+
+.toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:rgba(20,20,35,0.95); border:1px solid var(--border); border-radius:24px; padding:12px 22px; font-size:12px; z-index:999; transition:transform .3s cubic-bezier(.34,1.56,.64,1); white-space:nowrap; }
+.toast.show { transform:translateX(-50%) translateY(0); }
+
+@media(max-width:600px) {
+  .field-row { grid-template-columns:1fr; }
+  .grid { grid-template-columns:repeat(auto-fill,minmax(155px,1fr)); }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <a class="btn-back" href="/">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="16" height="16"><polyline points="15 18 9 12 15 6"/></svg>
+    DASHBOARD
+  </a>
+  <span class="header-title">🛒 P2P MARKET</span>
+  <span class="balance-display" id="balanceDisplay">$—</span>
+</header>
+
+<div class="page">
+
+  <!-- TABS -->
+  <div class="tabs">
+    <div class="tab active" onclick="setView('browse')">🔍 Browse</div>
+    <div class="tab" onclick="setView('list')">➕ List Item</div>
+    <div class="tab" onclick="setView('mine')">📋 My Listings</div>
+  </div>
+
+  <!-- VIEW: BROWSE -->
+  <div id="view-browse">
+    <div class="filters">
+      <select class="select-input" id="filterRarity" onchange="resetAndLoad()">
+        <option value="">All Rarities</option>
+        <option value="Gold">⭐ Gold</option>
+        <option value="Red">🔴 Red</option>
+        <option value="Pink">💜 Pink</option>
+        <option value="Purple">🟣 Purple</option>
+        <option value="Blue">🔵 Blue</option>
+      </select>
+      <select class="select-input" id="filterSort" onchange="resetAndLoad()">
+        <option value="newest">🕐 Newest</option>
+        <option value="price_asc">💰 Cheapest</option>
+        <option value="price_desc">💎 Most Expensive</option>
+      </select>
+      <button class="btn-list" onclick="resetAndLoad()" style="padding:8px 16px;font-size:11px;">🔄 Refresh</button>
+    </div>
+    <div class="grid" id="listingsGrid">
+      <div class="empty" style="grid-column:1/-1;">Loading listings…</div>
+    </div>
+    <div class="load-more" id="loadMoreWrap" style="display:none;">
+      <button class="btn-load" onclick="loadMore()">Load More</button>
+    </div>
+  </div>
+
+  <!-- VIEW: LIST -->
+  <div id="view-list" style="display:none;">
+    <div class="list-form">
+      <h3>List an Item for Sale</h3>
+      <div class="field" style="margin-bottom:14px;">
+        <label>Select Item from Inventory</label>
+        <select class="select-input" id="itemSelect" style="width:100%;max-width:400px;">
+          <option value="">Loading inventory…</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Asking Price (USD)</label>
+          <input type="number" id="listPrice" min="0.01" max="500000" step="0.01" placeholder="e.g. 150.00">
+        </div>
+        <div class="field" style="display:flex;align-items:flex-end;">
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">YOU RECEIVE (95%)</div>
+            <div style="font-size:18px;font-weight:900;color:var(--green);" id="sellerReceives">$0.00</div>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:14px;">5% marketplace fee taken at sale. Listing is free.</div>
+      <div id="listResult" style="margin-bottom:12px;font-size:12px;"></div>
+      <button class="btn-list" onclick="listItem()">List for Sale</button>
+    </div>
+    <div style="font-size:11px;color:var(--muted);padding:8px;">
+      ⚠️ Listed items are locked until sold or cancelled. Sticker data is reset on sale.
+    </div>
+  </div>
+
+  <!-- VIEW: MY LISTINGS -->
+  <div id="view-mine" style="display:none;">
+    <div id="myListingsContent">Loading…</div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+const RARITY_COLORS = {
+  Gold:'#ffd700', Red:'#eb4b4b', Pink:'#d32ce6',
+  Purple:'#8847ff', Blue:'#4b69ff'
+};
+
+let currentView = 'browse';
+let offset = 0;
+const LIMIT = 40;
+
+// ── NAV ──
+function setView(v) {
+  currentView = v;
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['browse','list','mine'][i] === v));
+  document.querySelectorAll('[id^="view-"]').forEach(el => el.style.display = 'none');
+  document.getElementById('view-' + v).style.display = '';
+  if (v === 'browse') { offset = 0; loadListings(); }
+  if (v === 'list')   loadInventoryForListing();
+  if (v === 'mine')   loadMyListings();
+}
+
+// ── AUTH + BALANCE ──
+async function api(url, opts = {}) {
+  const r = await fetch(url, { credentials:'include', headers:{'Content-Type':'application/json'}, ...opts });
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || r.statusText); }
+  return r.json();
+}
+
+async function loadBalance() {
+  try {
+    const d = await api('/api/user/me/balance');
+    document.getElementById('balanceDisplay').textContent = '$' + Number(d.balance).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  } catch(e) {
+    document.getElementById('balanceDisplay').textContent = 'Sign in';
+  }
+}
+
+// ── BROWSE ──
+function resetAndLoad() { offset = 0; loadListings(); }
+
+async function loadListings(append = false) {
+  const rarity = document.getElementById('filterRarity').value;
+  const sort   = document.getElementById('filterSort').value;
+  const grid   = document.getElementById('listingsGrid');
+
+  if (!append) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1;">Loading…</div>'; }
+
+  try {
+    let url = `/api/market/listings?limit=${LIMIT}&offset=${offset}&sort=${encodeURIComponent(sort)}`;
+    if (rarity) url += `&rarity=${encodeURIComponent(rarity)}`;
+    const d = await api(url);
+
+    if (!append) grid.innerHTML = '';
+    if (!d.listings.length && !append) {
+      grid.innerHTML = '<div class="empty" style="grid-column:1/-1;">No listings yet — be the first to sell!</div>';
+    }
+
+    d.listings.forEach(l => {
+      const color = RARITY_COLORS[l.rarity] || '#888';
+      const card = document.createElement('div');
+      card.className = 'listing-card';
+      card.innerHTML = `
+        <div class="listing-rarity" style="color:${esc(color)};">${esc(l.rarity || 'Unknown')}</div>
+        <div class="listing-name">${esc(l.is_stattrak ? 'StatTrak™ ' : '') + esc(l.item_name)}</div>
+        <div class="listing-meta">${esc(l.condition || '')}${l.float_value ? ` · ${parseFloat(l.float_value).toFixed(4)}` : ''}</div>
+        <div class="listing-price">$${parseFloat(l.price).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        <div class="listing-seller" style="margin-bottom:10px;">by ${esc(l.seller_name || 'Unknown')}</div>
+        <button class="btn-buy" onclick="buyListing(${l.id}, '${esc(l.item_name)}', ${parseFloat(l.price)})">Buy Now</button>
+      `;
+      grid.appendChild(card);
+    });
+
+    const hasMore = (offset + LIMIT) < d.total;
+    document.getElementById('loadMoreWrap').style.display = hasMore ? 'flex' : 'none';
+    offset += d.listings.length;
+  } catch(e) {
+    if (!append) grid.innerHTML = `<div class="empty" style="grid-column:1/-1;">Error: ${esc(e.message)}</div>`;
+    showToast('Error loading listings: ' + e.message);
+  }
+}
+
+function loadMore() { loadListings(true); }
+
+async function buyListing(id, name, price) {
+  if (!confirm(`Buy "${name}" for $${price.toFixed(2)}?`)) return;
+  try {
+    const d = await api(`/api/market/buy/${id}`, { method:'POST' });
+    showToast(`✅ Purchased ${name}!`);
+    loadBalance();
+    resetAndLoad();
+  } catch(e) {
+    showToast('❌ ' + e.message);
+  }
+}
+
+// ── LIST ITEM ──
+async function loadInventoryForListing() {
+  const sel = document.getElementById('itemSelect');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  try {
+    const d = await api('/api/user/me/inventory?limit=200');
+    const items = (d.items || []).filter(i => i.status === 'kept');
+    if (!items.length) {
+      sel.innerHTML = '<option value="">No items available to list</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">— Pick an item —</option>' + items.map(i => {
+      const st = i.is_stattrak ? 'ST™ ' : '';
+      const label = `${st}${i.item_name} (${i.rarity}) — $${parseFloat(i.price||0).toFixed(2)}`;
+      return `<option value="${i.id}" data-price="${parseFloat(i.price||0).toFixed(2)}">${esc(label)}</option>`;
+    }).join('');
+  } catch(e) {
+    sel.innerHTML = '<option value="">Sign in to see inventory</option>';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('listPrice').addEventListener('input', () => {
+    const v = parseFloat(document.getElementById('listPrice').value) || 0;
+    document.getElementById('sellerReceives').textContent = '$' + (v * 0.95).toFixed(2);
+  });
+});
+
+async function listItem() {
+  const itemId = document.getElementById('itemSelect').value;
+  const price  = parseFloat(document.getElementById('listPrice').value);
+  const res    = document.getElementById('listResult');
+
+  if (!itemId) { res.innerHTML = '<span style="color:#ef4444;">Select an item first.</span>'; return; }
+  if (!price || price < 0.01) { res.innerHTML = '<span style="color:#ef4444;">Enter a valid price.</span>'; return; }
+
+  try {
+    const d = await api('/api/market/list', {
+      method:'POST',
+      body: JSON.stringify({ item_id: parseInt(itemId), price })
+    });
+    res.innerHTML = '<span style="color:#22c55e;">✅ Listed successfully!</span>';
+    showToast('🛒 Item listed for $' + price.toFixed(2));
+    loadInventoryForListing();
+  } catch(e) {
+    res.innerHTML = `<span style="color:#ef4444;">❌ ${esc(e.message)}</span>`;
+  }
+}
+
+// ── MY LISTINGS ──
+async function loadMyListings() {
+  const el = document.getElementById('myListingsContent');
+  el.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const rows = await api('/api/market/my-listings');
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">You have no listings yet.</div>';
+      return;
+    }
+    el.innerHTML = rows.map(l => `
+      <div class="my-listing-row">
+        <div class="ml-name">${esc(l.item_name)}</div>
+        <div class="ml-price">$${parseFloat(l.price).toFixed(2)}</div>
+        <div class="ml-status ${l.status}">${l.status.toUpperCase()}</div>
+        ${l.status === 'active'
+          ? `<button class="btn-cancel-sm" onclick="cancelListing(${l.id})">Cancel</button>`
+          : ''}
+      </div>
+    `).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+async function cancelListing(id) {
+  if (!confirm('Cancel this listing and return item to inventory?')) return;
+  try {
+    await api(`/api/market/cancel/${id}`, { method:'DELETE' });
+    showToast('✅ Listing cancelled');
+    loadMyListings();
+  } catch(e) {
+    showToast('❌ ' + e.message);
+  }
+}
+
+// ── TOAST ──
+let _toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+// ── INIT ──
+loadBalance();
+loadListings();
+</script>
+</body>
+</html>
