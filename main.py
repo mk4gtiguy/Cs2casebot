@@ -1516,7 +1516,7 @@ async def add_xp(user_id: int, amount: int, conn=None):
     
     async with conn.transaction():
         user = await conn.fetchrow(
-            "SELECT xp, level, prestige FROM users WHERE user_id = $1",
+            "SELECT xp, level, prestige FROM users WHERE user_id = $1 FOR UPDATE",
             user_id
         )
         if not user:
@@ -1724,7 +1724,7 @@ async def daily(interaction: discord.Interaction):
         if streak_bonus:
             embed.add_field(name="🏆 Streak Bonus", value=f"${streak_bonus} added!", inline=True)
 
-        await update_quest_progress(interaction.user.id, "daily_streak", 1, conn)
+        await update_quest_progress(interaction.user.id, "daily_streak", 1)
         embed.set_footer(text=f"💖 Support us: {KO_FI_URL} | 🌐 Dashboard: {DASHBOARD_URL}")
         await interaction.followup.send(embed=embed)
 
