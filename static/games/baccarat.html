@@ -182,8 +182,14 @@ body{background-image:radial-gradient(ellipse 80% 40% at 30% 50%,rgba(59,130,246
 </div>
 <script>
 const RED=['♥','♦'];
-let betOn=null,pPair=false,bPair=false,balance=0,dealing=false,wins=0,losses=0,ties=0,profit=0;
+let betOn=null,pPair=false,bPair=false,balance=0,dealing=false,wins=0,losses=0,ties=0,profit=0,hrConfirmed=false;
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}}
+function showHighRollerConfirm(){
+  api('/api/tickets/balance').then(d=>{document.getElementById('hrTicketCount').textContent=d.tickets??'?';}).catch(()=>{});
+  document.getElementById('hrConfirm').style.display='flex';
+}
+function cancelHighRoller(){document.getElementById('hrConfirm').style.display='none';hrConfirmed=false;}
+function confirmHighRoller(){document.getElementById('hrConfirm').style.display='none';hrConfirmed=true;deal();}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function setBetOn(side){
   betOn=side;
@@ -203,6 +209,8 @@ async function deal(){
   if(!betOn||dealing) return;
   const bet=parseInt(document.getElementById('betInp').value)||500;
   if(bet>balance) return;
+  if(bet>=25000&&!hrConfirmed){showHighRollerConfirm();return;}
+  hrConfirmed=false;
   dealing=true;document.getElementById('dealBtn').disabled=true;
   resetHands();setResult('DEALING…','idle');
   try{
@@ -256,5 +264,19 @@ async function api(url,opts={}){const r=await fetch(url,{credentials:'include',h
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}
 init();
 </script>
+
+<!-- High Roller ticket confirmation modal -->
+<div id="hrConfirm" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:200;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#0d0816;border:2px solid #ffd700;border-radius:16px;padding:28px 24px;max-width:320px;width:100%;text-align:center;box-shadow:0 0 60px rgba(255,215,0,0.2);">
+    <div style="font-size:36px;margin-bottom:10px;">⚡</div>
+    <div style="font-size:13px;font-weight:900;letter-spacing:3px;color:#ffd700;margin-bottom:10px;">HIGH ROLLER BET</div>
+    <div style="font-size:12px;color:#e0d8f0;line-height:1.6;margin-bottom:12px;">Bets of <strong style="color:#ffd700;">$25,000+</strong> require spending <strong style="color:#ffd700;">1 Ticket</strong> to enter the High Roller tier.</div>
+    <div style="font-size:11px;color:#888;margin-bottom:22px;">You have <strong id="hrTicketCount" style="color:#ffd700;">?</strong> tickets remaining.</div>
+    <div style="display:flex;gap:10px;justify-content:center;">
+      <button onclick="cancelHighRoller()" style="flex:1;padding:11px 0;border:1px solid #444;border-radius:8px;background:transparent;color:#aaa;font-size:11px;cursor:pointer;font-family:var(--font);font-weight:700;letter-spacing:1px;">CANCEL</button>
+      <button onclick="confirmHighRoller()" style="flex:1;padding:11px 0;border:none;border-radius:8px;background:linear-gradient(135deg,#b8860b,#ffd700);color:#060408;font-size:11px;cursor:pointer;font-family:var(--font);font-weight:900;letter-spacing:1px;">⚡ USE TICKET</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
