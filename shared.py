@@ -32,6 +32,10 @@ def secure_choice(seq):
     """Choose a random element from a non-empty sequence, using OS entropy."""
     return seq[secrets.randbelow(len(seq))]
 
+def secure_random() -> float:
+    """Return a random float in [0.0, 1.0) using OS entropy."""
+    return secrets.randbelow(2**32) / 2**32
+
 def secure_shuffle(lst: list) -> list:
     """Return a shuffled copy of lst using OS entropy (Fisher-Yates)."""
     lst = list(lst)
