@@ -28,6 +28,8 @@ from shared import (
     add_balance, deduct_balance, ensure_user_exists,
     CASES, get_random_item, convert_decimals,
     _invalidate_vip_cache,
+    secure_random, secure_choice,
+    get_skin_condition, calculate_item_value, RARITY_EMOJIS,
 )
 
 router = APIRouter(tags=["premium"])
@@ -671,6 +673,117 @@ async def premium_batch_open(request: Request):
         "total_cost": round(total_cost, 2),
         "cases_used": [c[1].get('name', c[0]) for c in top_cases],
     }
+
+# ============================================================
+# TICKET CASE
+# ============================================================
+
+# Drop rates for the Ticket Case — no Blues, skewed toward high rarity
+_TICKET_CASE_RATES = [
+    ('Purple', 0.42),
+    ('Pink',   0.35),
+    ('Red',    0.18),
+    ('Gold',   0.05),
+]
+
+def _get_ticket_case_item() -> Optional[dict]:
+    """Roll one item from the Ticket Case pool (Purple–Gold only)."""
+    r = secure_random()
+    cumulative = 0.0
+    chosen_rarity = 'Purple'
+    for rarity, chance in _TICKET_CASE_RATES:
+        cumulative += chance
+        if r <= cumulative:
+            chosen_rarity = rarity
+            break
+
+    pool = shared.ALL_ITEMS_BY_RARITY.get(chosen_rarity, [])
+    if not pool:
+        pool = shared.ALL_ITEMS_BY_RARITY.get('Purple', [])
+    if not pool:
+        return None
+
+    skin = secure_choice(pool)
+    fmin = skin.get('float_min', 0.0)
+    fmax = skin.get('float_max', 1.0)
+    if fmax < fmin:
+        fmin, fmax = fmax, fmin
+    float_value = fmin + secure_random() * (fmax - fmin)
+
+    condition   = get_skin_condition(float_value)
+    is_stattrak = secure_random() < 0.1
+    price       = calculate_item_value(chosen_rarity, condition, None, is_stattrak)
+
+    full_name    = f"{skin['weapon_type']} | {skin['skin_name']}"
+    name         = f"StatTrak™ {full_name}" if is_stattrak else full_name
+    display_name = f"{RARITY_EMOJIS.get(chosen_rarity, '')} {name}"
+
+    import os as _os
+    skin_img       = skin.get('skin_image')
+    image_filename = _os.path.basename(skin_img) if skin_img else None
+
+    return {
+        'name':          name,
+        'display_name':  display_name,
+        'rarity':        chosen_rarity,
+        'rarity_emoji':  RARITY_EMOJIS.get(chosen_rarity, ''),
+        'condition':     condition,
+        'float':         float_value,
+        'price':         price,
+        'is_stattrak':   is_stattrak,
+        'tier':          None,
+        'image_filename': image_filename,
+    }
+
+@router.post("/api/vip/ticket-case-open")
+async def ticket_case_open(request: Request):
+    """Spend 1 ticket to open the Ticket Case (Purple–Gold only)."""
+    user_id = await require_auth(request)
+    pool = await get_db()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await ensure_user_exists(user_id, conn=conn)
+
+            ok = await deduct_ticket(
+                user_id, 'spend_case',
+                {'action': 'ticket_case_open'}, conn=conn
+            )
+            if not ok:
+                raise HTTPException(400, "Insufficient tickets")
+
+            item = _get_ticket_case_item()
+            if not item:
+                raise HTTPException(500, "Failed to generate item")
+
+            img_file = item.get('image_filename')
+            img_url  = f"/static/images/skins/{img_file}" if img_file else None
+
+            row = await conn.fetchrow("""
+                INSERT INTO inventory
+                    (user_id, item_name, item_type, rarity, price, condition,
+                     is_stattrak, status, case_id, float_value, image_url)
+                VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept','ticket_case',$7,$8)
+                RETURNING id
+            """, user_id, item['name'], item['rarity'], item['price'],
+                item['condition'], item['is_stattrak'], item['float'], img_url)
+
+            item['id']        = row['id']
+            item['image_url'] = img_url
+
+            if item['rarity'] == 'Gold':
+                await conn.execute(
+                    "UPDATE users SET total_golds = total_golds + 1 WHERE user_id=$1",
+                    user_id
+                )
+
+            await conn.execute(
+                "UPDATE users SET total_opens = total_opens + 1,"
+                " total_premium_opens = total_premium_opens + 1 WHERE user_id=$1",
+                user_id
+            )
+
+    return {"success": True, "item": item}
 
 # ============================================================
 # TICKET INFO ENDPOINTS
