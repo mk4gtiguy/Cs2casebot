@@ -82,6 +82,11 @@ body{background-image:radial-gradient(ellipse 100% 35% at 50% 0%,rgba(255,215,0,
 .tier-heavy .game-card::before{background:radial-gradient(ellipse at 50% 0%,rgba(124,58,237,.14),transparent 70%);}
 .tier-featured .game-card:hover{border-color:rgba(255,215,0,.4);box-shadow:0 8px 40px rgba(255,215,0,.2);}
 .tier-featured .game-card::before{background:radial-gradient(ellipse at 50% 0%,rgba(255,215,0,.1),transparent 70%);}
+.tier-arcade .tier-dot,.tier-arcade .tier-name{color:#00e5ff;}
+.tier-arcade .tier-line{color:#00e5ff;}
+.tier-arcade .game-card:hover{border-color:rgba(0,229,255,.4);box-shadow:0 8px 32px rgba(0,229,255,.18);}
+.tier-arcade .game-card::before{background:radial-gradient(ellipse at 50% 0%,rgba(0,229,255,.12),transparent 70%);}
+.badge-ticket{position:absolute;top:10px;right:10px;font-size:8px;font-weight:700;letter-spacing:1px;color:#ffd700;background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.3);border-radius:8px;padding:2px 6px;}
 .game-card:hover::before{opacity:1;}
 
 .badge-new{position:absolute;top:10px;right:10px;font-size:8px;font-weight:700;letter-spacing:1px;color:var(--green);background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.25);border-radius:8px;padding:2px 6px;}
@@ -136,12 +141,54 @@ body{background-image:radial-gradient(ellipse 100% 35% at 50% 0%,rgba(255,215,0,
 
 <div class="stats-bar">
   <div class="stat-pill">💰 Balance <span class="sp-val" id="statBal">—</span></div>
-  <div class="stat-pill">🎮 Games <span class="sp-val">22</span></div>
+  <div class="stat-pill">🎮 Games <span class="sp-val">27</span></div>
   <div class="stat-pill">🔴 Live <span class="sp-val" id="statLive">4</span></div>
   <div class="stat-pill">🏆 Wins Today <span class="sp-val" id="statWins">—</span></div>
 </div>
 
 <div class="page" id="gamePage">
+
+  <!-- TICKET ARCADE -->
+  <section class="tier-section tier-arcade" data-tier="arcade">
+    <div class="tier-header">
+      <div class="tier-dot"></div>
+      <div class="tier-name">Ticket Arcade</div>
+      <div class="tier-count">5 GAMES</div>
+      <div class="tier-line"></div>
+    </div>
+    <div class="card-grid">
+      <a class="game-card" href="/?arcade=reaction" data-name="reaction time reflex speed ms milliseconds ticket arcade">
+        <div class="badge-ticket">1 🎟️</div>
+        <div class="card-emoji">⚡</div>
+        <div class="card-name">REACTION TIME</div>
+        <div class="card-desc">Click the moment the screen flashes. Sub-150ms wins 8 tickets.</div>
+      </a>
+      <a class="game-card" href="/?arcade=aim" data-name="aim trainer targets click accuracy shoot ticket arcade">
+        <div class="badge-ticket">1 🎟️</div>
+        <div class="card-emoji">🎯</div>
+        <div class="card-name">AIM TRAINER</div>
+        <div class="card-desc">20 targets, 10 seconds. Hit 20 and walk away with 6 tickets.</div>
+      </a>
+      <a class="game-card" href="/?arcade=bomb" data-name="bomb defuse wire cut cs2 guess ticket arcade">
+        <div class="badge-ticket">1 🎟️</div>
+        <div class="card-emoji">💣</div>
+        <div class="card-name">BOMB DEFUSE</div>
+        <div class="card-desc">5 wires. One is safe. Cut the right one for 3 tickets.</div>
+      </a>
+      <a class="game-card" href="/?arcade=float" data-name="float guesser cs2 skin wear value guess ticket arcade">
+        <div class="badge-ticket">1 🎟️</div>
+        <div class="card-emoji">🔫</div>
+        <div class="card-name">FLOAT GUESSER</div>
+        <div class="card-desc">Guess a CS2 skin's float value. Within 0.01 wins 8 tickets.</div>
+      </a>
+      <a class="game-card" href="/?arcade=memory" data-name="memory sequence pattern repeat remember ticket arcade">
+        <div class="badge-ticket">1 🎟️</div>
+        <div class="card-emoji">🧠</div>
+        <div class="card-name">MEMORY SEQUENCE</div>
+        <div class="card-desc">Memorise a 10-number sequence and repeat it perfectly.</div>
+      </a>
+    </div>
+  </section>
 
   <!-- EASY -->
   <section class="tier-section tier-easy" data-tier="easy">
