@@ -5373,6 +5373,18 @@ window.switchTab = function(tab) {
 
     checkAuth();
 
+    // Show post-payment success toast when redirected back from Stripe
+    (function() {
+        const p = new URLSearchParams(window.location.search).get('payment');
+        if (p === 'tickets') {
+            history.replaceState(null, '', '/');
+            setTimeout(() => showToast('🎟️ Tickets purchased! Your balance has been updated.'), 800);
+        } else if (p === 'vip') {
+            history.replaceState(null, '', '/');
+            setTimeout(() => showToast('⭐ VIP activated! Enjoy your perks.'), 800);
+        }
+    })();
+
     // ============================================
     // SECTION 99: FRIENDS SYSTEM
     // ============================================
