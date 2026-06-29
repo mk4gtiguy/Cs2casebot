@@ -1081,7 +1081,7 @@ async function spinReel(reelId, item, isMe) {
     const el = document.createElement('div');
     el.className = 'reel-item';
     el.id = `ri-${reelId}-${idx}`;
-    el.innerHTML = `<div class="r-emoji">${f.emoji}</div><div class="r-name">${f.name}</div>`;
+    el.innerHTML = `<div class="r-emoji">${esc(f.emoji)}</div><div class="r-name">${esc(f.name)}</div>`;
     track.appendChild(el);
   });
 
