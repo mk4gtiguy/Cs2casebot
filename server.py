@@ -433,6 +433,8 @@ async def _init_all_tables(pool):
         for col_def in [
             "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS image_url TEXT",
             "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS tier TEXT",
+            "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS source TEXT",
+            "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS acquired_at TIMESTAMPTZ DEFAULT NOW()",
         ]:
             try:
                 await conn.execute(col_def)
