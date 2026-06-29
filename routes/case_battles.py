@@ -129,6 +129,19 @@ class BattleManager:
                         if battle_id:
                             await self._notify_match_found(p1['ws'], battle_id, p1)
                             await self._notify_match_found(p2['ws'], battle_id, p2)
+                        else:
+                            # Battle creation failed (e.g. a player's balance dropped
+                            # between queue check and deduction). Notify both so they
+                            # can re-join the queue rather than waiting silently.
+                            for _p in (p1, p2):
+                                try:
+                                    await _p['ws'].send_json({
+                                        'type':    'match_failed',
+                                        'message': 'Match could not be created — '
+                                                   'please re-join the queue.',
+                                    })
+                                except Exception:
+                                    pass
             except Exception as e:
                 logger.error(f"Matchmaking loop error: {e}")
 

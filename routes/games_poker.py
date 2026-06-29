@@ -395,13 +395,33 @@ class HoldemRoom:
                 self.round_num += 1
                 await asyncio.sleep(5)   # inter-round pause
             except asyncio.CancelledError:
+                await self._refund_remaining_chips()
                 return
             except Exception as e:
                 logger.error(f"Poker round error in {self.room_code}: {e}")
                 await asyncio.sleep(2)
 
+        await self._refund_remaining_chips()
         await self.broadcast({'type': 'table_closing', 'room_code': self.room_code})
         _holdem_rooms.pop(self.room_code, None)
+
+    async def _refund_remaining_chips(self):
+        """Credit remaining chips back to any real players still at the table."""
+        pool = await get_db()
+        for player in list(self.players.values()):
+            if not player.is_bot and player.chips > 0:
+                try:
+                    async with pool.acquire() as conn:
+                        await add_balance(player.user_id, player.chips, conn)
+                    logger.info(
+                        f"♠️ Refunded {player.chips} chips to player {player.user_id} "
+                        f"(room {self.room_code} closed)"
+                    )
+                    player.chips = 0
+                except Exception as e:
+                    logger.error(
+                        f"Failed to refund chips to player {player.user_id}: {e}"
+                    )
 
     async def _play_round(self):
         self.phase     = 'pre-flop'
@@ -677,18 +697,9 @@ class HoldemRoom:
         if len(alive) == 1:
             winner = alive[0]
             win    = round(self._real_pot * (1 - HOUSE_EDGE_POKER), 2)
-            if not winner.is_bot:
-                winner.chips += win
-                pool = await get_db()
-                async with pool.acquire() as conn:
-                    async with conn.transaction():
-                        win = await _add_win(winner.user_id, win, conn)
-                        await log_game(conn, winner.user_id, 'holdem',
-                                       winner.total_bet, win, {
-                                           'room': self.room_code,
-                                           'round': self.round_num,
-                                           'players': len(self.players),
-                                       })
+            # Credit chips only — holdem_leave returns chips to DB so paying
+            # here via _add_win would double-credit the winner's real balance.
+            winner.chips += win
             await self.broadcast({
                 'type':     'showdown',
                 'winners':  [winner.to_dict(show_cards=True)],
@@ -722,48 +733,36 @@ class HoldemRoom:
         # Scale pot amounts down to real-player money only — bot chips are virtual.
         real_scale = self._real_pot / max(self.pot, 0.01)
 
-        pool    = await get_db()
         winner_dicts = []
 
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                for pot_info in side_pots:
-                    eligible_ids = pot_info['eligible']
-                    pot_amount   = round(pot_info['amount'] * real_scale, 2)
+        # Credit chips only — holdem_leave returns chips to DB so paying via
+        # _add_win here would double-credit every winner's real balance.
+        for pot_info in side_pots:
+            eligible_ids = pot_info['eligible']
+            pot_amount   = round(pot_info['amount'] * real_scale, 2)
 
-                    # Among eligible players, find the best hand
-                    eligible_ranked = [
-                        hand_lookup[uid] for uid in eligible_ids if uid in hand_lookup
-                    ]
-                    if not eligible_ranked:
-                        continue
-                    eligible_ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            eligible_ranked = [
+                hand_lookup[uid] for uid in eligible_ids if uid in hand_lookup
+            ]
+            if not eligible_ranked:
+                continue
+            eligible_ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-                    top_rank = eligible_ranked[0][0]
-                    top_tb   = eligible_ranked[0][1]
-                    pot_winners = [
-                        (r[2], r[3]) for r in eligible_ranked
-                        if r[0] == top_rank and r[1] == top_tb
-                    ]
+            top_rank = eligible_ranked[0][0]
+            top_tb   = eligible_ranked[0][1]
+            pot_winners = [
+                (r[2], r[3]) for r in eligible_ranked
+                if r[0] == top_rank and r[1] == top_tb
+            ]
 
-                    base_split = round(pot_amount * (1 - HOUSE_EDGE_POKER) / len(pot_winners), 2)
-                    for p, best_cards in pot_winners:
-                        if not p.is_bot:
-                            actual_split = await _add_win(p.user_id, base_split, conn)
-                            p.chips += actual_split
-                            await log_game(conn, p.user_id, 'holdem',
-                                           p.total_bet, actual_split, {
-                                               'room': self.room_code,
-                                               'round': self.round_num,
-                                               'hand_rank': HAND_NAMES[top_rank],
-                                           })
-                        else:
-                            actual_split = base_split
-                        wr = p.to_dict(show_cards=True)
-                        wr['best_hand']  = best_cards
-                        wr['hand_name']  = HAND_NAMES[top_rank]
-                        wr['payout']     = actual_split
-                        winner_dicts.append(wr)
+            base_split = round(pot_amount * (1 - HOUSE_EDGE_POKER) / len(pot_winners), 2)
+            for p, best_cards in pot_winners:
+                p.chips += base_split
+                wr = p.to_dict(show_cards=True)
+                wr['best_hand']  = best_cards
+                wr['hand_name']  = HAND_NAMES[top_rank]
+                wr['payout']     = base_split
+                winner_dicts.append(wr)
 
         all_player_cards = [p.to_dict(show_cards=True) for p in alive]
 

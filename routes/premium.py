@@ -468,6 +468,7 @@ async def stripe_webhook(request: Request):
                 return {"received": True}
 
             customer_id = obj.get("customer")
+            sess_id     = obj.get("id", "")
             cfg = VIP_TIERS[tier]
             pool = await get_db()
             async with pool.acquire() as conn:
@@ -493,56 +494,86 @@ async def stripe_webhook(request: Request):
                         tier in ('gold', 'platinum'),   # private rooms
                         tier == 'platinum')              # tournaments
 
-                    # Grant first day's tickets immediately
-                    await grant_tickets(
-                        user_id, cfg['daily_tickets'], 'subscription',
-                        {'tier': tier, 'event': 'new_subscription'}, conn=conn
-                    )
+                    # Idempotency: only grant tickets if this checkout session hasn't
+                    # been processed before (Stripe can replay webhooks).
+                    already = await conn.fetchval("""
+                        SELECT 1 FROM ticket_transactions
+                        WHERE source = 'subscription'
+                          AND metadata->>'session_id' = $1
+                    """, sess_id) if sess_id else None
+                    if not already:
+                        await grant_tickets(
+                            user_id, cfg['daily_tickets'], 'subscription',
+                            {'tier': tier, 'event': 'new_subscription',
+                             'session_id': sess_id}, conn=conn
+                        )
             _invalidate_vip_cache(user_id)
             logger.info(f"✅ VIP {tier} granted to user {user_id}")
 
         else:
             # One-time ticket purchase
-            tickets = int(meta.get("tickets", 0))
-            pack_id = meta.get("pack_id", "")
-            if tickets > 0:
+            tickets  = int(meta.get("tickets", 0))
+            pack_id  = meta.get("pack_id", "")
+            sess_id  = obj.get("id", "")
+            if tickets > 0 and sess_id:
                 pool = await get_db()
                 async with pool.acquire() as conn:
-                    await grant_tickets(
-                        user_id, tickets, 'purchase',
-                        {'pack_id': pack_id, 'session_id': obj.get('id')}, conn=conn
-                    )
-                logger.info(f"✅ Granted {tickets} tickets to user {user_id} (pack: {pack_id})")
+                    async with conn.transaction():
+                        # Idempotency: skip if this Stripe session was already processed.
+                        already = await conn.fetchval("""
+                            SELECT 1 FROM ticket_transactions
+                            WHERE source='purchase'
+                              AND metadata->>'session_id' = $1
+                        """, sess_id)
+                        if not already:
+                            await grant_tickets(
+                                user_id, tickets, 'purchase',
+                                {'pack_id': pack_id, 'session_id': sess_id}, conn=conn
+                            )
+                            logger.info(
+                                f"✅ Granted {tickets} tickets to user {user_id} (pack: {pack_id})"
+                            )
 
     # ── Subscription invoice paid — extend VIP ────────────────
     elif event_type == "invoice.paid":
         sub_id      = obj.get("subscription")
         customer_id = obj.get("customer")
-        if not (sub_id and customer_id):
+        invoice_id  = obj.get("id", "")
+        if not (sub_id and customer_id and invoice_id):
             return {"received": True}
 
         pool = await get_db()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT user_id, vip_tier FROM users WHERE stripe_customer_id=$1", customer_id
-            )
-            if row:
-                cfg = VIP_TIERS.get(row['vip_tier'], {})
-                async with conn.transaction():
-                    await conn.execute("""
-                        UPDATE users
-                        SET vip_expires_at = GREATEST(vip_expires_at, NOW()) + INTERVAL '30 days'
-                        WHERE user_id = $1
-                    """, row['user_id'])
-                    # Award monthly daily tickets for renewal
-                    daily = cfg.get('daily_tickets', 0)
-                    if daily:
-                        await grant_tickets(
-                            row['user_id'], daily, 'subscription',
-                            {'tier': row['vip_tier'], 'event': 'renewal'}, conn=conn
-                        )
-                _invalidate_vip_cache(row['user_id'])
-                logger.info(f"✅ VIP extended for user {row['user_id']}")
+            async with conn.transaction():
+                # Lock user row and check idempotency together so concurrent
+                # Stripe retries cannot both pass and double-extend VIP.
+                row = await conn.fetchrow(
+                    "SELECT user_id, vip_tier FROM users WHERE stripe_customer_id=$1 FOR UPDATE",
+                    customer_id
+                )
+                if row:
+                    already = await conn.fetchval("""
+                        SELECT 1 FROM ticket_transactions
+                        WHERE source='subscription'
+                          AND metadata->>'invoice_id' = $1
+                    """, invoice_id)
+                    if not already:
+                        cfg = VIP_TIERS.get(row['vip_tier'], {})
+                        await conn.execute("""
+                            UPDATE users
+                            SET vip_expires_at = GREATEST(vip_expires_at, NOW()) + INTERVAL '30 days'
+                            WHERE user_id = $1
+                        """, row['user_id'])
+                        # Award monthly daily tickets for renewal
+                        daily = cfg.get('daily_tickets', 0)
+                        if daily:
+                            await grant_tickets(
+                                row['user_id'], daily, 'subscription',
+                                {'tier': row['vip_tier'], 'event': 'renewal',
+                                 'invoice_id': invoice_id}, conn=conn
+                            )
+                        _invalidate_vip_cache(row['user_id'])
+                        logger.info(f"✅ VIP extended for user {row['user_id']}")
 
     # ── Subscription cancelled / payment failed ───────────────
     elif event_type in ("customer.subscription.deleted", "invoice.payment_failed"):
