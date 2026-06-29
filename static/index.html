@@ -4195,6 +4195,7 @@ async function executeTrade() {
     }
 
     async function buyTicketPack(packId) {
+        if (!packId.toString().startsWith('ticket_')) packId = 'ticket_' + packId;
         try {
             const data = await apiCall('/api/buy-tickets', {
                 method: 'POST',
@@ -5092,13 +5093,19 @@ window.switchTab = function(tab) {
         try {
             const data = await apiCall('/api/goals');
             const donationPercent = Math.min(100, (data.donations / 500) * 100);
-            document.getElementById('goalDonations').textContent = `$${data.donations} / $500`;
-            document.getElementById('goalDonationsBar').style.width = donationPercent + '%';
-            document.getElementById('goalDonationsProgress').textContent = Math.round(donationPercent) + '%';
+            const elDon = document.getElementById('goalDonations');
+            const elDonBar = document.getElementById('goalDonationsBar');
+            const elDonPct = document.getElementById('goalDonationsProgress');
+            if (elDon) elDon.textContent = `$${data.donations} / $500`;
+            if (elDonBar) elDonBar.style.width = donationPercent + '%';
+            if (elDonPct) elDonPct.textContent = Math.round(donationPercent) + '%';
             const userPercent = Math.min(100, (data.users / 1000) * 100);
-            document.getElementById('goalUsers').textContent = `${data.users} / 1000`;
-            document.getElementById('goalUsersBar').style.width = userPercent + '%';
-            document.getElementById('goalUsersProgress').textContent = Math.round(userPercent) + '%';
+            const elUsr = document.getElementById('goalUsers');
+            const elUsrBar = document.getElementById('goalUsersBar');
+            const elUsrPct = document.getElementById('goalUsersProgress');
+            if (elUsr) elUsr.textContent = `${data.users} / 1000`;
+            if (elUsrBar) elUsrBar.style.width = userPercent + '%';
+            if (elUsrPct) elUsrPct.textContent = Math.round(userPercent) + '%';
         } catch (e) { console.error('Load goal data error:', e); }
     }
 
