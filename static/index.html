@@ -4197,15 +4197,15 @@ async function executeTrade() {
     async function buyTicketPack(packId) {
         if (!packId.toString().startsWith('ticket_')) packId = 'ticket_' + packId;
         try {
-            const data = await apiCall('/api/buy-tickets', {
+            const data = await apiCall('/api/tickets/buy', {
                 method: 'POST',
                 body: JSON.stringify({ pack_id: packId })
             });
             if (data.locked) {
                 showToast('🔒 ' + data.error);
                 closePopup();
-            } else if (data.url) {
-                window.location.href = data.url;
+            } else if (data.checkout_url) {
+                window.location.href = data.checkout_url;
             } else {
                 showToast('❌ Error: ' + (data.error || 'Could not create checkout'));
             }
