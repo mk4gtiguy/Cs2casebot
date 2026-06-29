@@ -425,14 +425,19 @@ async def _init_all_tables(pool):
                 case_id     TEXT,
                 float_value DECIMAL(10,4),
                 image_url   TEXT,
+                tier        TEXT,
                 created_at  TIMESTAMP DEFAULT NOW()
             )
         """)
-        # Migrate: add image_url column to existing inventory tables
-        try:
-            await conn.execute("ALTER TABLE inventory ADD COLUMN IF NOT EXISTS image_url TEXT")
-        except Exception:
-            pass
+        # Migrate: add columns to existing inventory tables
+        for col_def in [
+            "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS image_url TEXT",
+            "ALTER TABLE inventory ADD COLUMN IF NOT EXISTS tier TEXT",
+        ]:
+            try:
+                await conn.execute(col_def)
+            except Exception:
+                pass
         # Guild settings
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS guild_settings (
@@ -1815,11 +1820,11 @@ async def quick_trade(req: TradeRequest, request: Request):
                 }
             row = await conn.fetchrow("""
                 INSERT INTO inventory (user_id, item_name, item_type, rarity, price, condition,
-                    is_stattrak, status, float_value, image_url)
-                VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8) RETURNING id
+                    is_stattrak, status, float_value, image_url, tier)
+                VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8,$9) RETURNING id
             """, user_id, new_item["name"], new_item["rarity"], new_item["price"],
                 new_item["condition"], new_item["is_stattrak"], new_item.get("float", 0.0),
-                new_item.get("image_url"))
+                new_item.get("image_url"), new_item.get("tier"))
             new_item["id"] = row["id"]
             await conn.execute(
                 "UPDATE users SET total_trades=total_trades+1 WHERE user_id=$1", user_id
@@ -1883,9 +1888,10 @@ async def skin_upgrade_endpoint(request: Request):
                     await conn.execute("""
                         INSERT INTO inventory
                             (user_id, item_name, item_type, rarity, price,
-                             condition, is_stattrak, status, float_value, image_url)
-                        VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8)
-                    """, user_id, name, next_rarity, price, cond, is_st, fv, upgrade_img_url)
+                             condition, is_stattrak, status, float_value, image_url, tier)
+                        VALUES ($1,$2,'weapon',$3,$4,$5,$6,'kept',$7,$8,$9)
+                    """, user_id, name, next_rarity, price, cond, is_st, fv, upgrade_img_url,
+                        template.get("tier"))
 
                     await conn.execute("""
                         INSERT INTO skin_upgrades
