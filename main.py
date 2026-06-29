@@ -2154,6 +2154,191 @@ async def sell_item(interaction: discord.Interaction, item_id: int):
         await interaction.followup.send(f"❌ Error selling item: {str(e)[:100]}", ephemeral=True)
 
 # ============================================
+# STICKER APPLICATION COMMANDS
+# ============================================
+
+@bot.tree.command(name="apply_sticker", description="Apply a sticker from your inventory to a weapon")
+async def cmd_apply_sticker(interaction: discord.Interaction, weapon_id: int, sticker_id: int, slot: int = 0):
+    if not await is_bot_channel(interaction):
+        return
+    if slot not in (0, 1, 2, 3):
+        await interaction.response.send_message("❌ Slot must be 0, 1, 2, or 3.", ephemeral=True)
+        return
+    await interaction.response.defer()
+    try:
+        import json as _json
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                weapon = await conn.fetchrow(
+                    "SELECT id, item_name, item_type, applied_stickers FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept' FOR UPDATE",
+                    weapon_id, interaction.user.id
+                )
+                if not weapon:
+                    await interaction.followup.send(f"❌ Weapon ID {weapon_id} not found in your inventory.", ephemeral=True)
+                    return
+                if (weapon["item_type"] or "weapon") not in ("weapon", "gold"):
+                    await interaction.followup.send("❌ You can only apply stickers to weapons.", ephemeral=True)
+                    return
+                sticker = await conn.fetchrow(
+                    "SELECT id, item_name, rarity, image_url FROM inventory WHERE id=$1 AND user_id=$2 AND item_type='sticker' AND status='kept' FOR UPDATE",
+                    sticker_id, interaction.user.id
+                )
+                if not sticker:
+                    await interaction.followup.send(f"❌ Sticker ID {sticker_id} not found in your inventory.", ephemeral=True)
+                    return
+                raw = weapon["applied_stickers"]
+                current = _json.loads(raw) if isinstance(raw, str) else (list(raw) if raw else [])
+                if any(s.get("slot") == slot for s in current):
+                    await interaction.followup.send(f"❌ Slot {slot} already has a sticker. Use `/remove_sticker` first.", ephemeral=True)
+                    return
+                if len(current) >= 4:
+                    await interaction.followup.send("❌ All 4 sticker slots are full.", ephemeral=True)
+                    return
+                current.append({
+                    "slot": slot, "sticker_id": sticker_id,
+                    "sticker_name": sticker["item_name"],
+                    "sticker_image": sticker["image_url"] or "",
+                    "rarity": sticker["rarity"] or "",
+                })
+                await conn.execute(
+                    "UPDATE inventory SET applied_stickers=$1 WHERE id=$2",
+                    _json.dumps(current), weapon_id
+                )
+                await conn.execute("UPDATE inventory SET status='sold' WHERE id=$1", sticker_id)
+
+        embed = discord.Embed(title="🏷️ Sticker Applied!", color=discord.Color.blue())
+        embed.add_field(name="Weapon", value=weapon["item_name"], inline=True)
+        embed.add_field(name="Sticker", value=sticker["item_name"], inline=True)
+        embed.add_field(name="Slot", value=str(slot + 1), inline=True)
+        embed.add_field(name="Stickers Applied", value=f"{len(current)}/4", inline=True)
+        embed.set_footer(text=f"💖 {KO_FI_URL} | 🌐 {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"apply_sticker error: {e}")
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
+
+@bot.tree.command(name="remove_sticker", description="Scrape a sticker off a weapon (sticker is lost)")
+async def cmd_remove_sticker(interaction: discord.Interaction, weapon_id: int, slot: int):
+    if not await is_bot_channel(interaction):
+        return
+    if slot not in (0, 1, 2, 3):
+        await interaction.response.send_message("❌ Slot must be 0, 1, 2, or 3.", ephemeral=True)
+        return
+    await interaction.response.defer()
+    try:
+        import json as _json
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                weapon = await conn.fetchrow(
+                    "SELECT id, item_name, applied_stickers FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept' FOR UPDATE",
+                    weapon_id, interaction.user.id
+                )
+                if not weapon:
+                    await interaction.followup.send(f"❌ Weapon ID {weapon_id} not found.", ephemeral=True)
+                    return
+                raw = weapon["applied_stickers"]
+                current = _json.loads(raw) if isinstance(raw, str) else (list(raw) if raw else [])
+                removed = next((s for s in current if s.get("slot") == slot), None)
+                if not removed:
+                    await interaction.followup.send(f"❌ No sticker in slot {slot}.", ephemeral=True)
+                    return
+                updated = [s for s in current if s.get("slot") != slot]
+                await conn.execute(
+                    "UPDATE inventory SET applied_stickers=$1 WHERE id=$2",
+                    _json.dumps(updated), weapon_id
+                )
+        embed = discord.Embed(title="🗑️ Sticker Removed", color=discord.Color.orange())
+        embed.add_field(name="Weapon", value=weapon["item_name"], inline=True)
+        embed.add_field(name="Removed", value=removed.get("sticker_name", "Sticker"), inline=True)
+        embed.add_field(name="Note", value="The sticker was scrapped and cannot be recovered.", inline=False)
+        embed.set_footer(text=f"💖 {KO_FI_URL} | 🌐 {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"remove_sticker error: {e}")
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
+
+@bot.tree.command(name="loadout_toggle", description="Add or remove an item from your loadout")
+async def cmd_loadout_toggle(interaction: discord.Interaction, item_id: int):
+    if not await is_bot_channel(interaction):
+        return
+    await interaction.response.defer()
+    try:
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, item_name, in_loadout FROM inventory WHERE id=$1 AND user_id=$2 AND status='kept'",
+                item_id, interaction.user.id
+            )
+            if not row:
+                await interaction.followup.send(f"❌ Item ID {item_id} not found.", ephemeral=True)
+                return
+            new_val = not bool(row["in_loadout"])
+            await conn.execute("UPDATE inventory SET in_loadout=$1 WHERE id=$2", new_val, item_id)
+        action = "added to" if new_val else "removed from"
+        embed = discord.Embed(
+            title=f"🎽 Loadout Updated",
+            description=f"**{row['item_name']}** {action} your loadout.",
+            color=discord.Color.gold() if new_val else discord.Color.light_grey()
+        )
+        embed.set_footer(text=f"Use /loadout to view your full loadout | 🌐 {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"loadout_toggle error: {e}")
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
+
+@bot.tree.command(name="loadout", description="View your equipped weapon loadout")
+async def cmd_loadout(interaction: discord.Interaction):
+    if not await is_bot_channel(interaction):
+        return
+    await interaction.response.defer()
+    try:
+        import json as _json
+        async with db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, item_name, item_type, rarity, condition, float_value, is_stattrak, price, applied_stickers "
+                "FROM inventory WHERE user_id=$1 AND in_loadout=TRUE AND status='kept' ORDER BY created_at DESC",
+                interaction.user.id
+            )
+        if not rows:
+            embed = discord.Embed(
+                title="🎽 My Loadout",
+                description="Your loadout is empty!\nUse `/loadout_toggle <item_id>` on any weapon to equip it.\nFind item IDs with `/inventory`.",
+                color=discord.Color.gold()
+            )
+            embed.set_footer(text=f"🌐 Dashboard: {DASHBOARD_URL}")
+            await interaction.followup.send(embed=embed)
+            return
+
+        embed = discord.Embed(title="🎽 My Loadout", color=discord.Color.gold())
+        for item in rows[:10]:
+            raw = item["applied_stickers"]
+            stickers = _json.loads(raw) if isinstance(raw, str) else (list(raw) if raw else [])
+            st_prefix = "🔥 StatTrak™ " if item["is_stattrak"] else ""
+            cond = f" · {item['condition']}" if item["condition"] else ""
+            fv   = f" · {float(item['float_value']):.4f}" if item.get("float_value") is not None else ""
+            price = float(item["price"] or 0)
+            sticker_line = ""
+            if stickers:
+                names = " · ".join(s.get("sticker_name", "Sticker") for s in sorted(stickers, key=lambda x: x.get("slot", 0)))
+                sticker_line = f"\n🏷️ {names}"
+            embed.add_field(
+                name=f"{st_prefix}{item['item_name']}",
+                value=f"`ID: {item['id']}`{cond}{fv} · ${price:,.2f}{sticker_line}",
+                inline=False
+            )
+        if len(rows) > 10:
+            embed.set_footer(text=f"Showing 10/{len(rows)} items · Full loadout at {DASHBOARD_URL}")
+        else:
+            embed.set_footer(text=f"🌐 Full view at {DASHBOARD_URL}")
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.error(f"loadout error: {e}")
+        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+
+
+# ============================================
 # QUESTS COMMANDS
 # ============================================
 
@@ -3043,6 +3228,8 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(name="📋 Quests", value="`/quests` `/claim`", inline=False)
     embed.add_field(name="🎁 Giveaways", value="`/giveaway_create` `/giveaway_reroll` (Admin)", inline=False)
     embed.add_field(name="📦 Inventory", value="`/inventory` `/sell <id>` `/profile`", inline=False)
+    embed.add_field(name="🏷️ Stickers", value="`/apply_sticker <weapon_id> <sticker_id> <slot 0-3>` — apply sticker to weapon\n`/remove_sticker <weapon_id> <slot>` — scrape sticker off (sticker lost)", inline=False)
+    embed.add_field(name="🎽 Loadout", value="`/loadout` — view equipped weapons\n`/loadout_toggle <item_id>` — add/remove from loadout", inline=False)
     embed.add_field(name="🏆 Leaderboards", value="`/leaderboard_money` `/leaderboard_opens` `/leaderboard_golds` `/leaderboard_trades`", inline=False)
     embed.add_field(name="🎲 Jackpot", value="`/jackpot <amount>`", inline=False)
     embed.add_field(name="🎮 Games — Play on the Dashboard", value="**22+ games** (Crash, Mines, Coinflip, Dice, Slots, Roulette, Plinko, Blackjack, Poker & more)\n🎟️ **Ticket Arcade** (Reaction Time, Aim Trainer, Bomb Defuse, Float Guesser, Memory Sequence)\n→ [**cs2casebot.xyz**](https://cs2casebot.xyz/)", inline=False)
