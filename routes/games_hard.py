@@ -280,7 +280,6 @@ async def mystery_open(req: MysteryOpenRequest, request: Request):
 
         if content['type'] == 'bomb':
             sess['active'] = False
-            _mystery_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 await log_game(conn, user_id, 'mystery_box', sess['bet'], 0, {
@@ -289,6 +288,7 @@ async def mystery_open(req: MysteryOpenRequest, request: Request):
                     'bomb_hit': box,
                     'total_mult': sess['total_mult'],
                 })
+            _mystery_sessions.pop(user_id, None)
             return {
                 "success":    True,
                 "type":       "bomb",
@@ -560,7 +560,6 @@ async def rr_pull(request: Request):
         if fired:
             # Player hits the bullet — bust
             sess['active'] = False
-            _rr_sessions.pop(user_id, None)
             pool = await get_db()
             async with pool.acquire() as conn:
                 await log_game(conn, user_id, 'russian_roulette', sess['bet'], 0, {
@@ -569,6 +568,7 @@ async def rr_pull(request: Request):
                     'fired_at': pull_num,
                     'bullet_was': sess['bullet_chamber'],
                 })
+            _rr_sessions.pop(user_id, None)
             bot = BOT_PERSONALITIES[sess['personality']]
             return {
                 "success":      True,
@@ -995,6 +995,7 @@ async def bj_deal(req: BJStartRequest, request: Request):
         # Use a single connection for both the bet deduction and any immediate
         # blackjack win credit so a pool-exhaustion error can never permanently
         # lose the player's bet after it has already been deducted.
+        _immediate_result = None
         pool = await get_db()
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -1025,13 +1026,12 @@ async def bj_deal(req: BJStartRequest, request: Request):
                         win    = 0
                         result = 'dealer_blackjack'
 
-                    _bj_sessions.pop(user_id, None)
                     if win:
                         win = await _add_win(user_id, win, conn)
                     await log_game(conn, user_id, 'blackjack', bet, win, {
                         'result': result, 'player_bj': p_bj, 'dealer_bj': d_bj,
                     })
-                    return {
+                    _immediate_result = {
                         "success":       True,
                         "player_hands":  [p_hand],
                         "dealer_hand":   d_hand,
@@ -1042,6 +1042,10 @@ async def bj_deal(req: BJStartRequest, request: Request):
                         "win":           round(win, 2),
                         "done":          True,
                     }
+
+        if _immediate_result is not None:
+            _bj_sessions.pop(user_id, None)
+            return _immediate_result
 
         # Insurance offer when dealer shows Ace
         offer_insurance = (d_hand[0]['rank'] == 'A')

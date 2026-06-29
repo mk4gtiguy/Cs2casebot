@@ -152,7 +152,8 @@ async def deduct_ticket(user_id: int, source: str, metadata: dict = None, conn=N
     if conn:
         return await _do(conn)
     async with pool.acquire() as c:
-        return await _do(c)
+        async with c.transaction():
+            return await _do(c)
 
 # ============================================================
 # DB INIT — called from server.py lifespan

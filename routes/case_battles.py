@@ -278,18 +278,19 @@ class BattleManager:
                     else:
                         # Player missed — record zero and advance their round
                         # counter so they are not stuck replaying the same round.
-                        await conn.execute("""
-                            INSERT INTO case_battle_rounds
-                                (battle_id, participant_id, round_number,
-                                 item_name, rarity, value)
-                            VALUES ($1, $2, $3, 'Missed Round', 'Blue', 0)
-                            ON CONFLICT (participant_id, round_number) DO NOTHING
-                        """, battle_id, p['id'], round_num)
-                        await conn.execute("""
-                            UPDATE case_battle_participants
-                            SET current_round = $1
-                            WHERE id = $2 AND current_round < $1
-                        """, round_num, p['id'])
+                        async with conn.transaction():
+                            await conn.execute("""
+                                INSERT INTO case_battle_rounds
+                                    (battle_id, participant_id, round_number,
+                                     item_name, rarity, value)
+                                VALUES ($1, $2, $3, 'Missed Round', 'Blue', 0)
+                                ON CONFLICT (participant_id, round_number) DO NOTHING
+                            """, battle_id, p['id'], round_num)
+                            await conn.execute("""
+                                UPDATE case_battle_participants
+                                SET current_round = $1
+                                WHERE id = $2 AND current_round < $1
+                            """, round_num, p['id'])
                         user_row = await conn.fetchrow(
                             "SELECT username FROM users WHERE user_id = $1", p['user_id']
                         )
