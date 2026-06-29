@@ -263,6 +263,8 @@ _safe_include("routes.games_poker")
 _safe_include("routes.admin")
 _safe_include("routes.premium")
 _safe_include("routes.referral")
+_safe_include("routes.friends")
+_safe_include("routes.ticket_games")
 
 @app.get("/admin", include_in_schema=False)
 async def page_admin(request: Request):
@@ -434,6 +436,7 @@ async def _init_all_tables(pool):
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_email TEXT",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_avatar_url TEXT",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS primary_provider TEXT DEFAULT 'discord'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ",
         ]:
             try:
                 await conn.execute(col_sql)
@@ -482,6 +485,58 @@ async def _init_all_tables(pool):
                 await conn.execute(col_def)
             except Exception:
                 pass
+        # Friends & PvP challenges
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS friendships (
+                id           SERIAL PRIMARY KEY,
+                requester_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                addressee_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                status       TEXT DEFAULT 'pending',
+                created_at   TIMESTAMPTZ DEFAULT NOW(),
+                updated_at   TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE(requester_id, addressee_id)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS pvp_challenges (
+                id             SERIAL PRIMARY KEY,
+                challenger_id  BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                challenged_id  BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                bet_tickets    INT DEFAULT 1,
+                status         TEXT DEFAULT 'pending',
+                winner_id      BIGINT,
+                created_at     TIMESTAMPTZ DEFAULT NOW(),
+                completed_at   TIMESTAMPTZ,
+                expires_at     TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '15 minutes')
+            )
+        """)
+        # Ticket arcade game sessions
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_games (
+                id            SERIAL PRIMARY KEY,
+                user_id       BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                game_type     TEXT NOT NULL,
+                session_token TEXT UNIQUE NOT NULL,
+                game_data     JSONB DEFAULT '{}',
+                started_at    TIMESTAMPTZ DEFAULT NOW(),
+                completed_at  TIMESTAMPTZ,
+                score         FLOAT,
+                tickets_won   INT DEFAULT 0,
+                status        TEXT DEFAULT 'active'
+            )
+        """)
+        for idx in [
+            "CREATE INDEX IF NOT EXISTS idx_friendships_req ON friendships(requester_id)",
+            "CREATE INDEX IF NOT EXISTS idx_friendships_addr ON friendships(addressee_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pvp_challenged ON pvp_challenges(challenged_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_tgames_user ON ticket_games(user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_tgames_token ON ticket_games(session_token)",
+        ]:
+            try:
+                await conn.execute(idx)
+            except Exception:
+                pass
+
         # Referral tracking
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS referrals (
@@ -1182,6 +1237,9 @@ async def get_me(request: Request):
 
     pool = await get_db()
     async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET last_seen=NOW() WHERE user_id=$1", user_id
+        )
         user = await conn.fetchrow(
             "SELECT * FROM users WHERE user_id = $1", user_id
         )
