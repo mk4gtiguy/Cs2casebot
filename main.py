@@ -1416,16 +1416,21 @@ async def create_daily_quests(user_id, conn=None):
 async def update_quest_progress(user_id, quest_type, increment=1, conn=None):
     if conn is None:
         async with db_pool.acquire() as conn:
-            return await update_quest_progress(user_id, quest_type, increment, conn)
-    
+            async with conn.transaction():
+                return await update_quest_progress(user_id, quest_type, increment, conn)
+
     await ensure_user_exists(user_id, conn=conn)
-    
+
     try:
+        # FOR UPDATE prevents a TOCTOU race where two concurrent callers both
+        # read the same progress value and each increments by the same amount,
+        # producing only one net increment instead of two.
         quest = await conn.fetchrow("""
             SELECT id, progress, required FROM quests
             WHERE user_id = $1 AND quest_type = $2 AND completed = false AND claimed = false
+            FOR UPDATE
         """, user_id, quest_type)
-        
+
         if quest:
             new_progress = quest['progress'] + increment
             if new_progress >= quest['required']:
