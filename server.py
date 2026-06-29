@@ -293,6 +293,16 @@ def _html(path: str) -> HTMLResponse:
 @app.get("/",              include_in_schema=False)
 async def page_index():        return _html("static/index.html")
 
+@app.get("/tickets/success", include_in_schema=False)
+async def page_tickets_success():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/?payment=tickets", status_code=302)
+
+@app.get("/vip/success", include_in_schema=False)
+async def page_vip_success():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/?payment=vip", status_code=302)
+
 @app.get("/battle",        include_in_schema=False)
 async def page_battle():       return _html("static/battle.html")
 
