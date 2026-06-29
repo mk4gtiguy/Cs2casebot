@@ -186,6 +186,7 @@ html,body{min-height:100vh;background:var(--bg);font-family:var(--font);overflow
 </div>
 
 <script>
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 let pick=null,balance=0,wins=0,losses=0,profit=0,dealing=false;
 
 async function init(){
@@ -221,7 +222,7 @@ function resetCards(){
 
 function renderCard(el, card, isWinner){
   const suitClass = (card.suit==='♥'||card.suit==='♦') ? 'card-hearts' : 'card-spades';
-  el.innerHTML=`<div class="card-value ${suitClass}">${card.name}</div><div class="card-suit ${suitClass}">${card.suit}</div>`;
+  el.innerHTML=`<div class="card-value ${suitClass}">${esc(card.name)}</div><div class="card-suit ${suitClass}">${esc(card.suit)}</div>`;
   if(isWinner) el.classList.add('winner');
 }
 
