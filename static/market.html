@@ -770,6 +770,10 @@ async function loadListings(reset) {
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+function imgFallback(el) {
+  el.parentElement.innerHTML = '<div class="card-img-placeholder">No Image</div>';
+}
+
 function buildCard(l) {
   const rc       = RARITY_COLORS[l.rarity] || DEFAULT_RARITY_COLOR;
   const condKey  = COND_MAP[l.condition] || ['', l.condition || ''];
@@ -784,7 +788,7 @@ function buildCard(l) {
     + '<div class="card-stripe"></div>'
     + '<div class="card-img-wrap">'
     +   stBadge
-    +   '<img src="'+esc(imgSrc)+'" alt="'+esc(l.item_name)+'" onerror="this.parentElement.innerHTML=\'<div class=\\\"card-img-placeholder\\\">No Image</div>\'">'
+    +   '<img src="'+esc(imgSrc)+'" alt="'+esc(l.item_name)+'" onerror="imgFallback(this)">'
     + '</div>'
     + '<div class="card-body">'
     +   '<div class="card-name">'+(l.is_stattrak?'<span style="color:#cf6a32">ST&#8482;</span> ':'')+esc(l.item_name)+'</div>'
