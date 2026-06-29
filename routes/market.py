@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from asyncpg.exceptions import UniqueViolationError
 
 from shared import get_db, get_user_id_from_session, convert_decimals, logger
 
@@ -140,6 +141,8 @@ async def list_item(request: Request, req: ListingRequest):
             raise HTTPException(404, "Item not found")
         if item['status'] != 'kept':
             raise HTTPException(400, "Item is not available for listing")
+        if (item['item_type'] or '').lower() == 'sticker':
+            raise HTTPException(400, "Stickers cannot be listed on the market")
 
         # Check not already listed
         existing = await conn.fetchval(
@@ -149,21 +152,24 @@ async def list_item(request: Request, req: ListingRequest):
         if existing:
             raise HTTPException(400, "Item is already listed")
 
-        async with conn.transaction():
-            # Mark item as listed in inventory
-            await conn.execute(
-                "UPDATE inventory SET status = 'listed' WHERE id = $1",
-                req.item_id
-            )
-            listing_id = await conn.fetchval("""
-                INSERT INTO market_listings
-                    (seller_id, item_id, item_name, rarity, condition,
-                     is_stattrak, float_value, price, image_url)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-                RETURNING id
-            """, user_id, req.item_id, item['item_name'], item['rarity'],
-                item['condition'], item['is_stattrak'], item['float_value'], price,
-                item['image_url'])
+        try:
+            async with conn.transaction():
+                # Mark item as listed in inventory
+                await conn.execute(
+                    "UPDATE inventory SET status = 'listed' WHERE id = $1",
+                    req.item_id
+                )
+                listing_id = await conn.fetchval("""
+                    INSERT INTO market_listings
+                        (seller_id, item_id, item_name, rarity, condition,
+                         is_stattrak, float_value, price, image_url)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    RETURNING id
+                """, user_id, req.item_id, item['item_name'], item['rarity'],
+                    item['condition'], item['is_stattrak'], item['float_value'], price,
+                    item['image_url'])
+        except UniqueViolationError:
+            raise HTTPException(400, "Item is already listed")
 
     return {"success": True, "listing_id": listing_id, "price": price}
 
@@ -196,6 +202,14 @@ async def buy_listing(request: Request, listing_id: int):
         seller_cut = round(price * (1 - HOUSE_FEE), 2)
 
         async with conn.transaction():
+            # Lock & re-check listing is still active (race condition guard) before touching balances
+            still_active = await conn.fetchval(
+                "SELECT 1 FROM market_listings WHERE id = $1 AND status = 'active' FOR UPDATE",
+                listing_id
+            )
+            if not still_active:
+                raise HTTPException(400, "This listing was just purchased by someone else")
+
             # Check & deduct buyer balance
             deducted = await conn.fetchval("""
                 UPDATE users SET balance = balance - $1
@@ -204,14 +218,6 @@ async def buy_listing(request: Request, listing_id: int):
             """, price, user_id)
             if not deducted:
                 raise HTTPException(400, "Insufficient balance")
-
-            # Re-check listing is still active (race condition guard)
-            still_active = await conn.fetchval(
-                "SELECT 1 FROM market_listings WHERE id = $1 AND status = 'active' FOR UPDATE",
-                listing_id
-            )
-            if not still_active:
-                raise HTTPException(400, "This listing was just purchased by someone else")
 
             # Pay seller
             await conn.execute(
