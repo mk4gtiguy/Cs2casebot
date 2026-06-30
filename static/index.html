@@ -5889,15 +5889,58 @@ window.switchTab = function(tab) {
     }
 
     (async () => {
-        const inActivity = await initDiscordActivity();
-        await checkAuth();
-        // In the Activity, confirm that tap events reach JavaScript.
-        // Shows a one-time toast on the first tap so we know clicks work.
+        let inActivity = await initDiscordActivity();
+        let authed = await checkAuth();
+
+        // In the Activity, if checkAuth failed the session token is gone or expired.
+        // The login form's Discord/Google buttons don't work inside the Activity iframe
+        // (they redirect to external OAuth pages). Re-run the Activity auth flow instead.
+        if (!authed && inActivity) {
+            sessionStorage.removeItem('activity_token');
+            inActivity = await initDiscordActivity();
+            authed = await checkAuth();
+        }
+
+        // Tap diagnostic: add listeners for every pointer event type.
+        // Shows a center-screen indicator so it's visible above Discord's bottom nav bar.
         if (inActivity) {
-            document.addEventListener('touchstart', function _tapTest() {
-                document.removeEventListener('touchstart', _tapTest);
-                showToast('✅ Tap detected — clicks are working!', 'success');
-            }, { passive: true, once: true });
+            let tapCount = 0;
+            const _tapIndicator = document.createElement('div');
+            Object.assign(_tapIndicator.style, {
+                position: 'fixed', top: '50%', left: '50%',
+                transform: 'translate(-50%, -50%)',
+                background: 'rgba(0,200,0,0.95)', color: '#000',
+                padding: '20px 30px', borderRadius: '16px',
+                fontSize: '18px', fontWeight: 'bold',
+                zIndex: '9999999', pointerEvents: 'none',
+                textAlign: 'center', fontFamily: 'monospace',
+                display: 'none'
+            });
+            _tapIndicator.textContent = 'Tap anywhere!';
+            document.body.appendChild(_tapIndicator);
+
+            function _showTapIndicator(msg) {
+                _tapIndicator.style.display = 'block';
+                _tapIndicator.textContent = msg;
+                clearTimeout(_tapIndicator._t);
+                _tapIndicator._t = setTimeout(() => { _tapIndicator.style.display = 'none'; }, 3000);
+            }
+
+            if (!authed) {
+                // Auth failed even after retry — show persistent message
+                _tapIndicator.style.display = 'block';
+                _tapIndicator.textContent = '⚠️ Auth failed — open Activity again';
+            } else {
+                _showTapIndicator('✅ Logged in! Tap to test clicks');
+            }
+
+            ['touchstart', 'pointerdown', 'click'].forEach(type => {
+                window.addEventListener(type, function _tapTest(e) {
+                    tapCount++;
+                    window.removeEventListener(type, _tapTest, { capture: true });
+                    _showTapIndicator(`✅ ${type} #${tapCount} fired on ${e.target.tagName}`);
+                }, { capture: true, passive: true, once: true });
+            });
         }
     })();
 
