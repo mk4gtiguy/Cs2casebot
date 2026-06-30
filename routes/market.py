@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from typing import Optional
 from asyncpg.exceptions import UniqueViolationError
 
-from shared import get_db, get_user_id_from_session, convert_decimals, logger
+from shared import get_db, get_user_id_from_session, convert_decimals, logger, check_rate_limit, RATE_MARKET
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -118,6 +118,7 @@ async def get_listings(
 @router.post("/list")
 async def list_item(request: Request, req: ListingRequest):
     """List an inventory item for sale."""
+    await check_rate_limit(request, RATE_MARKET)
     user_id = await get_user_id_from_session(request)
     if not user_id:
         raise HTTPException(401, "Not authenticated")
@@ -174,6 +175,7 @@ async def list_item(request: Request, req: ListingRequest):
 @router.post("/buy/{listing_id}")
 async def buy_listing(request: Request, listing_id: int):
     """Purchase a market listing."""
+    await check_rate_limit(request, RATE_MARKET)
     user_id = await get_user_id_from_session(request)
     if not user_id:
         raise HTTPException(401, "Not authenticated")
