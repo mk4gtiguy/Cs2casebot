@@ -5769,64 +5769,79 @@ window.switchTab = function(tab) {
     console.log('🔧 FIXED: Discord IDs stored as strings (no truncation)');
     console.log('🔧 FIXED: Trade item IDs stored as strings (no truncation)');
 
-    // Discord Embedded App SDK — runs only when loaded inside a Discord Activity iframe.
-    // Discord's proxy may strip Set-Cookie response headers, so we use X-Activity-Token
-    // request headers (stored in sessionStorage) instead of cookies for Activity auth.
-    function _patchFetchForActivity(token) {
-        const _orig = window.fetch;
-        window.fetch = function(url, opts) {
-            opts = opts ? { ...opts } : {};
-            // Only inject header on same-origin API calls
-            const urlStr = typeof url === 'string' ? url : url.url || '';
-            if (urlStr.startsWith('/') || urlStr.startsWith(window.location.origin)) {
-                opts.headers = Object.assign({}, opts.headers, { 'X-Activity-Token': token });
-            }
-            return _orig.call(this, url, opts);
-        };
-        window._activityToken = token;
-    }
+    // Discord Embedded App SDK — runs only when inside a Discord Activity iframe.
+    //
+    // Key ordering constraint:
+    //   Before sdk.ready() → window.fetch is unpatched; relative URLs like /api/...
+    //   go directly to discordsays.com (no proxy) and 404. Use /.proxy/ prefix manually.
+    //   After sdk.ready()  → SDK patches window.fetch to prepend /.proxy/ automatically.
+    //
+    // Auth strategy: Discord's proxy may strip Set-Cookie, so we skip cookies entirely.
+    // We return the session token in the JSON body, store in sessionStorage, and inject
+    // it as X-Activity-Token on every API request. The server reads this header in
+    // get_user_id_from_session() before checking cookies.
 
     async function initDiscordActivity() {
-        // Detect Discord Activity by hostname (*.discordsays.com) or frame_id param
         const inActivity = window.location.hostname.endsWith('.discordsays.com') ||
                            new URLSearchParams(window.location.search).has('frame_id');
         if (!inActivity) return false;
 
-        // Re-use token from a previous page load in this Activity session
-        const stored = sessionStorage.getItem('activity_token');
-        if (stored) {
-            _patchFetchForActivity(stored);
-            console.log('♻️ Discord Activity: reusing stored session token');
-            return true;
-        }
-
         try {
-            const { DiscordSDK } = await import('https://esm.sh/@discord/embedded-app-sdk@1.6.0');
-            const cfgResp = await fetch('/api/discord-activity/config');
+            // Step 1: fetch config using /.proxy/ directly — SDK not loaded yet so
+            //         window.fetch is not patched and /api/... would 404.
+            const cfgResp = await fetch('/.proxy/api/discord-activity/config');
+            if (!cfgResp.ok) { console.error('Activity config fetch failed', cfgResp.status); return false; }
             const { client_id } = await cfgResp.json();
+
+            // Step 2: load and init SDK — sdk.ready() patches window.fetch globally
+            //         so all subsequent fetch('/api/...') calls go through /.proxy/.
+            const { DiscordSDK } = await import('https://esm.sh/@discord/embedded-app-sdk@1.6.0');
             const sdk = new DiscordSDK(client_id);
             window._discordSdk = sdk;
             await sdk.ready();
+
+            // Step 3: wrap the now-patched window.fetch to inject auth header on every call.
+            //         Must happen AFTER sdk.ready() so our wrapper calls the SDK-patched fetch.
+            const storedToken = sessionStorage.getItem('activity_token');
+            function _wrapFetchWithToken(token) {
+                const _sdkFetch = window.fetch;
+                window.fetch = function(url, opts) {
+                    opts = opts ? { ...opts } : {};
+                    opts.headers = Object.assign({}, opts.headers || {}, { 'X-Activity-Token': token });
+                    return _sdkFetch.call(this, url, opts);
+                };
+                window._activityToken = token;
+            }
+
+            if (storedToken) {
+                _wrapFetchWithToken(storedToken);
+                console.log('♻️ Discord Activity: reusing stored session');
+                return true;
+            }
+
+            // Step 4: authorize with Discord to get a code (SDK handles the OAuth popup).
             const { code } = await sdk.commands.authorize({
                 scope: ['identify'],
                 response_type: 'code',
                 prompt: 'none',
             });
+
+            // Step 5: exchange code for session token. fetch('/api/...') now works because
+            //         the SDK has patched it to use /.proxy/.
             const tokenResp = await fetch('/api/discord-activity/token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code }),
-                credentials: 'include',
             });
             if (!tokenResp.ok) {
-                console.error('Discord Activity token error:', tokenResp.status, await tokenResp.text());
+                console.error('Activity token exchange failed:', tokenResp.status, await tokenResp.text());
                 return false;
             }
             const data = await tokenResp.json();
             if (data.success && data.session_token) {
                 sessionStorage.setItem('activity_token', data.session_token);
-                _patchFetchForActivity(data.session_token);
-                console.log('✅ Discord Activity: authenticated as', data.username);
+                _wrapFetchWithToken(data.session_token);
+                console.log('✅ Discord Activity: signed in as', data.username);
                 return true;
             }
             return false;
