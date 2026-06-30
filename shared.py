@@ -64,8 +64,19 @@ async def get_db() -> asyncpg.Pool:
 
 async def init_db(database_url: str) -> asyncpg.Pool:
     """Initialize and return the global DB pool."""
+    import json as _json
     global db_pool
-    db_pool = await asyncpg.create_pool(database_url, min_size=2, max_size=20)
+
+    async def _init_conn(conn):
+        for pg_type in ('json', 'jsonb'):
+            await conn.set_type_codec(
+                pg_type,
+                encoder=_json.dumps,
+                decoder=_json.loads,
+                schema='pg_catalog',
+            )
+
+    db_pool = await asyncpg.create_pool(database_url, min_size=2, max_size=20, init=_init_conn)
     logger.info("✅ Database pool initialized")
     return db_pool
 
