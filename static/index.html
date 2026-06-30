@@ -21,6 +21,7 @@
             min-height: 100vh;
             padding: 20px;
             background-image: radial-gradient(ellipse at top, #1a1a2e 0%, #0a0a0f 70%);
+            touch-action: manipulation;
         }
         .container { max-width: 1200px; margin: 0 auto; }
         .header {
@@ -5795,7 +5796,8 @@ window.switchTab = function(tab) {
                     position:'fixed', top:'0', left:'0', right:'0', zIndex:'99999',
                     background:'#111', color:'#0f0', padding:'10px', fontSize:'12px',
                     fontFamily:'monospace', maxHeight:'45vh', overflowY:'auto',
-                    wordBreak:'break-all', borderBottom:'2px solid #0f0'
+                    wordBreak:'break-all', borderBottom:'2px solid #0f0',
+                    pointerEvents:'none'
                 });
                 document.body.appendChild(el);
             }
@@ -5843,6 +5845,7 @@ window.switchTab = function(tab) {
             if (storedToken) {
                 _wrapFetchWithToken(storedToken);
                 _dbg('Step 3 ✓ reusing stored session token');
+                setTimeout(() => { const el = document.getElementById('_actDbg'); if(el) el.remove(); }, 3000);
                 return true;
             }
 
@@ -5886,8 +5889,16 @@ window.switchTab = function(tab) {
     }
 
     (async () => {
-        await initDiscordActivity();
-        checkAuth();
+        const inActivity = await initDiscordActivity();
+        await checkAuth();
+        // In the Activity, confirm that tap events reach JavaScript.
+        // Shows a one-time toast on the first tap so we know clicks work.
+        if (inActivity) {
+            document.addEventListener('touchstart', function _tapTest() {
+                document.removeEventListener('touchstart', _tapTest);
+                showToast('✅ Tap detected — clicks are working!', 'success');
+            }, { passive: true, once: true });
+        }
     })();
 
     // Show post-payment success toast when redirected back from Stripe
