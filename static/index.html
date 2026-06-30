@@ -5791,6 +5791,11 @@ window.switchTab = function(tab) {
                 body: JSON.stringify({ code }),
                 credentials: 'include',
             });
+            if (!tokenResp.ok) {
+                const err = await tokenResp.text();
+                console.error('Discord Activity token error:', tokenResp.status, err);
+                return false;
+            }
             const data = await tokenResp.json();
             return data.success === true;
         } catch (e) {
