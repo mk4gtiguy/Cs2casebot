@@ -212,6 +212,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://cs2casebot.xyz"],
+    allow_origin_regex=r"https://[a-z0-9]+\.discordsays\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -223,18 +224,18 @@ app.add_middleware(PerUserRateLimitMiddleware, requests_per_second=10)
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://js.stripe.com https://static.cloudflareinsights.com; "
+        "script-src 'self' 'unsafe-inline' https://js.stripe.com https://static.cloudflareinsights.com https://esm.sh; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https://cdn.discordapp.com https://community.fastly.steamstatic.com https://*.steamstatic.com; "
-        "connect-src 'self' https://js.stripe.com https://static.cloudflareinsights.com https://cloudflareinsights.com; "
+        "connect-src 'self' https://js.stripe.com https://static.cloudflareinsights.com https://cloudflareinsights.com https://discord.com; "
         "frame-src https://js.stripe.com; "
+        "frame-ancestors 'self' https://*.discord.com https://*.discordsays.com; "
         "object-src 'none';"
     )
     return response
@@ -274,6 +275,78 @@ async def page_admin(request: Request):
     if not user_id or user_id not in ADMIN_USER_IDS:
         return RedirectResponse("/")
     return _html("static/admin.html")
+
+# ============================================================
+# DISCORD ACTIVITY ENDPOINTS
+# ============================================================
+
+@app.get("/api/discord-activity/config")
+async def discord_activity_config():
+    """Return the Discord client ID needed by the Embedded App SDK."""
+    return {"client_id": DISCORD_CLIENT_ID}
+
+
+@app.post("/api/discord-activity/token")
+async def discord_activity_token(request: Request):
+    """Exchange a Discord OAuth2 code (from the SDK) for an activity session cookie."""
+    body = await request.json()
+    code = body.get("code")
+    if not code:
+        raise HTTPException(400, "Missing code")
+
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            "https://discord.com/api/oauth2/token",
+            data={
+                "client_id":     DISCORD_CLIENT_ID,
+                "client_secret": DISCORD_CLIENT_SECRET,
+                "grant_type":    "authorization_code",
+                "code":          code,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if token_resp.status_code != 200:
+            raise HTTPException(400, "Failed to exchange Discord code")
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(400, "No access token from Discord")
+
+        user_resp = await client.get(
+            "https://discord.com/api/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if user_resp.status_code != 200:
+            raise HTTPException(400, "Failed to fetch Discord user")
+        discord_user = user_resp.json()
+
+    discord_id       = int(discord_user["id"])
+    username         = discord_user.get("global_name") or discord_user.get("username", f"User{discord_id}")
+    avatar_hash      = discord_user.get("avatar")
+    avatar_url       = (
+        f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.png"
+        if avatar_hash else
+        f"https://cdn.discordapp.com/embed/avatars/{discord_id % 5}.png"
+    )
+
+    from shared import ensure_user_exists, create_session
+    pool = await shared.get_db()
+    async with pool.acquire() as conn:
+        await ensure_user_exists(conn, discord_id, username, avatar_url)
+
+    session_token = secrets.token_urlsafe(32)
+    shared.create_session(session_token, {"user_id": discord_id, "username": username})
+
+    resp = JSONResponse({"success": True, "username": username})
+    resp.set_cookie(
+        "activity_session",
+        session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=86400 * 7,
+    )
+    return resp
 
 # ============================================================
 # STATIC FILES

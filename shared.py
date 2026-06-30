@@ -213,19 +213,21 @@ def clean_expired_sessions():
         _sessions_fallback.pop(k, None)
 
 async def get_user_id_from_session(request: Request) -> Optional[int]:
-    session_token = request.cookies.get("session_token")
-    if not session_token:
-        return None
-    data = get_session(session_token)
-    if not data:
-        return None
-    uid = data.get("user_id")
-    if uid is None:
-        return None
-    try:
-        return int(uid)   # always int — handles both str and int stored values
-    except (ValueError, TypeError):
-        return None
+    for cookie_name in ("session_token", "activity_session"):
+        token = request.cookies.get(cookie_name)
+        if not token:
+            continue
+        data = get_session(token)
+        if not data:
+            continue
+        uid = data.get("user_id")
+        if uid is None:
+            continue
+        try:
+            return int(uid)
+        except (ValueError, TypeError):
+            continue
+    return None
 
 async def require_auth(request: Request) -> int:
     user_id = await get_user_id_from_session(request)
