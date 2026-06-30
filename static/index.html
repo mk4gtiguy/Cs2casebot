@@ -5850,6 +5850,7 @@ window.switchTab = function(tab) {
             // No prompt:'none' so Discord can show consent UI for first-time users.
             _dbg('Step 4: calling sdk.commands.authorize()...');
             const { code } = await sdk.commands.authorize({
+                client_id: client_id,
                 scope: ['identify'],
                 response_type: 'code',
             });
