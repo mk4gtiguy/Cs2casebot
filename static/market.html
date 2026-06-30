@@ -896,7 +896,7 @@ async function loadInventory() {
     if (res.status===401) { grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:30px;grid-column:1/-1;text-align:center">Please log in to see your inventory.</div>'; return; }
     const data = await res.json();
     const items = Array.isArray(data.items) ? data.items : (Array.isArray(data) ? data : []);
-    invItems = items.filter(i => i.item_type !== 'sticker');
+    invItems = items.filter(i => i.status === 'kept');
     if (!invItems.length) {
       grid.innerHTML = '<div style="color:var(--text-dim);font-size:13px;padding:30px;grid-column:1/-1;text-align:center">No items available to list.</div>';
       return;
