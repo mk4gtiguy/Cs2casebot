@@ -17,6 +17,39 @@ from typing import Optional, Dict, List, Set, Any, Tuple
 from fastapi import HTTPException, Request
 import asyncpg
 
+# ── Per-user sliding-window rate limiter ─────────────────────
+from collections import defaultdict, deque
+
+class _SlidingWindowLimiter:
+    """In-memory per-key sliding window rate limiter (asyncio-safe, no locks needed)."""
+    def __init__(self, max_calls: int, period: float):
+        self.max_calls = max_calls
+        self.period = period
+        self._windows: dict = defaultdict(deque)
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.monotonic()
+        cutoff = now - self.period
+        dq = self._windows[key]
+        while dq and dq[0] <= cutoff:
+            dq.popleft()
+        if len(dq) >= self.max_calls:
+            return False
+        dq.append(now)
+        return True
+
+# Tiers: adjust numbers here to tune without touching endpoint code
+RATE_CASE   = _SlidingWindowLimiter(max_calls=30, period=60.0)  # case/sticker opens
+RATE_MARKET = _SlidingWindowLimiter(max_calls=20, period=60.0)  # market list/buy
+RATE_WRITE  = _SlidingWindowLimiter(max_calls=30, period=60.0)  # sell/trade/upgrade
+
+async def check_rate_limit(request: "Request", limiter: _SlidingWindowLimiter) -> None:
+    """Raise 429 if the authenticated user (or IP) exceeds the limiter's quota."""
+    uid = await get_user_id_from_session(request)
+    key = str(uid) if uid else (request.client.host if request.client else "anon")
+    if not limiter.is_allowed(key):
+        raise HTTPException(status_code=429, detail="Too many requests — please slow down")
+
 # ── Secure RNG helpers (Fix 1) ───────────────────────────────
 _sysrandom = random.SystemRandom()   # CSPRNG-backed drop-in for random.*
 

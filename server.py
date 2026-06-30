@@ -61,6 +61,7 @@ from shared import (
     WEAPON_BASE_VALUES, STICKER_VALUES, get_db, init_db, ensure_bot_users,
     SLOT_SYMBOLS, SLOT_PAYOUTS,
     ADMIN_USER_IDS, MODERATOR_USER_IDS, ALL_ITEMS_BY_RARITY,
+    check_rate_limit, RATE_CASE, RATE_MARKET, RATE_WRITE,
 )
 
 # ─── Populate admin / moderator sets from env ────────────────
@@ -1964,6 +1965,7 @@ class OpenCaseRequest(BaseModel):
 
 @app.post("/api/open-case")
 async def open_case(req: OpenCaseRequest, request: Request):
+    await check_rate_limit(request, RATE_CASE)
     user_id = await require_auth(request)
     case = CASES.get(req.case_id)
     if not case:
@@ -2094,6 +2096,7 @@ async def open_case(req: OpenCaseRequest, request: Request):
 # ─── STICKER CAPSULE ──────────────────────────────────────────────
 @app.post("/api/sticker")
 async def open_sticker(request: Request):
+    await check_rate_limit(request, RATE_CASE)
     body = await request.json()
     user_id = await require_auth(request)
     capsule_id = body.get("capsule")
@@ -2146,6 +2149,7 @@ async def open_sticker(request: Request):
 
 @app.post("/api/sell-item")
 async def sell_item(request: Request):
+    await check_rate_limit(request, RATE_WRITE)
     body     = await request.json()
     user_id  = await require_auth(request)
     item_id  = body.get("item_id")
@@ -2272,6 +2276,7 @@ class TradeRequest(BaseModel):
 
 @app.post("/api/quick-trade")
 async def quick_trade(req: TradeRequest, request: Request):
+    await check_rate_limit(request, RATE_WRITE)
     user_id = await require_auth(request)
     rarity_config = {
         "Blue":   {"count": 10, "next": "Purple"},
@@ -2363,6 +2368,7 @@ async def quick_trade(req: TradeRequest, request: Request):
 # ============================================================
 @app.post("/api/skin-upgrade")
 async def skin_upgrade_endpoint(request: Request):
+    await check_rate_limit(request, RATE_WRITE)
     body = await request.json()
     try:
         user_id = await require_auth(request)
@@ -2861,7 +2867,7 @@ async def get_quests_alias(request: Request):
 # ─── TICKET PURCHASE — now handled by /api/tickets/buy (routes/premium.py) ──
 @app.post("/api/buy-tickets")
 async def buy_tickets_legacy(request: Request):
-    """Legacy alias — redirects to new ticket store."""
+    await check_rate_limit(request, RATE_WRITE)
     from routes.premium import tickets_buy, BuyPackBody
     body = await request.json()
     pack_id = body.get("pack_id", "")
