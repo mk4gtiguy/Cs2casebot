@@ -5769,10 +5769,37 @@ window.switchTab = function(tab) {
     console.log('🔧 FIXED: Discord IDs stored as strings (no truncation)');
     console.log('🔧 FIXED: Trade item IDs stored as strings (no truncation)');
 
-    // Discord Embedded App SDK — runs only when loaded inside a Discord Activity iframe
+    // Discord Embedded App SDK — runs only when loaded inside a Discord Activity iframe.
+    // Discord's proxy may strip Set-Cookie response headers, so we use X-Activity-Token
+    // request headers (stored in sessionStorage) instead of cookies for Activity auth.
+    function _patchFetchForActivity(token) {
+        const _orig = window.fetch;
+        window.fetch = function(url, opts) {
+            opts = opts ? { ...opts } : {};
+            // Only inject header on same-origin API calls
+            const urlStr = typeof url === 'string' ? url : url.url || '';
+            if (urlStr.startsWith('/') || urlStr.startsWith(window.location.origin)) {
+                opts.headers = Object.assign({}, opts.headers, { 'X-Activity-Token': token });
+            }
+            return _orig.call(this, url, opts);
+        };
+        window._activityToken = token;
+    }
+
     async function initDiscordActivity() {
-        // Discord injects frame_id into the URL when launching an Activity
-        if (!new URLSearchParams(window.location.search).has('frame_id')) return false;
+        // Detect Discord Activity by hostname (*.discordsays.com) or frame_id param
+        const inActivity = window.location.hostname.endsWith('.discordsays.com') ||
+                           new URLSearchParams(window.location.search).has('frame_id');
+        if (!inActivity) return false;
+
+        // Re-use token from a previous page load in this Activity session
+        const stored = sessionStorage.getItem('activity_token');
+        if (stored) {
+            _patchFetchForActivity(stored);
+            console.log('♻️ Discord Activity: reusing stored session token');
+            return true;
+        }
+
         try {
             const { DiscordSDK } = await import('https://esm.sh/@discord/embedded-app-sdk@1.6.0');
             const cfgResp = await fetch('/api/discord-activity/config');
@@ -5792,12 +5819,17 @@ window.switchTab = function(tab) {
                 credentials: 'include',
             });
             if (!tokenResp.ok) {
-                const err = await tokenResp.text();
-                console.error('Discord Activity token error:', tokenResp.status, err);
+                console.error('Discord Activity token error:', tokenResp.status, await tokenResp.text());
                 return false;
             }
             const data = await tokenResp.json();
-            return data.success === true;
+            if (data.success && data.session_token) {
+                sessionStorage.setItem('activity_token', data.session_token);
+                _patchFetchForActivity(data.session_token);
+                console.log('✅ Discord Activity: authenticated as', data.username);
+                return true;
+            }
+            return false;
         } catch (e) {
             console.error('Discord Activity init failed:', e);
             return false;
