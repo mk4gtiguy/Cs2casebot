@@ -5787,27 +5787,6 @@ window.switchTab = function(tab) {
                            new URLSearchParams(window.location.search).has('frame_id');
         if (!inActivity) return false;
 
-        // Debug overlay — visible inside the Activity so we can see exactly which step fails.
-        function _dbg(msg, isError) {
-            let el = document.getElementById('_actDbg');
-            if (!el) {
-                el = Object.assign(document.createElement('div'), { id: '_actDbg' });
-                Object.assign(el.style, {
-                    position:'fixed', top:'0', left:'0', right:'0', zIndex:'99999',
-                    background:'#111', color:'#0f0', padding:'10px', fontSize:'12px',
-                    fontFamily:'monospace', maxHeight:'45vh', overflowY:'auto',
-                    wordBreak:'break-all', borderBottom:'2px solid #0f0',
-                    pointerEvents:'none'
-                });
-                document.body.appendChild(el);
-            }
-            if (isError) el.style.color = '#f55';
-            el.innerHTML += `<div>${msg}</div>`;
-            console.log('[Activity]', msg);
-        }
-
-        _dbg('🎮 Detected Discord Activity');
-
         function _wrapFetchWithToken(token) {
             const _base = window.fetch;
             window.fetch = function(url, opts) {
@@ -5819,70 +5798,45 @@ window.switchTab = function(tab) {
         }
 
         try {
-            // Step 1: fetch config using /.proxy/ prefix — SDK hasn't patched fetch yet.
-            _dbg('Step 1: fetching config...');
             const cfgResp = await fetch('/.proxy/api/discord-activity/config');
-            if (!cfgResp.ok) { _dbg(`Config failed: HTTP ${cfgResp.status}`, true); return false; }
+            if (!cfgResp.ok) return false;
             const { client_id } = await cfgResp.json();
-            _dbg(`Step 1 ✓ client_id=${client_id ? client_id.slice(0,6)+'…' : '❌EMPTY'}`);
-            if (!client_id) { _dbg('DISCORD_CLIENT_ID env var not set on server!', true); return false; }
+            if (!client_id) return false;
 
-            // Step 2: load SDK and call ready() — this patches window.fetch to add /.proxy/.
-            _dbg('Step 2: importing SDK...');
             const { DiscordSDK } = await import('/static/js/discord-sdk/index.mjs');
-            _dbg('Step 2a ✓ SDK imported');
             const sdk = new DiscordSDK(client_id);
             window._discordSdk = sdk;
-            _dbg('Step 2b: calling sdk.ready()...');
             await Promise.race([
                 sdk.ready(),
-                new Promise((_, rej) => setTimeout(() => rej(new Error('sdk.ready() timed out after 15s')), 15000))
+                new Promise((_, rej) => setTimeout(() => rej(new Error('sdk.ready() timed out')), 15000))
             ]);
-            _dbg('Step 2b ✓ sdk.ready() complete');
 
-            // Step 3: wrap patched fetch to also inject auth header.
             const storedToken = sessionStorage.getItem('activity_token');
             if (storedToken) {
                 _wrapFetchWithToken(storedToken);
-                _dbg('Step 3 ✓ reusing stored session token');
-                setTimeout(() => { const el = document.getElementById('_actDbg'); if(el) el.remove(); }, 3000);
                 return true;
             }
 
-            // Step 4: authorize — Discord handles OAuth silently inside the Activity.
-            // No prompt:'none' so Discord can show consent UI for first-time users.
-            _dbg('Step 4: calling sdk.commands.authorize()...');
             const { code } = await sdk.commands.authorize({
                 client_id: client_id,
                 scope: ['identify'],
                 response_type: 'code',
             });
-            _dbg(`Step 4 ✓ got code=${code ? '…'+code.slice(-6) : '❌NULL'}`);
 
-            // Step 5: exchange code for session token.
-            _dbg('Step 5: exchanging code for session token...');
             const tokenResp = await fetch('/api/discord-activity/token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code }),
             });
-            if (!tokenResp.ok) {
-                const errText = await tokenResp.text();
-                _dbg(`Step 5 ❌ HTTP ${tokenResp.status}: ${errText}`, true);
-                return false;
-            }
+            if (!tokenResp.ok) return false;
             const data = await tokenResp.json();
             if (data.success && data.session_token) {
                 sessionStorage.setItem('activity_token', data.session_token);
                 _wrapFetchWithToken(data.session_token);
-                _dbg(`Step 5 ✓ signed in as ${data.username} 🎉`);
-                setTimeout(() => { const el = document.getElementById('_actDbg'); if(el) el.remove(); }, 3000);
                 return true;
             }
-            _dbg('Step 5 ❌ no session_token in response: ' + JSON.stringify(data), true);
             return false;
         } catch (e) {
-            _dbg('❌ EXCEPTION: ' + (e && (e.message || String(e))), true);
             console.error('Discord Activity init failed:', e);
             return false;
         }
@@ -5892,55 +5846,12 @@ window.switchTab = function(tab) {
         let inActivity = await initDiscordActivity();
         let authed = await checkAuth();
 
-        // In the Activity, if checkAuth failed the session token is gone or expired.
-        // The login form's Discord/Google buttons don't work inside the Activity iframe
-        // (they redirect to external OAuth pages). Re-run the Activity auth flow instead.
+        // If checkAuth fails in Activity context, the login form's OAuth buttons redirect
+        // to external pages that don't work inside the Activity iframe. Re-run Activity auth.
         if (!authed && inActivity) {
             sessionStorage.removeItem('activity_token');
             inActivity = await initDiscordActivity();
             authed = await checkAuth();
-        }
-
-        // Tap diagnostic: add listeners for every pointer event type.
-        // Shows a center-screen indicator so it's visible above Discord's bottom nav bar.
-        if (inActivity) {
-            let tapCount = 0;
-            const _tapIndicator = document.createElement('div');
-            Object.assign(_tapIndicator.style, {
-                position: 'fixed', top: '50%', left: '50%',
-                transform: 'translate(-50%, -50%)',
-                background: 'rgba(0,200,0,0.95)', color: '#000',
-                padding: '20px 30px', borderRadius: '16px',
-                fontSize: '18px', fontWeight: 'bold',
-                zIndex: '9999999', pointerEvents: 'none',
-                textAlign: 'center', fontFamily: 'monospace',
-                display: 'none'
-            });
-            _tapIndicator.textContent = 'Tap anywhere!';
-            document.body.appendChild(_tapIndicator);
-
-            function _showTapIndicator(msg) {
-                _tapIndicator.style.display = 'block';
-                _tapIndicator.textContent = msg;
-                clearTimeout(_tapIndicator._t);
-                _tapIndicator._t = setTimeout(() => { _tapIndicator.style.display = 'none'; }, 3000);
-            }
-
-            if (!authed) {
-                // Auth failed even after retry — show persistent message
-                _tapIndicator.style.display = 'block';
-                _tapIndicator.textContent = '⚠️ Auth failed — open Activity again';
-            } else {
-                _showTapIndicator('✅ Logged in! Tap to test clicks');
-            }
-
-            ['touchstart', 'pointerdown', 'click'].forEach(type => {
-                window.addEventListener(type, function _tapTest(e) {
-                    tapCount++;
-                    window.removeEventListener(type, _tapTest, { capture: true });
-                    _showTapIndicator(`✅ ${type} #${tapCount} fired on ${e.target.tagName}`);
-                }, { capture: true, passive: true, once: true });
-            });
         }
     })();
 
