@@ -1449,7 +1449,7 @@ async def apply_sticker(weapon_id: int, request: Request):
             })
             await conn.execute(
                 "UPDATE inventory SET applied_stickers=$1 WHERE id=$2",
-                _json.dumps(current), weapon_id
+                current, weapon_id
             )
             # Consume the sticker
             await conn.execute("UPDATE inventory SET status='sold' WHERE id=$1", sticker_id)
@@ -1474,7 +1474,7 @@ async def remove_sticker(weapon_id: int, slot: int, request: Request):
             updated = [s for s in current if s.get("slot") != slot]
             await conn.execute(
                 "UPDATE inventory SET applied_stickers=$1 WHERE id=$2",
-                _json.dumps(updated), weapon_id
+                updated, weapon_id
             )
     return {"success": True, "applied_stickers": updated}
 
