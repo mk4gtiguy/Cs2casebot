@@ -5786,66 +5786,99 @@ window.switchTab = function(tab) {
                            new URLSearchParams(window.location.search).has('frame_id');
         if (!inActivity) return false;
 
-        try {
-            // Step 1: fetch config using /.proxy/ directly — SDK not loaded yet so
-            //         window.fetch is not patched and /api/... would 404.
-            const cfgResp = await fetch('/.proxy/api/discord-activity/config');
-            if (!cfgResp.ok) { console.error('Activity config fetch failed', cfgResp.status); return false; }
-            const { client_id } = await cfgResp.json();
+        // Debug overlay — visible inside the Activity so we can see exactly which step fails.
+        function _dbg(msg, isError) {
+            let el = document.getElementById('_actDbg');
+            if (!el) {
+                el = Object.assign(document.createElement('div'), { id: '_actDbg' });
+                Object.assign(el.style, {
+                    position:'fixed', top:'0', left:'0', right:'0', zIndex:'99999',
+                    background:'#111', color:'#0f0', padding:'10px', fontSize:'12px',
+                    fontFamily:'monospace', maxHeight:'45vh', overflowY:'auto',
+                    wordBreak:'break-all', borderBottom:'2px solid #0f0'
+                });
+                document.body.appendChild(el);
+            }
+            if (isError) el.style.color = '#f55';
+            el.innerHTML += `<div>${msg}</div>`;
+            console.log('[Activity]', msg);
+        }
 
-            // Step 2: load and init SDK — sdk.ready() patches window.fetch globally
-            //         so all subsequent fetch('/api/...') calls go through /.proxy/.
-            const { DiscordSDK } = await import('https://esm.sh/@discord/embedded-app-sdk@1.6.0');
+        _dbg('🎮 Detected Discord Activity');
+
+        function _wrapFetchWithToken(token) {
+            const _base = window.fetch;
+            window.fetch = function(url, opts) {
+                opts = opts ? { ...opts } : {};
+                opts.headers = Object.assign({}, opts.headers || {}, { 'X-Activity-Token': token });
+                return _base.call(this, url, opts);
+            };
+            window._activityToken = token;
+        }
+
+        try {
+            // Step 1: fetch config using /.proxy/ prefix — SDK hasn't patched fetch yet.
+            _dbg('Step 1: fetching config...');
+            const cfgResp = await fetch('/.proxy/api/discord-activity/config');
+            if (!cfgResp.ok) { _dbg(`Config failed: HTTP ${cfgResp.status}`, true); return false; }
+            const { client_id } = await cfgResp.json();
+            _dbg(`Step 1 ✓ client_id=${client_id ? client_id.slice(0,6)+'…' : '❌EMPTY'}`);
+            if (!client_id) { _dbg('DISCORD_CLIENT_ID env var not set on server!', true); return false; }
+
+            // Step 2: load SDK and call ready() — this patches window.fetch to add /.proxy/.
+            _dbg('Step 2: importing SDK...');
+            const { DiscordSDK } = await import('/static/js/discord-sdk/index.mjs');
+            _dbg('Step 2a ✓ SDK imported');
             const sdk = new DiscordSDK(client_id);
             window._discordSdk = sdk;
-            await sdk.ready();
+            _dbg('Step 2b: calling sdk.ready()...');
+            await Promise.race([
+                sdk.ready(),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('sdk.ready() timed out after 15s')), 15000))
+            ]);
+            _dbg('Step 2b ✓ sdk.ready() complete');
 
-            // Step 3: wrap the now-patched window.fetch to inject auth header on every call.
-            //         Must happen AFTER sdk.ready() so our wrapper calls the SDK-patched fetch.
+            // Step 3: wrap patched fetch to also inject auth header.
             const storedToken = sessionStorage.getItem('activity_token');
-            function _wrapFetchWithToken(token) {
-                const _sdkFetch = window.fetch;
-                window.fetch = function(url, opts) {
-                    opts = opts ? { ...opts } : {};
-                    opts.headers = Object.assign({}, opts.headers || {}, { 'X-Activity-Token': token });
-                    return _sdkFetch.call(this, url, opts);
-                };
-                window._activityToken = token;
-            }
-
             if (storedToken) {
                 _wrapFetchWithToken(storedToken);
-                console.log('♻️ Discord Activity: reusing stored session');
+                _dbg('Step 3 ✓ reusing stored session token');
                 return true;
             }
 
-            // Step 4: authorize with Discord to get a code (SDK handles the OAuth popup).
+            // Step 4: authorize — Discord handles OAuth silently inside the Activity.
+            // No prompt:'none' so Discord can show consent UI for first-time users.
+            _dbg('Step 4: calling sdk.commands.authorize()...');
             const { code } = await sdk.commands.authorize({
                 scope: ['identify'],
                 response_type: 'code',
-                prompt: 'none',
             });
+            _dbg(`Step 4 ✓ got code=${code ? '…'+code.slice(-6) : '❌NULL'}`);
 
-            // Step 5: exchange code for session token. fetch('/api/...') now works because
-            //         the SDK has patched it to use /.proxy/.
+            // Step 5: exchange code for session token.
+            _dbg('Step 5: exchanging code for session token...');
             const tokenResp = await fetch('/api/discord-activity/token', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ code }),
             });
             if (!tokenResp.ok) {
-                console.error('Activity token exchange failed:', tokenResp.status, await tokenResp.text());
+                const errText = await tokenResp.text();
+                _dbg(`Step 5 ❌ HTTP ${tokenResp.status}: ${errText}`, true);
                 return false;
             }
             const data = await tokenResp.json();
             if (data.success && data.session_token) {
                 sessionStorage.setItem('activity_token', data.session_token);
                 _wrapFetchWithToken(data.session_token);
-                console.log('✅ Discord Activity: signed in as', data.username);
+                _dbg(`Step 5 ✓ signed in as ${data.username} 🎉`);
+                setTimeout(() => { const el = document.getElementById('_actDbg'); if(el) el.remove(); }, 3000);
                 return true;
             }
+            _dbg('Step 5 ❌ no session_token in response: ' + JSON.stringify(data), true);
             return false;
         } catch (e) {
+            _dbg('❌ EXCEPTION: ' + (e && (e.message || String(e))), true);
             console.error('Discord Activity init failed:', e);
             return false;
         }
