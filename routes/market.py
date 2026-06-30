@@ -141,9 +141,6 @@ async def list_item(request: Request, req: ListingRequest):
             raise HTTPException(404, "Item not found")
         if item['status'] != 'kept':
             raise HTTPException(400, "Item is not available for listing")
-        if (item['item_type'] or '').lower() == 'sticker':
-            raise HTTPException(400, "Stickers cannot be listed on the market")
-
         # Check not already listed
         existing = await conn.fetchval(
             "SELECT 1 FROM market_listings WHERE item_id = $1 AND status = 'active'",
