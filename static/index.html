@@ -5853,6 +5853,40 @@ window.switchTab = function(tab) {
             inActivity = await initDiscordActivity();
             authed = await checkAuth();
         }
+
+        if (inActivity) {
+            // Bubble-phase listener: fires AFTER onclick handlers, so we can see if clicks
+            // reach buttons at all. Shows what element was tapped and if onclick ran.
+            const _dbgEl = document.createElement('div');
+            Object.assign(_dbgEl.style, {
+                position: 'fixed', bottom: '80px', left: '10px', right: '10px',
+                background: 'rgba(0,0,0,0.9)', color: '#0f0', padding: '8px 12px',
+                fontSize: '13px', fontFamily: 'monospace', borderRadius: '8px',
+                zIndex: '9999999', pointerEvents: 'none', display: 'none',
+                border: '1px solid #0f0', wordBreak: 'break-all'
+            });
+            document.body.appendChild(_dbgEl);
+            function _dbgShow(msg) {
+                _dbgEl.textContent = msg;
+                _dbgEl.style.display = 'block';
+                clearTimeout(_dbgEl._t);
+                _dbgEl._t = setTimeout(() => { _dbgEl.style.display = 'none'; }, 4000);
+            }
+
+            window.onerror = function(msg, src, line) {
+                _dbgShow('JS ERROR: ' + msg + ' (line ' + line + ')');
+                return false;
+            };
+
+            document.body.addEventListener('click', function(e) {
+                const el = e.target;
+                const tag = el.tagName;
+                const oc = (el.getAttribute('onclick') || '').slice(0, 40);
+                const dis = el.disabled ? ' [DISABLED]' : '';
+                const pe = getComputedStyle(el).pointerEvents;
+                _dbgShow(`CLICK: <${tag}${dis}> onclick="${oc}" pointer-events:${pe}`);
+            }, { capture: false }); // bubble phase — runs AFTER onclick
+        }
     })();
 
     // Show post-payment success toast when redirected back from Stripe
