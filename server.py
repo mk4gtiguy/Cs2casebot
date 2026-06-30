@@ -302,10 +302,12 @@ async def discord_activity_token(request: Request):
                 "client_secret": DISCORD_CLIENT_SECRET,
                 "grant_type":    "authorization_code",
                 "code":          code,
+                # No redirect_uri — the Embedded App SDK handles auth internally
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         if token_resp.status_code != 200:
+            logger.error(f"Discord Activity token exchange failed: {token_resp.status_code} {token_resp.text}")
             raise HTTPException(400, "Failed to exchange Discord code")
         token_data = token_resp.json()
         access_token = token_data.get("access_token")
@@ -320,22 +322,33 @@ async def discord_activity_token(request: Request):
             raise HTTPException(400, "Failed to fetch Discord user")
         discord_user = user_resp.json()
 
-    discord_id       = int(discord_user["id"])
-    username         = discord_user.get("global_name") or discord_user.get("username", f"User{discord_id}")
-    avatar_hash      = discord_user.get("avatar")
-    avatar_url       = (
+    discord_id  = int(discord_user["id"])
+    username    = discord_user.get("global_name") or discord_user.get("username", f"User{discord_id}")
+    avatar_hash = discord_user.get("avatar")
+    avatar_url  = (
         f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.png"
         if avatar_hash else
         f"https://cdn.discordapp.com/embed/avatars/{discord_id % 5}.png"
     )
 
-    from shared import ensure_user_exists, create_session
-    pool = await shared.get_db()
+    pool = await get_db()
     async with pool.acquire() as conn:
-        await ensure_user_exists(conn, discord_id, username, avatar_url)
+        await conn.execute("""
+            INSERT INTO users (user_id, username, balance, avatar_url, primary_provider, created_at, updated_at)
+            VALUES ($1, $2, 1000, $3, 'discord', NOW(), NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET username=$2, avatar_url=COALESCE($3, users.avatar_url), updated_at=NOW()
+        """, discord_id, username, avatar_url)
 
     session_token = secrets.token_urlsafe(32)
-    shared.create_session(session_token, {"user_id": discord_id, "username": username})
+    shared.create_session(session_token, {
+        "user_id":          discord_id,
+        "username":         username,
+        "avatar":           avatar_hash,
+        "avatar_url":       avatar_url,
+        "primary_provider": "discord",
+        "created_at":       datetime.now().isoformat(),
+    })
 
     resp = JSONResponse({"success": True, "username": username})
     resp.set_cookie(
