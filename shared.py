@@ -213,8 +213,10 @@ def clean_expired_sessions():
         _sessions_fallback.pop(k, None)
 
 async def get_user_id_from_session(request: Request) -> Optional[int]:
-    for cookie_name in ("session_token", "activity_session"):
-        token = request.cookies.get(cookie_name)
+    # Discord Activity proxy may strip Set-Cookie headers; clients send token as header instead
+    candidates = [request.headers.get("X-Activity-Token")]
+    candidates += [request.cookies.get(n) for n in ("session_token", "activity_session")]
+    for token in candidates:
         if not token:
             continue
         data = get_session(token)

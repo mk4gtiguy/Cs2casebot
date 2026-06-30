@@ -350,7 +350,9 @@ async def discord_activity_token(request: Request):
         "created_at":       datetime.now().isoformat(),
     })
 
-    resp = JSONResponse({"success": True, "username": username})
+    # Return token in body — Discord's proxy may strip Set-Cookie headers,
+    # so the frontend uses X-Activity-Token header auth instead of cookies.
+    resp = JSONResponse({"success": True, "username": username, "session_token": session_token})
     resp.set_cookie(
         "activity_session",
         session_token,
