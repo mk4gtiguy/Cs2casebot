@@ -5769,7 +5769,40 @@ window.switchTab = function(tab) {
     console.log('🔧 FIXED: Discord IDs stored as strings (no truncation)');
     console.log('🔧 FIXED: Trade item IDs stored as strings (no truncation)');
 
-    checkAuth();
+    // Discord Embedded App SDK — runs only when loaded inside a Discord Activity iframe
+    async function initDiscordActivity() {
+        // Discord injects frame_id into the URL when launching an Activity
+        if (!new URLSearchParams(window.location.search).has('frame_id')) return false;
+        try {
+            const { DiscordSDK } = await import('https://esm.sh/@discord/embedded-app-sdk@1.6.0');
+            const cfgResp = await fetch('/api/discord-activity/config');
+            const { client_id } = await cfgResp.json();
+            const sdk = new DiscordSDK(client_id);
+            window._discordSdk = sdk;
+            await sdk.ready();
+            const { code } = await sdk.commands.authorize({
+                scope: ['identify'],
+                response_type: 'code',
+                prompt: 'none',
+            });
+            const tokenResp = await fetch('/api/discord-activity/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code }),
+                credentials: 'include',
+            });
+            const data = await tokenResp.json();
+            return data.success === true;
+        } catch (e) {
+            console.error('Discord Activity init failed:', e);
+            return false;
+        }
+    }
+
+    (async () => {
+        await initDiscordActivity();
+        checkAuth();
+    })();
 
     // Show post-payment success toast when redirected back from Stripe
     (function() {
