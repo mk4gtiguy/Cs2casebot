@@ -229,11 +229,11 @@ async def security_headers(request: Request, call_next):
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://js.stripe.com https://static.cloudflareinsights.com https://esm.sh; "
+        "script-src 'self' 'unsafe-inline' https://js.stripe.com https://static.cloudflareinsights.com; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data: blob: https://cdn.discordapp.com https://community.fastly.steamstatic.com https://*.steamstatic.com; "
-        "connect-src 'self' https://js.stripe.com https://static.cloudflareinsights.com https://cloudflareinsights.com https://discord.com; "
+        "connect-src 'self' https://js.stripe.com https://static.cloudflareinsights.com https://cloudflareinsights.com https://discord.com wss://discord.com https://cdn.discordapp.com; "
         "frame-src https://js.stripe.com; "
         "frame-ancestors 'self' https://*.discord.com https://*.discordsays.com; "
         "object-src 'none';"
@@ -379,6 +379,16 @@ def _html(path: str) -> HTMLResponse:
         with open(path, encoding="utf-8") as f:
             return HTMLResponse(f.read())
     return HTMLResponse("<h1>Page not found</h1>", status_code=404)
+
+@app.get("/manifest.json", include_in_schema=False)
+async def pwa_manifest():
+    return FileResponse("static/manifest.json", media_type="application/manifest+json")
+
+@app.get("/sw.js", include_in_schema=False)
+async def pwa_service_worker():
+    resp = FileResponse("static/sw.js", media_type="application/javascript")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 @app.get("/",              include_in_schema=False)
 async def page_index():        return _html("static/index.html")
