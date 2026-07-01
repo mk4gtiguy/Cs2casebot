@@ -134,6 +134,8 @@ body{background-image:radial-gradient(ellipse 80% 40% at 30% 50%,rgba(59,130,246
     <div class="bac-result idle" id="bacResult">BET ON PLAYER, BANKER, OR TIE</div>
   </div>
 
+  <div id="roadMapRow" style="display:flex;gap:4px;flex-wrap:wrap;padding:10px 4px 4px;min-height:28px;"></div>
+
   <div class="bet-btns">
     <div class="bbb player-btn" onclick="setBetOn('player')">
       <div class="bb-icon">🔵</div><div class="bb-name">PLAYER</div><div class="bb-odds">1:1 PAYOUT</div>
@@ -183,6 +185,7 @@ body{background-image:radial-gradient(ellipse 80% 40% at 30% 50%,rgba(59,130,246
 <script>
 const RED=['♥','♦'];
 let betOn=null,pPair=false,bPair=false,balance=0,dealing=false,wins=0,losses=0,ties=0,profit=0,hrConfirmed=false;
+let roadMap=[];
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}}
 function showHighRollerConfirm(){
   api('/api/tickets/balance').then(d=>{document.getElementById('hrTicketCount').textContent=d.tickets??'?';}).catch(()=>{});
@@ -236,6 +239,7 @@ async function deal(){
       setResult('❌ '+d.outcome.toUpperCase()+' WINS — LOST $'+bet.toLocaleString(),d.outcome+'-win');
       losses++;profit-=bet;
     }
+    pushRoadMap(d.outcome);
     document.getElementById('stW').textContent=wins;document.getElementById('stL').textContent=losses;
     document.getElementById('stT').textContent=ties;document.getElementById('stP').textContent=(profit>=0?'+':'')+profit.toLocaleString(undefined,{maximumFractionDigits:0});
   }catch(e){setResult('ERROR: '+e.message,'idle');}
@@ -262,6 +266,13 @@ function flashGold(){const el=document.getElementById('flash');el.className='g';
 async function refreshBal(){try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}
+function pushRoadMap(outcome){
+  roadMap.push(outcome);if(roadMap.length>40) roadMap.shift();
+  const el=document.getElementById('roadMapRow');if(!el) return;
+  const colors={player:'#3b82f6',banker:'#dc2626',tie:'#22c55e'};
+  const labels={player:'P',banker:'B',tie:'T'};
+  el.innerHTML=roadMap.map(o=>`<span title="${o}" style="width:18px;height:18px;border-radius:50%;background:${colors[o]||'#444'};display:inline-flex;align-items:center;justify-content:center;font-size:7px;font-weight:900;color:#fff;flex-shrink:0;">${labels[o]||'?'}</span>`).join('');
+}
 init();
 </script>
 

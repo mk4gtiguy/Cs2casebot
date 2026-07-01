@@ -106,17 +106,22 @@ body{background:radial-gradient(ellipse 100% 70% at 50% 0%,rgba(10,26,14,0.8),va
     </div>
     <div class="odds-row">
       <div class="odds-btn higher" id="btnHigher" onclick="guess('higher')">
-        <div class="odds-icon">📈</div><div class="odds-name">HIGHER</div><div class="odds-mult" id="higherMult">—</div>
+        <div class="odds-icon">📈</div><div class="odds-name">HIGHER</div><div class="odds-mult" id="higherMult">—</div><div style="font-size:8px;color:#2a4a30;margin-top:2px;" id="higherPct">—</div>
       </div>
       <div class="odds-divider">VS</div>
       <div class="odds-btn lower" id="btnLower" onclick="guess('lower')">
-        <div class="odds-icon">📉</div><div class="odds-name">LOWER</div><div class="odds-mult" id="lowerMult">—</div>
+        <div class="odds-icon">📉</div><div class="odds-name">LOWER</div><div class="odds-mult" id="lowerMult">—</div><div style="font-size:8px;color:#2a4a30;margin-top:2px;" id="lowerPct">—</div>
       </div>
     </div>
     <div class="result-line idle" id="resultLine">START A NEW GAME TO PLAY</div>
     <div class="cashout-strip">
       <div class="potential-win"><div class="pw-val" id="potWin">$0</div><div class="pw-label">POTENTIAL WIN</div></div>
       <button class="btn-cashout" id="btnCashout" onclick="cashout()" disabled>💰 CASH OUT</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+      <span style="font-size:8px;color:#2a4a30;letter-spacing:1px;flex-shrink:0;">AUTO CASHOUT AT</span>
+      <input id="autoCashoutInp" type="number" value="" min="1.1" step="0.1" placeholder="MULT×" style="flex:1;background:rgba(0,0,0,0.4);border:1px solid rgba(34,197,94,0.1);border-radius:6px;padding:6px 8px;color:#d0e8d8;font-family:var(--font);font-size:11px;font-weight:700;text-align:center;outline:none;">
+      <label style="display:flex;align-items:center;gap:4px;font-size:8px;color:#2a4a30;cursor:pointer;flex-shrink:0;"><input type="checkbox" id="autoCashoutOn" style="accent-color:var(--green);"> ON</label>
     </div>
     <div class="chain-history" id="chainHistory"></div>
   </div>
@@ -176,6 +181,10 @@ async function guess(dir){
       updatePotWin(parseInt(document.getElementById('betInp').value)||500,chainMult);
       setResult('✅ '+d.new_card.display+' — Chain '+chainLen+'!','win');
       document.getElementById('btnCashout').disabled=false;flashScreen('g');
+      if(document.getElementById('autoCashoutOn').checked){
+        const acTarget=parseFloat(document.getElementById('autoCashoutInp').value);
+        if(!isNaN(acTarget)&&chainMult>=acTarget) setTimeout(()=>cashout(),100);
+      }
     }
   }catch(e){setResult('ERROR: '+e.message,'idle');}
   finally{acting=false;}
@@ -201,7 +210,12 @@ function renderCard(elId,card,animate=false){
   const suitEl=document.createElement('div');suitEl.className='card-suit';suitEl.textContent=card.suit;
   el.appendChild(corner);el.appendChild(rankEl);el.appendChild(suitEl);
 }
-function updateOdds(hm,lm){document.getElementById('higherMult').textContent=hm?hm.toFixed(2)+'×':'—';document.getElementById('lowerMult').textContent=lm?lm.toFixed(2)+'×':'—';}
+function updateOdds(hm,lm){
+  document.getElementById('higherMult').textContent=hm?hm.toFixed(2)+'×':'—';
+  document.getElementById('lowerMult').textContent=lm?lm.toFixed(2)+'×':'—';
+  document.getElementById('higherPct').textContent=hm?Math.round(96/hm)+'% WIN':'—';
+  document.getElementById('lowerPct').textContent=lm?Math.round(96/lm)+'% WIN':'—';
+}
 function updateChainDisplay(){document.getElementById('chainNum').textContent=chainLen;document.getElementById('chainMult').textContent=chainMult.toFixed(2)+'×';}
 function updatePotWin(bet,mult){document.getElementById('potWin').textContent='$'+Math.round(bet*mult).toLocaleString();}
 function addChainPip(win){const el=document.createElement('div');el.className='chain-pip '+(win?'win':'bust');el.textContent=win?'✓':'✗';document.getElementById('chainHistory').appendChild(el);}

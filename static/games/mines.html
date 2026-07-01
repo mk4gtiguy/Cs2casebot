@@ -84,6 +84,9 @@ body{background-image:linear-gradient(135deg,rgba(34,197,94,0.03) 0%,transparent
 .btn-cashout-m:not(:disabled):hover{background:rgba(255,215,0,0.15);border-color:var(--gold);}
 .btn-cashout-m:disabled{opacity:.3;cursor:not-allowed;}
 
+.hist-row{display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:14px;margin-top:10px;}
+.hist-lbl{font-size:8px;color:#2a3a2a;letter-spacing:1px;flex-shrink:0;margin-right:2px;}
+.hist-dot{width:12px;height:12px;border-radius:50%;}
 #explode{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:200;background:radial-gradient(ellipse at 50% 50%,rgba(239,68,68,0.4),transparent 70%);}
 #explode.show{animation:expl .4s ease;}
 @keyframes expl{0%{opacity:0;}20%{opacity:1;}100%{opacity:0;}}
@@ -127,11 +130,18 @@ body{background-image:linear-gradient(135deg,rgba(34,197,94,0.03) 0%,transparent
       <button class="btn-start-m" id="startBtn" onclick="startMines()">💣 START GAME</button>
       <button class="btn-cashout-m" id="cashoutBtn" onclick="cashoutMines()" disabled>💰 CASH OUT</button>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <label style="display:flex;align-items:center;gap:5px;font-size:8px;color:#2a3a2a;letter-spacing:1px;cursor:pointer;">
+        <input type="checkbox" id="autoReveal" style="accent-color:var(--safe);"> AUTO-REVEAL
+      </label>
+      <span style="font-size:8px;color:#1a2a1a;letter-spacing:1px;">(picks random tile every 0.8s)</span>
+    </div>
+    <div class="hist-row" id="mHistRow"><span class="hist-lbl">SESSION:</span></div>
   </div>
 </div>
 <script>
 const GRID=25;
-let balance=0,mineCount=3,gameActive=false,revealed=[],acting=false;
+let balance=0,mineCount=3,gameActive=false,revealed=[],acting=false,mHistory=[];
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}buildMineChips();buildGrid();}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function qb(v){document.getElementById('betInp').value=v;}
@@ -182,11 +192,13 @@ async function revealCell(idx){
       gameActive=false;document.getElementById('cashoutBtn').disabled=true;
       setResult('💥 BOOM! HIT A MINE!','boom');
       doExplode();balance=await refreshBal();updateBal();
+      pushMHist(false);
     }else{
       cell.className='mine-cell safe';cell.textContent='💎';revealed=d.revealed;
       updateStats(d.multiplier,revealed.length,bet*d.multiplier);
       setResult('✅ SAFE! '+revealed.length+' TILE'+(revealed.length>1?'S':'')+' REVEALED','win');
       document.getElementById('cashoutBtn').disabled=false;
+      if(document.getElementById('autoReveal').checked&&gameActive) setTimeout(()=>autoRevealNext(),800);
     }
   }catch(e){cell.className='mine-cell unrevealed';cell.textContent='⬜';setResult('ERROR','idle');}
   finally{acting=false;}
@@ -199,6 +211,7 @@ async function cashoutMines(){
     balance=await refreshBal();updateBal();
     setResult('💰 CASHED OUT '+d.multiplier.toFixed(2)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
     if(d.mines) d.mines.forEach(m=>{const mc=document.getElementById('mc'+m);if(mc.classList.contains('unrevealed')){mc.className='mine-cell revealed-mine';mc.textContent='💣';}});
+    pushMHist(true);
   }catch(e){setResult('ERROR','idle');}
   finally{acting=false;}
 }
@@ -209,6 +222,8 @@ function updateStats(mult,safe,pot){
 }
 function setResult(t,c){const el=document.getElementById('rbText');el.className='rb-text '+c;el.textContent=t;}
 function doExplode(){const el=document.getElementById('explode');el.classList.remove('show');void el.offsetWidth;el.classList.add('show');}
+function pushMHist(win){mHistory.push(win);if(mHistory.length>20)mHistory.shift();const el=document.getElementById('mHistRow');if(!el)return;el.innerHTML='<span class="hist-lbl">SESSION:</span>';mHistory.forEach(w=>{const d=document.createElement('div');d.className='hist-dot';d.style.background=w?'#22c55e':'#ef4444';el.appendChild(d);});}
+function autoRevealNext(){if(!gameActive||acting)return;if(!document.getElementById('autoReveal').checked)return;const unrevealed=[];for(let i=0;i<GRID;i++){const c=document.getElementById('mc'+i);if(c&&c.classList.contains('unrevealed'))unrevealed.push(i);}if(unrevealed.length>0){const pick=unrevealed[Math.floor(Math.random()*unrevealed.length)];revealCell(pick);}}
 async function refreshBal(){try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}
 init();

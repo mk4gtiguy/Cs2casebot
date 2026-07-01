@@ -111,6 +111,7 @@ body{background-image:radial-gradient(ellipse 100% 30% at 50% 0%,rgba(255,215,0,
 
 <div class="page">
   <div class="phase-banner idle" id="phaseBanner">SELECT YOUR AGENT AND JOIN A RACE</div>
+  <div id="sessionStats" style="display:flex;justify-content:center;gap:16px;margin-bottom:10px;font-size:9px;color:#3a4050;letter-spacing:1px;"></div>
 
   <!-- TRACK (shown during race) -->
   <div class="track-wrap" id="trackWrap" style="display:none;">
@@ -129,6 +130,7 @@ body{background-image:radial-gradient(ellipse 100% 30% at 50% 0%,rgba(255,215,0,
   <!-- RESULTS (shown after race) -->
   <div id="resultsSection" style="display:none;">
     <div class="results-grid" id="resultsGrid"></div>
+    <button id="raceAgainBtn" onclick="raceAgain()" style="display:none;width:100%;padding:14px;border:none;border-radius:10px;background:linear-gradient(135deg,#aa6600,var(--gold));color:#06080a;font-family:var(--font);font-size:12px;font-weight:900;letter-spacing:2px;cursor:pointer;margin-bottom:12px;">🔄 RACE AGAIN</button>
   </div>
 
   <!-- REACTION ROW (shown during race) -->
@@ -179,7 +181,13 @@ const AGENTS=[
 ];
 const PLACE_ICONS=['🥇','🥈','🥉','4️⃣'];
 
-let balance=0,selectedAgent='sas',ws=null,roomCode=null,inRace=false,joining=false;
+let balance=0,selectedAgent='sas',ws=null,roomCode=null,inRace=false,joining=false,raceWins=0,racesPlayed=0;
+
+function updateSessionStats(){
+  const el=document.getElementById('sessionStats');
+  if(!racesPlayed){el.innerHTML='';return;}
+  el.innerHTML='RACES: <span style="color:var(--gold)">'+(raceWins)+' WIN</span> / '+(racesPlayed-raceWins)+' LOSS  ·  SESSION: '+racesPlayed+' PLAYED';
+}
 const canvas=document.getElementById('confetti');
 const ctx=canvas.getContext('2d');
 let pieces=[];
@@ -327,13 +335,25 @@ function onRaceResults(msg){
       <div class="rc-payout">${r.payout>0?'+$'+r.payout.toLocaleString(undefined,{maximumFractionDigits:0}):''}</div>`;
     grid.appendChild(card);
   });
+  // Track session stats
+  const myResult=results.find(r=>r.agent_id===selectedAgent);
+  racesPlayed++;
+  if(myResult&&myResult.place===1) raceWins++;
+  updateSessionStats();
   refreshBalSoon();
+  document.getElementById('raceAgainBtn').style.display='';
   setTimeout(()=>{
-    setPhase('idle','SELECT AN AGENT AND JOIN A NEW RACE');
-    show('agentSection');hide('trackWrap');hide('lobbySection');
-    document.getElementById('joinBtn').disabled=false;
-    joining=false;
-  },8000);
+    raceAgain();
+  },12000);
+}
+
+function raceAgain(){
+  document.getElementById('raceAgainBtn').style.display='none';
+  hide('resultsSection');hide('trackWrap');hide('lobbySection');
+  show('agentSection');
+  setPhase('idle','SELECT AN AGENT AND JOIN A NEW RACE');
+  document.getElementById('joinBtn').disabled=false;
+  joining=false;
 }
 
 function sendReaction(emoji){

@@ -190,12 +190,20 @@ body{background-image:radial-gradient(ellipse 100% 40% at 50% 0%,rgba(124,58,237
 
   <button class="btn-play" id="playBtn" onclick="play()">🔢 DRAW BALLS</button>
 
+  <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:10px;">
+    <label style="display:flex;align-items:center;gap:6px;font-size:9px;color:#5a4a80;cursor:pointer;letter-spacing:1px;">
+      <input type="checkbox" id="kenoAutoOn" onchange="kenoAutoChanged(this.checked)" style="width:14px;height:14px;accent-color:var(--purple);cursor:pointer;">
+      AUTO PLAY (SAME PICKS)
+    </label>
+  </div>
+
   <div class="paytable-mini" id="ptMini"></div>
 </div>
 
 <script>
 const KENO_TABLE={1:{1:3.5},2:{1:1.5,2:10},3:{2:3,3:25},4:{2:1.5,3:6,4:60},5:{3:3,4:12,5:100},6:{3:2,4:6,5:30,6:250},7:{4:4,5:15,6:60,7:500},8:{4:3,5:8,6:30,7:200,8:1000},9:{4:2,5:5,6:15,7:80,8:500,9:2000},10:{5:4,6:10,7:40,8:200,9:1000,10:5000}};
-let picks=new Set(),balance=0,playing=false;
+let picks=new Set(),balance=0,playing=false,kenoAutoEnabled=false;
+function kenoAutoChanged(on){kenoAutoEnabled=on;}
 
 async function init(){
   try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
@@ -320,6 +328,7 @@ async function play(){
   }finally{
     playing=false;
     document.getElementById('playBtn').disabled=false;
+    if(kenoAutoEnabled&&picks.size>0) setTimeout(()=>{if(kenoAutoEnabled)play();},1500);
   }
 }
 

@@ -116,6 +116,13 @@ body{background-image:linear-gradient(180deg,rgba(68,136,255,0.04) 0%,transparen
 .pt-row.red .pt-name,.pt-row.red .pt-mult{color:var(--red);}
 .pt-row.gold .pt-name,.pt-row.gold .pt-mult{color:var(--gold);}
 
+.hist-row{display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:14px;margin-top:10px;}
+.hist-lbl{font-size:8px;color:#3a4a5a;letter-spacing:1px;flex-shrink:0;margin-right:2px;}
+.hist-dot{width:12px;height:12px;border-radius:50%;}
+.cstats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;position:relative;z-index:1;}
+.cstat{background:rgba(68,136,255,0.05);border:1px solid rgba(68,136,255,0.1);border-radius:8px;padding:8px;text-align:center;}
+.cstat .sv{font-size:14px;font-weight:900;font-family:monospace;color:var(--blue);}
+.cstat .sl{font-size:8px;color:#3a4a5a;letter-spacing:1px;margin-top:2px;}
 /* RARITY DROP FLASH */
 #rarFlash{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:200;}
 #rarFlash.show{animation:rf .5s ease;}
@@ -169,6 +176,12 @@ body{background-image:linear-gradient(180deg,rgba(68,136,255,0.04) 0%,transparen
     </div>
   </div>
 
+  <div class="cstats">
+    <div class="cstat"><div class="sv" id="csWins">0</div><div class="sl">WINS</div></div>
+    <div class="cstat"><div class="sv" id="csSpins">0</div><div class="sl">SPINS</div></div>
+    <div class="cstat"><div class="sv" id="csStreak">0</div><div class="sl">STREAK</div></div>
+  </div>
+
   <div class="controls">
     <div class="bet-label">BET AMOUNT</div>
     <div class="bet-disp" id="betDisp">$500</div>
@@ -185,6 +198,13 @@ body{background-image:linear-gradient(180deg,rgba(68,136,255,0.04) 0%,transparen
       <div class="adj" onclick="maxBet()">MAX BET</div>
     </div>
     <button class="btn-spin" id="spinBtn" onclick="spin()">🔫 OPEN CASE</button>
+    <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
+      <span style="font-size:8px;color:#3a4a5a;letter-spacing:1px;flex-shrink:0;">AUTO</span>
+      <button class="adj" onclick="autoSpin(5)">×5</button>
+      <button class="adj" onclick="autoSpin(10)">×10</button>
+      <button class="adj" onclick="autoSpin(25)">×25</button>
+    </div>
+    <div class="hist-row" id="csHistRow"><span class="hist-lbl">SESSION:</span></div>
   </div>
 
   <div class="pt">
@@ -203,7 +223,8 @@ body{background-image:linear-gradient(180deg,rgba(68,136,255,0.04) 0%,transparen
 const RARITY_EMOJIS={Blue:'🟦',Purple:'🟪',Pink:'💗',Red:'🔴',Gold:'⭐'};
 const RARITY_ORDER=['Blue','Purple','Pink','Red','Gold'];
 const RARITY_COLORS={Blue:'var(--blue)',Purple:'var(--purple)',Pink:'var(--pink)',Red:'var(--red)',Gold:'var(--gold)'};
-let bet=500,balance=0,spinning=false;
+const RARITY_DOT_COLS={Blue:'#4488ff',Purple:'#aa44ff',Pink:'#ff69b4',Red:'#ff3333',Gold:'#ffd700'};
+let bet=500,balance=0,spinning=false,csWins=0,csSpins=0,csStreak=0,csHistory=[],_csAutoRunning=false;
 
 async function init(){
   try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
@@ -289,7 +310,10 @@ async function spin(){
     const pipIdx=RARITY_ORDER.indexOf(highestRar);
     for(let i=0;i<=pipIdx;i++) document.getElementById('pip'+i).classList.add('active');
 
+    csSpins++;document.getElementById('csSpins').textContent=csSpins;
     if(d.win>0){
+      csWins++;csStreak++;document.getElementById('csWins').textContent=csWins;document.getElementById('csStreak').textContent=csStreak;
+      pushCSHist(highestRar);
       const rarClass=highestRar.toLowerCase();
       if(highestRar==='Gold'&&d.mult>=200){
         document.getElementById('goItem').textContent=d.label;
@@ -301,6 +325,8 @@ async function spin(){
         doFlash(highestRar);
       }
     }else{
+      csStreak=0;document.getElementById('csStreak').textContent=0;
+      pushCSHist(null);
       setResult('MISS — TRY AGAIN','miss');
     }
   }catch(e){
@@ -310,6 +336,8 @@ async function spin(){
   }
 }
 
+function pushCSHist(rar){csHistory.push(rar);if(csHistory.length>20)csHistory.shift();const el=document.getElementById('csHistRow');if(!el)return;el.innerHTML='<span class="hist-lbl">SESSION:</span>';csHistory.forEach(r=>{const d=document.createElement('div');d.className='hist-dot';d.style.background=r?RARITY_DOT_COLS[r]||'#4488ff':'#2a3a4a';el.appendChild(d);});}
+async function autoSpin(count){if(_csAutoRunning)return;_csAutoRunning=true;let rem=count;while(rem>0&&_csAutoRunning){await spin();rem--;if(rem>0)await delay(400);}_csAutoRunning=false;}
 function setResult(text,cls){
   const el=document.getElementById('resLabel');
   el.className='res-label '+cls;el.textContent=text;

@@ -112,7 +112,7 @@ body{background-image:radial-gradient(ellipse 100% 60% at 50% 0%,rgba(255,184,0,
   font-weight:700;letter-spacing:2px;cursor:pointer;margin-top:8px;}
 
 /* STATS ROW */
-.stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px;}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;}
 .stat{background:rgba(255,184,0,0.05);border:1px solid rgba(255,184,0,0.1);
   border-radius:10px;padding:8px;text-align:center;}
 .stat .sv{font-size:14px;font-weight:700;color:var(--amber);font-family:monospace;}
@@ -196,6 +196,7 @@ body{background-image:radial-gradient(ellipse 100% 60% at 50% 0%,rgba(255,184,0,
       <div class="stat"><div class="sv" id="sWins">0</div><div class="sl">WINS</div></div>
       <div class="stat"><div class="sv" id="sSpins">0</div><div class="sl">SPINS</div></div>
       <div class="stat"><div class="sv" id="sBest">$0</div><div class="sl">BEST WIN</div></div>
+      <div class="stat"><div class="sv" id="sStreak">0</div><div class="sl">STREAK</div></div>
     </div>
 
     <div class="bet-section">
@@ -214,6 +215,12 @@ body{background-image:radial-gradient(ellipse 100% 60% at 50% 0%,rgba(255,184,0,
         <button class="qb" style="flex:1" onclick="doubleBet()">2×</button>
       </div>
       <button class="btn-spin" id="spinBtn" onclick="spin()">🎰 SPIN</button>
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
+        <span style="font-size:8px;color:var(--muted);letter-spacing:1px;flex-shrink:0;">AUTO</span>
+        <button class="qb" style="flex:1" onclick="autoSpin(5)">×5</button>
+        <button class="qb" style="flex:1" onclick="autoSpin(10)">×10</button>
+        <button class="qb" style="flex:1" onclick="autoSpin(25)">×25</button>
+      </div>
     </div>
 
     <div class="session-log" id="sessionLog"></div>
@@ -235,7 +242,7 @@ body{background-image:radial-gradient(ellipse 100% 60% at 50% 0%,rgba(255,184,0,
 <script>
 const SYMBOLS = ['🍒','🍋','🍊','🍇','💎','7️⃣','🎰'];
 const NAMES   = ['Cherry','Lemon','Orange','Grape','Diamond','Seven','Jackpot'];
-let bet=500, balance=0, wins=0, spins=0, bestWin=0, spinning=false;
+let bet=500, balance=0, wins=0, spins=0, bestWin=0, spinning=false, streak=0, _autoRunning=false;
 
 async function init(){
   try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
@@ -345,17 +352,21 @@ function landReels(symbols, win, combo, mult){
 function resolveResult(win,combo,mult){
   if(win>0 && mult>=200){
     // Jackpot!
+    wins++;streak++;document.getElementById('sWins').textContent=wins;document.getElementById('sStreak').textContent=streak;
+    if(win>bestWin){bestWin=win;document.getElementById('sBest').textContent='$'+bestWin.toLocaleString(undefined,{maximumFractionDigits:0});}
     document.getElementById('jpPrize').textContent='$'+win.toLocaleString(undefined,{maximumFractionDigits:0});
     document.getElementById('jackpotOv').classList.add('show');
   } else if(win>0){
     showCombo(`${combo.toUpperCase()} · ${mult}× · +$${win.toLocaleString(undefined,{maximumFractionDigits:0})}`,
       mult>=30?'big':'win');
     flashWin();
-    wins++;
+    wins++;streak++;
     document.getElementById('sWins').textContent=wins;
+    document.getElementById('sStreak').textContent=streak;
     if(win>bestWin){bestWin=win;document.getElementById('sBest').textContent='$'+bestWin.toLocaleString(undefined,{maximumFractionDigits:0});}
   } else {
     showCombo('NO MATCH','loss');
+    streak=0;document.getElementById('sStreak').textContent=0;
   }
   addLog(combo,win);
 }
@@ -382,6 +393,7 @@ function addLog(combo,win){
   if(log.children.length>20) log.lastChild.remove();
 }
 
+async function autoSpin(count){if(_autoRunning||spinning)return;_autoRunning=true;let rem=count;while(rem>0&&_autoRunning){if(spinning){await delay(100);continue;}await spin();rem--;if(rem>0)await delay(300);}_autoRunning=false;}
 async function refreshBal(){
   try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}
 }

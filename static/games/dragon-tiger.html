@@ -138,6 +138,7 @@ html,body{min-height:100vh;background:var(--bg);font-family:var(--font);overflow
       </div>
     </div>
     <div class="result-banner idle" id="resultBanner">PICK A SIDE TO PLAY</div>
+    <div id="streakBadge" style="display:none;text-align:center;margin-top:6px;font-size:9px;letter-spacing:2px;padding:4px 0;"></div>
   </div>
 
   <!-- PICK -->
@@ -178,16 +179,31 @@ html,body{min-height:100vh;background:var(--bg);font-family:var(--font);overflow
 
   <button class="btn-deal idle-mode" id="dealBtn" onclick="deal()" disabled>SELECT A SIDE</button>
 
+  <div style="display:flex;gap:6px;margin-top:10px;align-items:center;">
+    <span style="font-size:8px;color:#444;letter-spacing:1px;white-space:nowrap;flex-shrink:0;">AUTO</span>
+    <div class="qb" id="ac5" onclick="setAutoCount(5)" style="flex:1;">5×</div>
+    <div class="qb" id="ac10" onclick="setAutoCount(10)" style="flex:1;">10×</div>
+    <div class="qb" id="ac25" onclick="setAutoCount(25)" style="flex:1;">25×</div>
+    <button id="autoBtn" onclick="toggleAuto()" style="flex:2;padding:8px 4px;background:rgba(255,51,51,0.06);border:1px solid rgba(255,51,51,0.15);border-radius:8px;color:#888;font-family:var(--font);font-size:8px;font-weight:700;letter-spacing:1px;cursor:pointer;">▶ AUTO PLAY</button>
+  </div>
+
   <div class="stats-bar">
     <div class="st"><div class="v" id="stW">0</div><div class="l">WINS</div></div>
     <div class="st"><div class="v" id="stL">0</div><div class="l">LOSSES</div></div>
     <div class="st"><div class="v" id="stP">$0</div><div class="l">PROFIT</div></div>
+  </div>
+  <div class="stats-bar" style="margin-top:8px;">
+    <div class="st"><div class="v" id="stDR">—</div><div class="l">DRAGON%</div></div>
+    <div class="st"><div class="v" id="stTR">—</div><div class="l">TIGER%</div></div>
+    <div class="st"><div class="v" id="stSK">—</div><div class="l">STREAK</div></div>
   </div>
 </div>
 
 <script>
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 let pick=null,balance=0,wins=0,losses=0,profit=0,dealing=false;
+let dragonWins=0,tigerWins=0,tieCount=0,streakSide=null,streakCount=0,totalRounds=0;
+let autoTarget=0,autoRunning=false;
 
 async function init(){
   try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
@@ -271,9 +287,7 @@ async function deal(){
     if(d.user_wins) wins++; else losses++;
     profit+=profitDelta;
     setResult(resultText, resultCls);
-    document.getElementById('stW').textContent=wins;
-    document.getElementById('stL').textContent=losses;
-    document.getElementById('stP').textContent=(profit>=0?'+':'')+profit.toLocaleString(undefined,{maximumFractionDigits:0});
+    updateDTStats(d.outcome);
   }catch(e){
     setResult('ERROR: '+e.message,'idle');
   }finally{
@@ -301,6 +315,56 @@ async function api(url,opts={}){
   return r.json();
 }
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}
+function updateDTStats(outcome){
+  totalRounds++;
+  if(outcome==='dragon') dragonWins++;
+  else if(outcome==='tiger') tigerWins++;
+  else tieCount++;
+  // Streak
+  if(outcome===streakSide) streakCount++;
+  else{streakSide=outcome;streakCount=1;}
+  document.getElementById('stW').textContent=wins;
+  document.getElementById('stL').textContent=losses;
+  document.getElementById('stP').textContent=(profit>=0?'+':'')+profit.toLocaleString(undefined,{maximumFractionDigits:0});
+  const nonTie=totalRounds-tieCount||1;
+  document.getElementById('stDR').textContent=Math.round(dragonWins/nonTie*100)+'%';
+  document.getElementById('stTR').textContent=Math.round(tigerWins/nonTie*100)+'%';
+  const sk=document.getElementById('stSK');
+  const sideLabel=streakSide==='dragon'?'🐉':streakSide==='tiger'?'🐯':'⚖️';
+  sk.textContent=streakCount>1?sideLabel+' '+streakCount+'×':'—';
+  // Streak badge in arena
+  const badge=document.getElementById('streakBadge');
+  if(streakCount>=3){
+    const sc=streakSide==='dragon'?'var(--dragon)':streakSide==='tiger'?'var(--tiger)':'var(--tie)';
+    badge.style.display='block';badge.style.color=sc;
+    badge.textContent=sideLabel+' ON A '+streakCount+'-WIN STREAK';
+  }else{badge.style.display='none';}
+}
+function setAutoCount(n){
+  autoTarget=n;
+  ['ac5','ac10','ac25'].forEach(id=>{
+    const el=document.getElementById(id);
+    el.style.borderColor=parseInt(el.textContent)===n?'var(--dragon)':'rgba(255,51,51,0.12)';
+    el.style.color=parseInt(el.textContent)===n?'var(--dragon)':'#888';
+  });
+}
+async function toggleAuto(){
+  if(autoRunning){autoRunning=false;return;}
+  if(!pick||!autoTarget){setResult('SELECT A SIDE AND AUTO COUNT','idle');return;}
+  autoRunning=true;
+  const btn=document.getElementById('autoBtn');
+  let rem=autoTarget;
+  while(rem>0&&autoRunning){
+    const bet=parseInt(document.getElementById('betInp').value)||500;
+    if(bet>balance){autoRunning=false;break;}
+    btn.textContent='⏹ STOP ('+rem+' left)';btn.style.color='var(--dragon)';
+    await deal();
+    rem--;
+    if(rem>0&&autoRunning) await delay(400);
+  }
+  autoRunning=false;
+  btn.textContent='▶ AUTO PLAY';btn.style.color='#888';
+}
 init();
 </script>
 </body>

@@ -178,6 +178,7 @@ body{background:radial-gradient(ellipse 100% 60% at 50% 0%,rgba(7,16,10,0.9),var
       <div class="your-hand-section">
         <div class="yh-label">YOUR HAND</div>
         <div class="your-cards" id="yourCards"><span style="font-size:24px;opacity:.1;">🂠🂠</span></div>
+        <div id="handRankBadge" style="display:none;text-align:center;margin-top:6px;font-size:9px;letter-spacing:1.5px;color:#ffd700;font-weight:700;padding:3px 8px;background:rgba(255,215,0,0.08);border:1px solid rgba(255,215,0,0.2);border-radius:6px;"></div>
       </div>
       <div class="table-status idle" id="tableStatus">JOIN A TABLE TO START</div>
     </div>
@@ -229,6 +230,12 @@ body{background:radial-gradient(ellipse 100% 60% at 50% 0%,rgba(7,16,10,0.9),var
         <div class="qb" onclick="qbVP(1000)">$1K</div><div class="qb" onclick="qbVP(5000)">$5K</div>
       </div>
       <button class="btn-action" id="vpDealBtn" onclick="vpDeal()">🎴 DEAL HAND</button>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:10px;">
+        <label style="display:flex;align-items:center;gap:7px;font-size:9px;color:#3a2a20;letter-spacing:1px;cursor:pointer;">
+          <input type="checkbox" id="vpAutoToggle" onchange="vpAutoChanged(this.checked)" style="cursor:pointer;accent-color:var(--gold);">
+          AUTO DEAL AFTER EACH HAND
+        </label>
+      </div>
     </div>
   </div>
 
@@ -239,9 +246,9 @@ const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 const RED=['♥','♦'];
 let balance=0,mode='holdem',gameActive=false,acting=false;
 // Holdem state
-let roomCode=null,ws=null,myChips=0,myHole=[];
+let roomCode=null,ws=null,myChips=0,myHole=[],communityCards=[];
 // VP state
-let vpHand=[],vpHeld=new Set(),vpDealt=false,vpActing=false;
+let vpHand=[],vpHeld=new Set(),vpDealt=false,vpActing=false,vpAutoEnabled=false;
 
 async function init(){
   setMode('holdem');
@@ -296,6 +303,7 @@ function handlePokerMsg(msg){
     case 'hole_cards':
       myHole=msg.hole_cards;
       renderYourHand(myHole);
+      updateHandRank();
       break;
     case 'round_start':
       renderCommunity([],msg.phase||'pre-flop');
@@ -305,6 +313,8 @@ function handlePokerMsg(msg){
       setPokerActions([]);
       break;
     case 'street':
+      communityCards=msg.community||[];
+      updateHandRank();
       renderCommunity(msg.community,msg.phase);
       renderSeats(msg.players,null);
       document.getElementById('potNum').textContent='$'+(msg.pot||0).toLocaleString(undefined,{maximumFractionDigits:0});
@@ -432,6 +442,8 @@ function onShowdown(msg){
     setTableStatus(winNames+' WINS'+(handName?' ('+handName+')':''),'lose');
   }
 
+  communityCards=[];
+  document.getElementById('handRankBadge').style.display='none';
   // Reveal all cards
   if(msg.community&&msg.community.length) renderCommunity(msg.community,'showdown');
   if(msg.all_players) renderSeats(msg.all_players,null);
@@ -496,6 +508,9 @@ async function vpDeal(){
         document.getElementById('vpResult').textContent='NO WIN — DEAL AGAIN';
       }
       document.getElementById('vpDealBtn').textContent='🎴 DEAL HAND';
+      if(vpAutoEnabled&&mult>=0&&!vpActing){
+        setTimeout(()=>{if(vpAutoEnabled) vpDeal();},1200);
+      }
     }catch(e){
       // On draw error, let player try draw again
       document.getElementById('vpResult').className='vp-result idle';
@@ -505,6 +520,7 @@ async function vpDeal(){
     }
   }
 }
+function vpAutoChanged(on){vpAutoEnabled=on;}
 
 function renderVPHand(isFirstDeal){
   const wrap=document.getElementById('vpCards');wrap.innerHTML='';
@@ -523,6 +539,37 @@ function renderVPHand(isFirstDeal){
 }
 
 function flashGold(){const el=document.getElementById('flash');el.className='g';void el.offsetWidth;el.classList.add('show');}
+function evalHandRank(cards){
+  if(!cards||cards.length<2) return '';
+  const rankMap={'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13,'A':14};
+  const vals=cards.map(c=>rankMap[c.rank]||0).filter(v=>v>0);
+  const suits=cards.map(c=>c.suit);
+  const rc={};vals.forEach(v=>rc[v]=(rc[v]||0)+1);
+  const counts=Object.values(rc).sort((a,b)=>b-a);
+  const sc={};suits.forEach(s=>sc[s]=(sc[s]||0)+1);
+  const hasFlush=Object.values(sc).some(c=>c>=5);
+  const uv=[...new Set(vals)].sort((a,b)=>a-b);
+  let hasStraight=false;
+  for(let i=0;i<=uv.length-5;i++){if(uv[i+4]-uv[i]===4){hasStraight=true;break;}}
+  if(!hasStraight&&uv.includes(14)&&uv.slice(0,4).join(',')===uv.filter(v=>v<=5).join(',')&&uv.filter(v=>v<=5).length>=4) hasStraight=true;
+  if(hasFlush&&hasStraight) return 'STRAIGHT FLUSH';
+  if(counts[0]===4) return 'FOUR OF A KIND';
+  if(counts[0]===3&&counts[1]>=2) return 'FULL HOUSE';
+  if(hasFlush) return 'FLUSH';
+  if(hasStraight) return 'STRAIGHT';
+  if(counts[0]===3) return 'THREE OF A KIND';
+  if(counts[0]===2&&counts[1]===2) return 'TWO PAIR';
+  if(counts[0]===2) return 'ONE PAIR';
+  return cards.length>=5?'HIGH CARD':'';
+}
+function updateHandRank(){
+  const all=[...myHole,...communityCards];
+  const badge=document.getElementById('handRankBadge');
+  if(!badge||all.length<2){if(badge) badge.style.display='none';return;}
+  const rank=evalHandRank(all);
+  if(rank){badge.textContent=rank;badge.style.display='block';}
+  else{badge.style.display='none';}
+}
 async function refreshBal(){try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}}
 function refreshBalSoon(){setTimeout(async()=>{balance=await refreshBal();updateBal();},1500);return balance;}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}

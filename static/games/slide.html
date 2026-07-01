@@ -127,9 +127,11 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;heigh
       </div>
       <input type="range" id="powerSlider" min="0" max="100" value="50" oninput="onPower()">
       <div class="aim-guide"><span>← LEFT 5×</span><span>CENTER 0.5×</span><span>RIGHT 5× →</span></div>
+      <button onclick="randomAim()" style="margin-top:8px;width:100%;padding:7px;background:rgba(0,191,255,0.04);border:1px solid rgba(0,191,255,0.1);border-radius:8px;color:#2a3040;font-family:var(--font);font-size:8px;letter-spacing:1px;cursor:pointer;">🎲 RANDOM AIM</button>
     </div>
 
     <div class="result-slide idle" id="resultSlide">AIM WITH THE SLIDER · LAUNCH THE PUCK</div>
+    <div id="slideHist" style="display:flex;gap:3px;flex-wrap:wrap;justify-content:center;padding:6px 0 0;min-height:20px;"></div>
   </div>
 
   <div class="bet-ctrl">
@@ -148,7 +150,25 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;heigh
 </div>
 <script>
 const ZONE_MULTS=[5,3,2,1.5,0.5,1.5,2,3,5];
-let balance=0,sliding=false;
+let balance=0,sliding=false,slideHistory=[];
+
+function randomAim(){
+  const v=Math.floor(Math.random()*101);
+  document.getElementById('powerSlider').value=v;onPower();
+}
+
+function pushSlideHist(mult,win){
+  slideHistory.push({mult,win});
+  if(slideHistory.length>20) slideHistory.shift();
+  const el=document.getElementById('slideHist');el.innerHTML='';
+  slideHistory.forEach(s=>{
+    const color=s.win>0?(s.mult>=5?'#ffd700':s.mult>=2?'#22c55e':s.mult>=1.5?'#ff9500':'#446'):'#222';
+    const d=document.createElement('div');
+    d.style.cssText='width:15px;height:15px;border-radius:50%;background:'+color+';display:flex;align-items:center;justify-content:center;font-size:5px;color:#fff;font-weight:700;flex-shrink:0;';
+    d.textContent=s.mult||'×';
+    el.appendChild(d);
+  });
+}
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}onPower();}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function qb(v){document.getElementById('betInp').value=v;}
@@ -180,6 +200,7 @@ async function launch(){
     // Light winning zone
     document.getElementById('zone'+d.zone).classList.add('lit');
     balance=await refreshBal();updateBal();
+    pushSlideHist(d.mult||0,d.win||0);
     const bet2=parseInt(document.getElementById('betInp').value)||500;
     if(d.win>=bet2){
       setResult(d.zone_name+' · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),d.mult>=5?'big':'win');

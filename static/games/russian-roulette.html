@@ -152,6 +152,7 @@ body{background-image:radial-gradient(ellipse 80% 50% at 50% 50%,rgba(204,0,0,0.
       <div class="rr-pot"><div class="rr-pot-v" id="rrPotVal">$0</div><div class="rr-pot-l">WALK AWAY</div></div>
       <button class="btn-rr-co" id="rrCoBtn" onclick="rrCashout()" disabled>🏃 WALK AWAY</button>
     </div>
+    <div id="rrHist" style="display:flex;gap:3px;flex-wrap:wrap;min-height:18px;padding:2px 0;"></div>
   </div>
 
   <div class="pers-row">
@@ -179,7 +180,7 @@ body{background-image:radial-gradient(ellipse 80% 50% at 50% 50%,rgba(204,0,0,0.
 </div>
 <script>
 const BOT_NAMES={calm:{name:'THE ICEMAN',avatar:'🧊'},aggressive:{name:'THE BERSERKER',avatar:'😤'},nervous:{name:'THE ROOKIE',avatar:'😰'}};
-let personality='calm',balance=0,gameActive=false,acting=false,playerPulls=0,currentMult=1,waitingBotPull=false;
+let personality='calm',balance=0,gameActive=false,acting=false,playerPulls=0,currentMult=1,waitingBotPull=false,rrHistory=[];
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}drawChambers(6,0,false,-1);}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function setPersonality(p){
@@ -236,6 +237,7 @@ async function pullTrigger(){
       drawChambers(6,d.player_pulls,true,d.chamber);
       doBang();document.getElementById('youStatus').textContent='💀 DEAD';
       setResult('💥 BANG — CHAMBER '+d.chamber+' WAS LOADED','dead');
+      pushRRHist(false);
       balance=await refreshBal();updateBal();
     }else{
       playerPulls=d.player_pulls;currentMult=d.multiplier;
@@ -262,6 +264,7 @@ async function doBotPull(bet){
       const win=d.win||0;
       doBang();document.getElementById('botStatus').textContent='💀 DEAD';
       setResult('🏆 BOT FIRED! YOU WIN +$'+win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
+      pushRRHist(true);
       if(d.taunt) setTaunt('"'+d.taunt+'"');
       balance=await refreshBal();updateBal();
     }else{
@@ -285,6 +288,7 @@ async function rrCashout(){
   try{
     const d=await api('/api/games/hard/russian-roulette/cashout',{method:'POST'});
     balance=await refreshBal();updateBal();
+    pushRRHist(true);
     setResult('🏃 WALKED AWAY · '+d.multiplier.toFixed(2)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
   }catch(e){setResult('ERROR','idle');}
   finally{acting=false;}
@@ -293,7 +297,23 @@ function setTurn(who){
   const wrap=document.getElementById('gunWrap');
   const lbl=document.getElementById('turnLabel');
   wrap.className='gun-wrap '+(who==='player'?'player-turn':'bot-turn');
-  lbl.textContent=who==='player'?'YOUR TURN — PULL THE TRIGGER':'BOT\'S TURN…';
+  if(who==='player'){
+    const pct=playerPulls<5?Math.round((5-playerPulls)/(6-playerPulls)*100):0;
+    lbl.textContent='YOUR TURN · SURVIVE: '+pct+'%';
+  }else{
+    lbl.textContent='BOT\'S TURN…';
+  }
+}
+
+function pushRRHist(won){
+  rrHistory.push(won);
+  if(rrHistory.length>20) rrHistory.shift();
+  const el=document.getElementById('rrHist');el.innerHTML='';
+  rrHistory.forEach(w=>{
+    const d=document.createElement('div');
+    d.style.cssText='width:14px;height:14px;border-radius:50%;background:'+(w?'rgba(34,197,94,0.4)':'rgba(204,0,0,0.4)')+';border:1px solid '+(w?'rgba(34,197,94,0.6)':'rgba(204,0,0,0.5)')+';flex-shrink:0;';
+    el.appendChild(d);
+  });
 }
 function setTaunt(text){
   const el=document.getElementById('tauntBubble');el.className='taunt-bubble fresh';

@@ -129,6 +129,7 @@ body{background:radial-gradient(ellipse 100% 80% at 50% 0%,rgba(7,26,14,0.7),var
     <div class="action-btns" id="actionBtns">
       <button class="ab primary" id="dealBtn" onclick="bjDeal()">🃏 DEAL</button>
     </div>
+    <div id="hintBar" style="display:none;text-align:center;padding:5px 10px;font-size:9px;letter-spacing:1.5px;border-radius:8px;margin-top:6px;font-weight:700;transition:all .3s;"></div>
   </div>
 
   <div class="bet-ctrl">
@@ -149,11 +150,12 @@ body{background:radial-gradient(ellipse 100% 80% at 50% 0%,rgba(7,26,14,0.7),var
     <div class="sj"><div class="sjv" id="bjL">0</div><div class="sjl">LOSSES</div></div>
     <div class="sj"><div class="sjv" id="bjBJ">0</div><div class="sjl">BLACKJACKS</div></div>
     <div class="sj"><div class="sjv" id="bjP">$0</div><div class="sjl">PROFIT</div></div>
-  </div>
+  <div id="handHist" style="display:flex;gap:3px;flex-wrap:wrap;margin-top:8px;padding:0 2px;min-height:12px;"></div>
 </div>
 <script>
 const RED=['♥','♦'];
 let balance=0,gameActive=false,acting=false,roomCode=null,wins=0,losses=0,bjs=0,profit=0,bet=500,hrConfirmed=false;
+let dealerUpRank=null,_curHand=[],handHistory=[];
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}}
 function showHighRollerConfirm(){
   api('/api/tickets/balance').then(d=>{document.getElementById('hrTicketCount').textContent=d.tickets??'?';}).catch(()=>{});
@@ -176,6 +178,8 @@ async function bjDeal(){
   resetTable();
   try{
     const d=await api('/api/games/hard/blackjack/deal',{method:'POST',body:JSON.stringify({amount:bet})});
+    dealerUpRank=d.dealer_hand?.[0]?.rank||null;
+    _curHand=d.player_hands?.[0]||[];
     // Render dealer: first card shown, second hidden
     await renderDealerCard(d.dealer_hand?d.dealer_hand[0]:null,false);
     if(d.dealer_hand&&d.dealer_hand.length>1){renderDealerHidden();}
@@ -243,7 +247,7 @@ async function bjAction(action){
 
     // ── HIT response ─────────────────────────────────────────
     if(d.action==='hit'&&!d.all_done){
-      if(d.hand) await renderPlayerHands([d.hand],0,false);
+      if(d.hand){await renderPlayerHands([d.hand],0,false);_curHand=d.hand;}
       if(d.bust){
         setResult('💥 BUST! VALUE: '+d.value,'lose');
         // Game might still be alive if there are split hands — wait for next_hand
@@ -284,6 +288,7 @@ async function bjAction(action){
         totProfit+=r.win-r.bet;
       });
       profit+=totProfit;
+      pushHistory(d.results.some(r=>r.result==='blackjack')?'bj':totProfit>0?'W':totProfit<0?'L':'P');
       updateStats();
 
       const totalWin=d.total_win||0;
@@ -316,8 +321,9 @@ function handleDoneResult(d,bet){
     setResult('🂡 BLACKJACK! 3:2 · +$'+(d.win-bet).toLocaleString(undefined,{maximumFractionDigits:0}),'bj');
     bjs++;wins++;profit+=d.win-bet;flashCard('bj');
     document.querySelector('#handsContainer .bj-card')?.classList.add('blackjack-card');
-  }else if(result==='push'){setResult('⚖️ PUSH — BET RETURNED','push');}
-  else if(result==='dealer_blackjack'){setResult('❌ DEALER BLACKJACK — LOST $'+bet.toLocaleString(),'lose');losses++;profit-=bet;}
+    pushHistory('bj');
+  }else if(result==='push'){setResult('⚖️ PUSH — BET RETURNED','push');pushHistory('P');}
+  else if(result==='dealer_blackjack'){setResult('❌ DEALER BLACKJACK — LOST $'+bet.toLocaleString(),'lose');losses++;profit-=bet;pushHistory('L');}
   updateStats();setActions(['deal']);balance=refreshBalSoon();
 }
 
@@ -390,6 +396,7 @@ function setActions(actions){
     const b=document.createElement('button');b.className=cfg.cls;b.textContent=cfg.text;
     b.setAttribute('onclick',cfg.fn);cont.appendChild(b);
   });
+  showHint(actions.some(a=>a==='hit'||a==='stand'));
 }
 function setResult(t,c){const el=document.getElementById('bjResult');el.className='bj-result '+c;el.textContent=t;}
 function flashCard(type){const el=document.getElementById('flash');el.className=type;void el.offsetWidth;el.classList.add('show');}
@@ -401,6 +408,52 @@ async function refreshBal(){try{const d=await api('/api/user/me');return d.balan
 function refreshBalSoon(){setTimeout(async()=>{balance=await refreshBal();updateBal();},1000);return balance;}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}
+function getHint(){
+  if(!dealerUpRank||!_curHand.length) return null;
+  const dv={'A':11,'J':10,'Q':10,'K':10}[dealerUpRank]||(parseInt(dealerUpRank)||10);
+  const total=calcVal(_curHand);
+  const hardTotal=_curHand.reduce((s,c)=>{const v={'J':10,'Q':10,'K':10}[c.rank]||(parseInt(c.rank)||1);return s+v;},0);
+  const isSoft=_curHand.some(c=>c.rank==='A')&&total>hardTotal;
+  const isPair=_curHand.length===2&&_curHand[0].rank===_curHand[1].rank;
+  if(isPair){
+    const r=_curHand[0].rank;
+    if(r==='A'||r==='8') return {a:'SPLIT',c:'#a855f7'};
+    if(r==='9') return (dv===7||dv>=10)?{a:'STAND',c:'#22c55e'}:{a:'SPLIT',c:'#a855f7'};
+    if(r==='7') return dv<=7?{a:'SPLIT',c:'#a855f7'}:{a:'HIT',c:'#3b82f6'};
+    if(r==='6') return dv<=6?{a:'SPLIT',c:'#a855f7'}:{a:'HIT',c:'#3b82f6'};
+    if(r==='4') return (dv>=5&&dv<=6)?{a:'SPLIT',c:'#a855f7'}:{a:'HIT',c:'#3b82f6'};
+    if(r==='3'||r==='2') return dv<=7?{a:'SPLIT',c:'#a855f7'}:{a:'HIT',c:'#3b82f6'};
+  }
+  if(isSoft){
+    if(total>=19) return {a:'STAND',c:'#22c55e'};
+    if(total===18){if(dv>=3&&dv<=6) return {a:'DOUBLE',c:'#ffd700'};if(dv===7||dv===8) return {a:'STAND',c:'#22c55e'};return {a:'HIT',c:'#3b82f6'};}
+    if(total===17) return (dv>=3&&dv<=6)?{a:'DOUBLE',c:'#ffd700'}:{a:'HIT',c:'#3b82f6'};
+    if(total>=15) return (dv>=4&&dv<=6)?{a:'DOUBLE',c:'#ffd700'}:{a:'HIT',c:'#3b82f6'};
+    if(total>=13) return (dv>=5&&dv<=6)?{a:'DOUBLE',c:'#ffd700'}:{a:'HIT',c:'#3b82f6'};
+    return {a:'HIT',c:'#3b82f6'};
+  }
+  if(total>=17) return {a:'STAND',c:'#22c55e'};
+  if(total>=13) return dv<=6?{a:'STAND',c:'#22c55e'}:{a:'HIT',c:'#3b82f6'};
+  if(total===12) return (dv>=4&&dv<=6)?{a:'STAND',c:'#22c55e'}:{a:'HIT',c:'#3b82f6'};
+  if(total===11) return dv<=10?{a:'DOUBLE',c:'#ffd700'}:{a:'HIT',c:'#3b82f6'};
+  if(total===10) return dv<=9?{a:'DOUBLE',c:'#ffd700'}:{a:'HIT',c:'#3b82f6'};
+  if(total===9) return (dv>=3&&dv<=6)?{a:'DOUBLE',c:'#ffd700'}:{a:'HIT',c:'#3b82f6'};
+  return {a:'HIT',c:'#3b82f6'};
+}
+function showHint(show){
+  const el=document.getElementById('hintBar');if(!el) return;
+  if(!show||!gameActive){el.style.display='none';return;}
+  const h=getHint();if(!h){el.style.display='none';return;}
+  el.style.cssText='display:block;text-align:center;padding:5px 10px;font-size:9px;letter-spacing:1.5px;border-radius:8px;margin-top:6px;font-weight:700;background:'+h.c+'1a;border:1px solid '+h.c+'44;color:'+h.c+';';
+  el.textContent='💡 BASIC STRATEGY: '+h.a;
+}
+function pushHistory(code){
+  handHistory.push(code);if(handHistory.length>20) handHistory.shift();
+  const el=document.getElementById('handHist');if(!el) return;
+  const colors={bj:'#ffd700',W:'#22c55e',L:'#dc2626',P:'#444'};
+  const labels={bj:'BJ',W:'W',L:'L',P:'P'};
+  el.innerHTML=handHistory.map(r=>`<span title="${labels[r]||r}" style="width:16px;height:16px;border-radius:50%;background:${colors[r]||'#333'};display:inline-flex;align-items:center;justify-content:center;font-size:6px;font-weight:900;color:${r==='L'||r==='P'?'#ccc':'#000'};flex-shrink:0;">${labels[r]||r}</span>`).join('');
+}
 init();
 </script>
 

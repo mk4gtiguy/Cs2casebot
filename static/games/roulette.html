@@ -109,6 +109,7 @@ canvas#wheelCanvas{border-radius:50%;box-shadow:0 0 40px rgba(0,0,0,0.6);}
     <canvas id="wheelCanvas" width="240" height="240"></canvas>
     <div class="result-num-big idle-num" id="resultNumBig">—</div>
     <div class="result-color" id="resultColor"></div>
+    <div id="spinHist" style="display:flex;gap:3px;flex-wrap:wrap;justify-content:center;padding:8px 4px 0;min-height:22px;"></div>
   </div>
 
   <div class="bet-table">
@@ -151,6 +152,7 @@ canvas#wheelCanvas{border-radius:50%;box-shadow:0 0 40px rgba(0,0,0,0.6);}
       <button class="btn-add-straight" onclick="addStraight()">+ ADD</button>
     </div>
     <div class="active-bets" id="activeBets"><span style="font-size:9px;color:#2a1818">No bets placed yet</span></div>
+    <button onclick="undoLastBet()" style="margin-top:6px;padding:5px 12px;background:rgba(255,100,0,0.06);border:1px solid rgba(255,100,0,0.15);border-radius:6px;color:#ff6644;font-family:var(--font);font-size:8px;cursor:pointer;letter-spacing:1px;">↩ UNDO LAST</button>
   </div>
 
   <div class="bet-ctrl">
@@ -172,7 +174,7 @@ canvas#wheelCanvas{border-radius:50%;box-shadow:0 0 40px rgba(0,0,0,0.6);}
 // Roulette numbers in wheel order (European)
 const WHEEL_ORDER=[0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26];
 const RED_NUMS=new Set([1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36]);
-let balance=0,bets=[],spinning=false;
+let balance=0,bets=[],spinning=false,spinHistory=[];
 
 // Wheel canvas
 const canvas=document.getElementById('wheelCanvas');
@@ -218,6 +220,9 @@ async function spinWheel(){
     const color=result===0?'GREEN':RED_NUMS.has(result)?'RED':'BLACK';
     const numClass=result===0?'zero-num':RED_NUMS.has(result)?'red-num':'black-num';
     setResultNum(result,numClass,color+'  '+result);
+    spinHistory.push({num:result,color});
+    if(spinHistory.length>20) spinHistory.shift();
+    renderSpinHist();
 
     if(d.total_win>d.total_bet){
       document.getElementById('resultSummary').className='result-summary win';
@@ -273,6 +278,17 @@ function renderBets(){
   });
 }
 function removeBet(i){bets.splice(i,1);renderBets();}
+function undoLastBet(){if(!bets.length)return;bets.pop();renderBets();}
+
+function renderSpinHist(){
+  const el=document.getElementById('spinHist');el.innerHTML='';
+  spinHistory.forEach(s=>{
+    const c=s.color==='RED'?'#dc2626':s.color==='GREEN'?'#16a34a':'#555';
+    const d=document.createElement('div');
+    d.style.cssText='width:16px;height:16px;border-radius:50%;background:'+c+';display:flex;align-items:center;justify-content:center;font-size:6px;color:#fff;font-weight:700;flex-shrink:0;';
+    d.textContent=s.num;el.appendChild(d);
+  });
+}
 
 function qb(v){document.getElementById('betInp').value=v;}
 function halveBet(){document.getElementById('betInp').value=Math.max(50,Math.floor(parseInt(document.getElementById('betInp').value||500)/2));}

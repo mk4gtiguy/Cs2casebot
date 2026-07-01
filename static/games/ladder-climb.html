@@ -129,12 +129,18 @@ body{background-image:radial-gradient(ellipse 80% 60% at 50% 100%,rgba(155,77,25
       <button class="btn-start-l" id="startBtn" onclick="startLadder()">🪜 START</button>
       <button class="btn-climb" id="climbBtn" onclick="climb()" disabled>⬆️ ATTEMPT RUNG</button>
     </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;">
+      <label style="display:flex;align-items:center;gap:5px;font-size:8px;color:#2a1a4a;cursor:pointer;letter-spacing:1px;">
+        <input type="checkbox" id="autoClimbOn" style="accent-color:var(--ladder);cursor:pointer;"> AUTO CLIMB
+      </label>
+      <span style="font-size:8px;color:#2a1a4a;letter-spacing:1px;">BEST: <span id="bestRungDisp" style="color:var(--gold);">—</span></span>
+    </div>
   </div>
 </div>
 <script>
 // 15 rungs: [fail_chance, per_rung_mult]
 const RUNGS=[[.10,1.25],[.12,1.35],[.15,1.50],[.18,1.70],[.20,1.95],[.23,2.30],[.26,2.80],[.28,3.50],[.30,4.50],[.33,6.00],[.36,8.50],[.38,12.0],[.40,18.0],[.42,28.0],[.45,50.0]];
-let balance=0,gameActive=false,acting=false,currentRung=0,currentMult=1;
+let balance=0,gameActive=false,acting=false,currentRung=0,currentMult=1,bestRung=0;
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}buildRungs(0,-1);}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function qb(v){document.getElementById('betInp').value=v;}
@@ -203,6 +209,8 @@ async function climb(){
         setResult('✅ RUNG '+currentRung+' CLEARED · '+currentMult.toFixed(2)+'× ACCUMULATED','win');
         flash('g');document.getElementById('coBtn').disabled=false;
         document.getElementById('climbBtn').disabled=false;
+        if(currentRung>bestRung){bestRung=currentRung;document.getElementById('bestRungDisp').textContent='RUNG '+bestRung;}
+        if(document.getElementById('autoClimbOn').checked&&gameActive) setTimeout(()=>climb(),600);
       }
     }
   }catch(e){setResult('ERROR','idle');document.getElementById('climbBtn').disabled=false;}

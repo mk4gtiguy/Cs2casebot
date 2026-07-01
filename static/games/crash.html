@@ -113,6 +113,14 @@ canvas#crashChart{width:100%;height:220px;display:block;}
       <button class="btn-bet" id="betBtn" onclick="placeBet()">🚀 BET &amp; JOIN</button>
       <button class="btn-co" id="coBtn" onclick="cashout()" disabled>💰 CASH OUT</button>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <span style="font-size:8px;color:#2a3a4a;letter-spacing:1px;flex-shrink:0;">AUTO CASHOUT AT</span>
+      <input id="autoCashInp" type="number" value="" min="1.1" step="0.1" placeholder="2.00×"
+        style="flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(255,107,0,0.1);border-radius:6px;padding:7px 8px;color:#c8d0e8;font-family:var(--font);font-size:11px;font-weight:700;outline:none;text-align:center;">
+      <label style="display:flex;align-items:center;gap:4px;font-size:9px;color:#2a3a4a;letter-spacing:1px;flex-shrink:0;cursor:pointer;">
+        <input type="checkbox" id="autoCashOn" style="accent-color:var(--green);"> ON
+      </label>
+    </div>
   </div>
 
   <div class="crash-history" id="crashHistory"></div>
@@ -186,6 +194,10 @@ function handleMsg(msg,bet){
     chartPoints.push([chartPoints.length,msg.mult]);
     if(chartPoints.length>150) chartPoints.shift();
     drawChart();setMult(msg.mult.toFixed(2),'climbing');
+    if(hasBet&&document.getElementById('autoCashOn').checked){
+      const acTarget=parseFloat(document.getElementById('autoCashInp').value);
+      if(!isNaN(acTarget)&&msg.mult>=acTarget)setTimeout(()=>cashout(),100);
+    }
   }else if(msg.type==='cashout'){
     updatePlayerCashout(msg.user_id,msg.at_mult,msg.win);
     if(msg.user_id===0) document.getElementById('coBtn').disabled=true;

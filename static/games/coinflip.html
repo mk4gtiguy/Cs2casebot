@@ -193,6 +193,7 @@ html,body{min-height:100vh;background:var(--bg);font-family:var(--font);overflow
       </div>
     </div>
     <div class="result-banner idle" id="resultBanner">CHOOSE HEADS OR TAILS</div>
+    <div id="flipHist" style="display:flex;gap:3px;flex-wrap:wrap;justify-content:center;padding:8px 0 2px;min-height:24px;"></div>
   </div>
 
   <!-- CALL -->
@@ -226,17 +227,27 @@ html,body{min-height:100vh;background:var(--bg);font-family:var(--font);overflow
     <div class="qb" onclick="qBet(10000)">$10K</div>
   </div>
 
-  <button class="btn-flip idle-mode" id="flipBtn" onclick="flip()" disabled>SELECT A SIDE</button>
+  <button class="btn-flip idle-mode" id="flipBtn" onclick="startFlip()" disabled>SELECT A SIDE</button>
 
-  <div class="stats-bar">
+  <div style="display:flex;gap:6px;margin-top:10px;align-items:center;">
+    <span style="font-size:8px;color:#444;letter-spacing:1px;white-space:nowrap;flex-shrink:0;">FLIPS</span>
+    <div class="qb" id="cnt1" onclick="setFlipCount(1)" style="flex:1;border-color:rgba(255,215,0,0.4);color:var(--gold);">1×</div>
+    <div class="qb" id="cnt5" onclick="setFlipCount(5)" style="flex:1;">5×</div>
+    <div class="qb" id="cnt10" onclick="setFlipCount(10)" style="flex:1;">10×</div>
+    <div class="qb" id="cnt25" onclick="setFlipCount(25)" style="flex:1;">25×</div>
+  </div>
+
+  <div class="stats-bar" style="margin-top:16px;grid-template-columns:repeat(4,1fr);">
     <div class="st"><div class="v" id="stW">0</div><div class="l">WINS</div></div>
     <div class="st"><div class="v" id="stL">0</div><div class="l">LOSSES</div></div>
+    <div class="st"><div class="v" id="stSK">—</div><div class="l">STREAK</div></div>
     <div class="st"><div class="v" id="stP">$0</div><div class="l">PROFIT</div></div>
   </div>
 </div>
 
 <script>
 let call=null,balance=0,wins=0,losses=0,profit=0,flipping=false;
+let flipCount=1,flipHistory=[],streakSide=null,streakCount=0,autoRunning=false;
 
 async function init(){
   try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
@@ -297,10 +308,7 @@ async function flip(){
     profit+=profitDelta;
     if(d.user_wins){wins++;showResult(`✅ ${d.result.toUpperCase()} — YOU WIN $${d.win.toLocaleString(undefined,{maximumFractionDigits:0})}`,'win');flashScreen('gold');}
     else{losses++;showResult(`❌ ${d.result.toUpperCase()} — YOU LOSE $${bet.toLocaleString(undefined,{maximumFractionDigits:0})}`,'loss');flashScreen('red');}
-
-    document.getElementById('stW').textContent=wins;
-    document.getElementById('stL').textContent=losses;
-    document.getElementById('stP').textContent=(profit>=0?'+':'')+profit.toLocaleString(undefined,{maximumFractionDigits:0});
+    updateCFStats(d.result, d.user_wins);
   }catch(e){
     coin.classList.remove('flip');
     showResult('ERROR: '+e.message,'idle');
@@ -329,6 +337,47 @@ async function api(url,opts={}){
   return r.json();
 }
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}
+function updateCFStats(result, won){
+  flipHistory.push(result);if(flipHistory.length>20) flipHistory.shift();
+  if(result===streakSide) streakCount++;else{streakSide=result;streakCount=1;}
+  document.getElementById('stW').textContent=wins;
+  document.getElementById('stL').textContent=losses;
+  document.getElementById('stP').textContent=(profit>=0?'+':'')+profit.toLocaleString(undefined,{maximumFractionDigits:0});
+  const sk=document.getElementById('stSK');
+  if(streakCount>=2){const ico=streakSide==='heads'?'👑':'🛡️';sk.textContent=ico+' '+streakCount+'×';}
+  else sk.textContent='—';
+  // History dots
+  const el=document.getElementById('flipHist');
+  el.innerHTML=flipHistory.map(r=>{
+    const isH=r==='heads';
+    return `<span title="${r}" style="width:16px;height:16px;border-radius:50%;background:${isH?'#c9900a':'#6a7080'};display:inline-flex;align-items:center;justify-content:center;font-size:7px;flex-shrink:0;">${isH?'H':'T'}</span>`;
+  }).join('');
+}
+function setFlipCount(n){
+  flipCount=n;
+  ['cnt1','cnt5','cnt10','cnt25'].forEach(id=>{
+    const el=document.getElementById(id);
+    const v=parseInt(el.textContent);
+    el.style.borderColor=v===n?'rgba(255,215,0,0.5)':'rgba(255,215,0,0.12)';
+    el.style.color=v===n?'var(--gold)':'#888';
+  });
+}
+async function startFlip(){
+  if(!call||flipping) return;
+  if(autoRunning){autoRunning=false;return;}
+  if(flipCount===1){await flip();return;}
+  autoRunning=true;
+  const btn=document.getElementById('flipBtn');
+  for(let i=0;i<flipCount&&autoRunning;i++){
+    const bet=parseInt(document.getElementById('betInp').value)||500;
+    if(bet>balance){autoRunning=false;break;}
+    btn.textContent='⏹ STOP ('+(flipCount-i)+' left)';
+    await flip();
+    if(i<flipCount-1&&autoRunning) await delay(300);
+  }
+  autoRunning=false;
+  const c=call;setCall(c);
+}
 init();
 </script>
 </body>

@@ -88,6 +88,13 @@ body{background-image:linear-gradient(135deg,rgba(33,150,243,0.03) 0%,transparen
 .pt-row.bust .pt-mult{color:var(--t);}
 .pt-row.ct .pt-mult{color:var(--ct);}
 
+.hist-row{display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:14px;margin-top:10px;}
+.hist-lbl{font-size:8px;color:#2a3a4a;letter-spacing:1px;flex-shrink:0;margin-right:2px;}
+.hist-dot{width:12px;height:12px;border-radius:50%;}
+.mini-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;}
+.ms-b{background:rgba(255,152,0,0.05);border:1px solid rgba(255,152,0,0.1);border-radius:8px;padding:8px;text-align:center;}
+.ms-b .sv{font-size:14px;font-weight:900;font-family:monospace;color:var(--orange);}
+.ms-b .sl{font-size:8px;color:#3a3020;letter-spacing:1px;margin-top:2px;}
 /* EXPLOSION OVERLAY */
 #explodeOv{position:fixed;inset:0;z-index:200;pointer-events:none;opacity:0;display:flex;align-items:center;justify-content:center;}
 #explodeOv.show{animation:explode-anim .6s ease forwards;}
@@ -133,6 +140,12 @@ body{background-image:linear-gradient(135deg,rgba(33,150,243,0.03) 0%,transparen
     </div>
   </div>
 
+  <div class="mini-stats">
+    <div class="ms-b"><div class="sv" id="bWins">0</div><div class="sl">WINS</div></div>
+    <div class="ms-b"><div class="sv" id="bSpins">0</div><div class="sl">SPINS</div></div>
+    <div class="ms-b"><div class="sv" id="bBusts">0</div><div class="sl">BUSTS</div></div>
+  </div>
+
   <div class="ctrls">
     <div class="bl">BET AMOUNT</div>
     <div class="bd" id="betD">$500</div>
@@ -149,6 +162,13 @@ body{background-image:linear-gradient(135deg,rgba(33,150,243,0.03) 0%,transparen
       <div class="adj" onclick="maxBet()">MAX</div>
     </div>
     <button class="btn-pull" id="pullBtn" onclick="pull()">💣 PULL THE LEVER</button>
+    <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
+      <span style="font-size:8px;color:#2a3a4a;letter-spacing:1px;flex-shrink:0;">AUTO</span>
+      <button class="adj" onclick="autoPull(5)">×5</button>
+      <button class="adj" onclick="autoPull(10)">×10</button>
+      <button class="adj" onclick="autoPull(25)">×25</button>
+    </div>
+    <div class="hist-row" id="bHistRow"><span class="hist-lbl">SESSION:</span></div>
   </div>
 
   <div class="pt">
@@ -165,7 +185,7 @@ body{background-image:linear-gradient(135deg,rgba(33,150,243,0.03) 0%,transparen
 
 <script>
 const SYMS=['🔵','🔴','🔫','💣','🛡️','💎'];
-let bet=500,balance=0,pulling=false;
+let bet=500,balance=0,pulling=false,bWins=0,bSpins=0,bBusts=0,bHistory=[],_bAutoRunning=false;
 
 async function init(){
   try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
@@ -219,6 +239,7 @@ async function pull(){
 
     await delay(300);
     balance=await refreshBal();updateBal();
+    bSpins++;document.getElementById('bSpins').textContent=bSpins;
 
     if(d.is_bust){
       // BOOM!
@@ -229,12 +250,17 @@ async function pull(){
       setResult(`💣 ${d.label}`,'bust');
       document.getElementById('rbSub').textContent=`LOST $${bet.toLocaleString()} + PENALTY`;
       document.getElementById('rbPenalty').textContent=`EXTRA LOSS: $${d.extra_loss.toLocaleString(undefined,{maximumFractionDigits:0})}`;
+      bBusts++;document.getElementById('bBusts').textContent=bBusts;
+      pushBHist('bust');
     }else if(d.win>0){
       setResult(`✅ ${d.label}`,d.mult>=100?'defuse':'win');
       document.getElementById('rbSub').textContent=`${d.mult}× · +$${d.win.toLocaleString(undefined,{maximumFractionDigits:0})}`;
       flashGreen();
+      bWins++;document.getElementById('bWins').textContent=bWins;
+      pushBHist('win');
     }else{
       setResult('NO MATCH — TRY AGAIN','idle');
+      pushBHist('miss');
     }
   }catch(e){setResult('ERROR','idle');}
   finally{pulling=false;document.getElementById('pullBtn').disabled=false;}
@@ -242,6 +268,8 @@ async function pull(){
 
 function setResult(text,cls){const el=document.getElementById('rbMain');el.className='rb-main '+cls;el.textContent=text;}
 function flashGreen(){const el=document.getElementById('flash');el.className='g';void el.offsetWidth;el.classList.add('show');}
+function pushBHist(type){bHistory.push(type);if(bHistory.length>20)bHistory.shift();const el=document.getElementById('bHistRow');if(!el)return;el.innerHTML='<span class="hist-lbl">SESSION:</span>';bHistory.forEach(t=>{const d=document.createElement('div');d.className='hist-dot';d.style.background=t==='win'?'#22c55e':t==='bust'?'#ef4444':'#2a3a4a';el.appendChild(d);});}
+async function autoPull(count){if(_bAutoRunning)return;_bAutoRunning=true;let rem=count;while(rem>0&&_bAutoRunning){await pull();rem--;if(rem>0)await delay(400);}_bAutoRunning=false;}
 async function refreshBal(){try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}

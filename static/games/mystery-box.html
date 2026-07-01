@@ -47,14 +47,28 @@ body{background-image:radial-gradient(ellipse 80% 40% at 50% 0%,rgba(255,215,0,0
 .mbox:hover:not(.opened){background:rgba(255,215,0,0.14);border-color:rgba(255,215,0,0.35);transform:scale(0.97);}
 .mbox.closed{animation:box-wait 3s ease-in-out infinite;}
 @keyframes box-wait{0%,100%{box-shadow:none;}50%{box-shadow:0 0 10px rgba(255,215,0,0.1);}}
-.mbox.safe-open{background:rgba(34,197,94,0.15);border-color:var(--green);animation:open-pop .3s cubic-bezier(.34,1.56,.64,1);}
-@keyframes open-pop{0%{transform:scale(0.7);opacity:0;}100%{transform:scale(1);opacity:1;}}
-.mbox.bomb-open{background:rgba(255,51,51,0.2);border-color:var(--bomb);animation:bomb-hit .15s ease 4;}
-@keyframes bomb-hit{0%,100%{background:rgba(255,51,51,0.2);}50%{background:rgba(255,51,51,0.5);}}
+.mbox.safe-open{background:rgba(34,197,94,0.15);border-color:var(--green);animation:open-pop .45s cubic-bezier(.34,1.56,.64,1) forwards,safe-glow 2s ease 0.45s infinite;}
+@keyframes open-pop{0%{transform:scale(0.5) rotate(-8deg);opacity:0;}65%{transform:scale(1.12) rotate(3deg);}100%{transform:scale(1) rotate(0deg);opacity:1;}}
+@keyframes safe-glow{0%,100%{box-shadow:0 0 6px rgba(34,197,94,0.2);}50%{box-shadow:0 0 18px rgba(34,197,94,0.55),inset 0 0 8px rgba(34,197,94,0.08);}}
+.mbox.bomb-open{background:rgba(255,51,51,0.25);border-color:var(--bomb);animation:bomb-shake .5s ease,bomb-glow 1s ease 0.5s infinite;}
+@keyframes bomb-shake{0%,100%{transform:translate(0);}15%{transform:translate(-5px,-2px);}30%{transform:translate(5px,2px);}45%{transform:translate(-4px,0);}60%{transform:translate(4px,-3px);}75%{transform:translate(-3px,4px);}90%{transform:translate(3px,-2px);}}
+@keyframes bomb-glow{0%,100%{box-shadow:0 0 8px rgba(255,51,51,0.3);}50%{box-shadow:0 0 22px rgba(255,51,51,0.65),inset 0 0 10px rgba(255,51,51,0.1);}}
 .mbox.revealed-safe{background:rgba(34,197,94,0.08);border-color:rgba(34,197,94,0.2);cursor:default;opacity:.7;}
 .mbox.revealed-bomb{background:rgba(255,51,51,0.06);border-color:rgba(255,51,51,0.15);cursor:default;opacity:.6;}
 .mbox.disabled{cursor:default;}
 .mbox .box-val{position:absolute;bottom:4px;right:5px;font-size:7px;font-family:monospace;color:var(--cs);opacity:.8;}
+
+/* Danger meter */
+.dm-wrap{margin-bottom:12px;}
+.dm-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;}
+.dm-lbl{font-size:8px;letter-spacing:1px;color:#2a2010;}
+.dm-pct-val{font-size:10px;font-family:monospace;font-weight:700;transition:color .4s;}
+.dm-bar{height:5px;background:rgba(255,255,255,0.04);border-radius:3px;overflow:hidden;}
+.dm-fill{height:100%;border-radius:3px;transition:width .5s ease,background .5s ease;width:0%;}
+/* Session history */
+.mb-hist{display:flex;gap:4px;flex-wrap:wrap;min-height:14px;margin-bottom:12px;align-items:center;}
+.mbh-lbl{font-size:8px;color:#2a2010;letter-spacing:1px;flex-shrink:0;margin-right:2px;}
+.mbh-dot{width:12px;height:12px;border-radius:50%;}
 
 /* RESULT */
 .result-mb{text-align:center;min-height:28px;font-size:11px;font-weight:700;letter-spacing:2px;margin-bottom:12px;display:flex;align-items:center;justify-content:center;}
@@ -112,6 +126,10 @@ body{background-image:radial-gradient(ellipse 80% 40% at 50% 0%,rgba(255,215,0,0
       <div class="bst"><div class="bv" id="multAcc">0.0×</div><div class="bl2">ACCUMULATED</div></div>
       <div class="bst"><div class="bv" id="potMb">$0</div><div class="bl2">POT WIN</div></div>
     </div>
+    <div class="dm-wrap">
+      <div class="dm-top"><span class="dm-lbl">💣 BOMB DANGER</span><span class="dm-pct-val" id="dangerPct">—</span></div>
+      <div class="dm-bar"><div class="dm-fill" id="dangerFill"></div></div>
+    </div>
     <div class="box-grid sz9" id="boxGrid"></div>
     <div class="result-mb idle" id="resultMb">OPEN BOXES TO COLLECT MULTIPLIERS</div>
     <div class="co-strip">
@@ -120,6 +138,7 @@ body{background-image:radial-gradient(ellipse 80% 40% at 50% 0%,rgba(255,215,0,0
     </div>
   </div>
 
+  <div class="mb-hist" id="mbHist"><span class="mbh-lbl">SESSION:</span></div>
   <div class="diff-row">
     <div class="df active" id="dfEasy" onclick="setDiff('easy')">🟢 EASY<br><span style="font-size:7px">9 BOX · 1 BOMB</span></div>
     <div class="df" id="dfMedium" onclick="setDiff('medium')">🟡 MEDIUM<br><span style="font-size:7px">9 BOX · 2 BOMBS</span></div>
@@ -142,8 +161,30 @@ body{background-image:radial-gradient(ellipse 80% 40% at 50% 0%,rgba(255,215,0,0
   </div>
 </div>
 <script>
-const DIFF={easy:{size:9,cols:'sz9'},medium:{size:9,cols:'sz9'},hard:{size:12,cols:'sz12'},expert:{size:16,cols:'sz16'}};
+const DIFF={easy:{size:9,cols:'sz9',bombs:1},medium:{size:9,cols:'sz9',bombs:2},hard:{size:12,cols:'sz12',bombs:3},expert:{size:16,cols:'sz16',bombs:5}};
 let diff='easy',balance=0,gameActive=false,acting=false,totalMult=0,opened=0,bet=500;
+let mbHistory=[];
+function updateDanger(openedCount){
+  const cfg=DIFF[diff];
+  const pEl=document.getElementById('dangerPct');
+  const fEl=document.getElementById('dangerFill');
+  if(!gameActive||openedCount===null||openedCount===undefined){
+    if(pEl){pEl.textContent='—';pEl.style.color='';}
+    if(fEl){fEl.style.width='0%';fEl.style.background='#22c55e';}return;
+  }
+  const rem=cfg.size-openedCount;
+  if(rem<=0){if(pEl)pEl.textContent='0%';if(fEl)fEl.style.width='0%';return;}
+  const pct=Math.round(cfg.bombs/rem*100);
+  const col=pct<20?'#22c55e':pct<40?'#84cc16':pct<60?'#f59e0b':pct<80?'#f97316':'#ff3333';
+  if(fEl){fEl.style.width=Math.min(pct,100)+'%';fEl.style.background=col;}
+  if(pEl){pEl.textContent=pct+'%';pEl.style.color=col;}
+}
+function pushMbHist(won){
+  mbHistory.push(won);if(mbHistory.length>20)mbHistory.shift();
+  const el=document.getElementById('mbHist');if(!el)return;
+  el.innerHTML='<span class="mbh-lbl">SESSION:</span>';
+  mbHistory.forEach(w=>{const d=document.createElement('div');d.className='mbh-dot';d.style.background=w?'#22c55e':'#ff3333';d.title=w?'Cash Out ✓':'Bomb 💣';el.appendChild(d);});
+}
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}buildGrid();}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function setDiff(d){diff=d;Object.keys(DIFF).forEach(k=>{document.getElementById('df'+k.charAt(0).toUpperCase()+k.slice(1)).classList.toggle('active',k===d);});if(!gameActive)buildGrid();}
@@ -167,7 +208,7 @@ async function startMystery(){
   setResult('OPEN BOXES — AVOID THE BOMBS!','idle');
   try{
     await api('/api/games/hard/mystery/start',{method:'POST',body:JSON.stringify({amount:bet,difficulty:diff})});
-    gameActive=true;balance=await refreshBal();updateBal();
+    gameActive=true;updateDanger(0);balance=await refreshBal();updateBal();
     buildGrid();document.getElementById('coBtn').disabled=true;
   }catch(e){setResult('ERROR: '+e.message,'idle');}
   finally{acting=false;document.getElementById('startBtn').disabled=false;}
@@ -182,7 +223,7 @@ async function openBox(idx){
     if(d.type==='bomb'){
       cell.className='mbox bomb-open';cell.textContent=d.skin||'💣';
       if(d.all_grid){d.all_grid.forEach((b,i)=>{const el=document.getElementById('mb'+i);if(el&&!el.classList.contains('bomb-open')&&!el.classList.contains('safe-open')){el.className='mbox revealed-'+(b.type==='bomb'?'bomb':'safe');el.textContent=b.type==='bomb'?'💣':b.skin||'📦';}});}
-      gameActive=false;document.getElementById('coBtn').disabled=true;
+      gameActive=false;document.getElementById('coBtn').disabled=true;updateDanger(null);pushMbHist(false);
       setResult('💣 BOMB! LOST EVERYTHING · HAD '+totalMult.toFixed(1)+'×','boom');
       doExplode();balance=await refreshBal();updateBal();
     }else{
@@ -191,10 +232,11 @@ async function openBox(idx){
       totalMult=d.total_mult;opened++;
       updateStats(opened,totalMult,bet*Math.max(totalMult,0));
       if(d.cleared){
-        gameActive=false;
+        gameActive=false;updateDanger(null);pushMbHist(true);
         setResult('🏆 ALL SAFE BOXES CLEARED! +$'+d.auto_win.toLocaleString(undefined,{maximumFractionDigits:0}),'big');
         flashGold();balance=await refreshBal();updateBal();
       }else{
+        updateDanger(opened);
         setResult('📦 +'+val+'× · TOTAL '+totalMult.toFixed(1)+'×','win');
         document.getElementById('coBtn').disabled=(totalMult<=0);
         if(totalMult>0) flashGold();
@@ -210,6 +252,7 @@ async function cashout(){
     const d=await api('/api/games/hard/mystery/cashout',{method:'POST'});
     balance=await refreshBal();updateBal();
     setResult('💰 CASHED OUT '+totalMult.toFixed(1)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
+    updateDanger(null);pushMbHist(true);
   }catch(e){setResult('ERROR','idle');}
   finally{acting=false;}
 }

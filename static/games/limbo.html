@@ -215,6 +215,14 @@ body{background-image:radial-gradient(ellipse 60% 50% at 50% 50%,rgba(26,237,255
 
   <button class="btn-play" id="playBtn" onclick="play()">📉 SET THE LIMBO</button>
 
+  <div style="display:flex;gap:6px;margin-top:10px;align-items:center;">
+    <span style="font-size:8px;color:#2a4a5a;letter-spacing:1px;flex-shrink:0;">AUTO</span>
+    <div class="qb" id="la5" onclick="limboSetAuto(5)">5×</div>
+    <div class="qb" id="la10" onclick="limboSetAuto(10)">10×</div>
+    <div class="qb" id="la25" onclick="limboSetAuto(25)">25×</div>
+    <button id="limboAutoBtn" onclick="limboToggleAuto()" style="flex:2;padding:8px 4px;background:rgba(26,237,255,0.04);border:1px solid rgba(26,237,255,0.1);border-radius:8px;color:#2a4a5a;font-family:var(--font);font-size:8px;font-weight:700;letter-spacing:1px;cursor:pointer;">▶ AUTO PLAY</button>
+  </div>
+
   <div class="stats">
     <div class="stt"><div class="sv" id="stW">0</div><div class="sl">WINS</div></div>
     <div class="stt"><div class="sv" id="stL">0</div><div class="sl">LOSSES</div></div>
@@ -225,6 +233,7 @@ body{background-image:radial-gradient(ellipse 60% 50% at 50% 50%,rgba(26,237,255
 
 <script>
 let balance=0,wins=0,losses=0,streak=0,bestWin=0,playing=false;
+let limboAutoCount=0,limboAutoRunning=false;
 
 async function init(){
   try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}
@@ -319,6 +328,36 @@ async function play(){
     playing=false;
     document.getElementById('playBtn').disabled=false;
   }
+}
+
+function limboSetAuto(n){
+  limboAutoCount=n;
+  ['5','10','25'].forEach(v=>{
+    const el=document.getElementById('la'+v);
+    if(el){el.style.borderColor='';el.style.color='';}
+  });
+  const sel=document.getElementById('la'+n);
+  if(sel){sel.style.borderColor='var(--line)';sel.style.color='var(--line)';}
+}
+
+async function limboToggleAuto(){
+  if(limboAutoRunning){
+    limboAutoRunning=false;
+    document.getElementById('limboAutoBtn').textContent='▶ AUTO PLAY';
+    return;
+  }
+  if(!limboAutoCount) limboSetAuto(5);
+  limboAutoRunning=true;
+  document.getElementById('limboAutoBtn').textContent='⏹ STOP';
+  let rem=limboAutoCount;
+  while(rem>0&&limboAutoRunning){
+    const bet=parseInt(document.getElementById('betInp').value)||500;
+    if(bet>balance) break;
+    await play();
+    rem--;
+  }
+  limboAutoRunning=false;
+  document.getElementById('limboAutoBtn').textContent='▶ AUTO PLAY';
 }
 
 function flash(c){const el=document.getElementById('flash');el.className=c;void el.offsetWidth;el.classList.add('show');}

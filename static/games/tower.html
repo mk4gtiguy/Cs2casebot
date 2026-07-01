@@ -77,6 +77,13 @@ body{background-image:linear-gradient(180deg,rgba(255,184,0,0.04) 0%,transparent
 .btn-start:not(:disabled):hover{transform:translateY(-2px);box-shadow:0 6px 32px rgba(255,184,0,0.5);}
 .btn-start:disabled{opacity:.4;cursor:not-allowed;transform:none!important;}
 
+.hist-row{display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:14px;margin-top:10px;}
+.hist-lbl{font-size:8px;color:#3a2a18;letter-spacing:1px;flex-shrink:0;margin-right:2px;}
+.hist-dot{width:12px;height:12px;border-radius:50%;}
+.mini-stats{display:flex;gap:8px;margin-bottom:12px;}
+.ms-box{flex:1;background:rgba(255,184,0,0.05);border:1px solid rgba(255,184,0,0.1);border-radius:8px;padding:8px;text-align:center;}
+.ms-box .sv{font-size:14px;font-weight:900;color:var(--amber);font-family:monospace;}
+.ms-box .sl{font-size:8px;color:#3a2a18;letter-spacing:1px;margin-top:2px;}
 #expl{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:200;background:radial-gradient(ellipse at 50% 50%,rgba(239,68,68,0.3),transparent 70%);}
 #expl.show{animation:exanim .4s ease;}
 @keyframes exanim{0%{opacity:0;}20%{opacity:1;}100%{opacity:0;}}
@@ -104,6 +111,11 @@ body{background-image:linear-gradient(180deg,rgba(255,184,0,0.04) 0%,transparent
     </div>
   </div>
 
+  <div class="mini-stats">
+    <div class="ms-box"><div class="sv" id="bestFloorDisp">0</div><div class="sl">BEST FLOOR</div></div>
+    <div class="ms-box"><div class="sv" id="winStreakDisp">0</div><div class="sl">WIN STREAK</div></div>
+  </div>
+
   <div class="diff-row">
     <div class="df active" id="dfEasy" onclick="setDiff('easy')">🟢 EASY<br><span style="font-size:7px">3 BOX · 1 BOMB</span></div>
     <div class="df" id="dfMedium" onclick="setDiff('medium')">🟡 MEDIUM<br><span style="font-size:7px">3 BOX · 1 BOMB</span></div>
@@ -123,11 +135,18 @@ body{background-image:linear-gradient(180deg,rgba(255,184,0,0.04) 0%,transparent
       <div class="qb" onclick="qb(1000)">$1K</div><div class="qb" onclick="qb(5000)">$5K</div><div class="qb" onclick="qb(10000)">$10K</div>
     </div>
     <button class="btn-start" id="startBtn" onclick="startTower()">🏗️ BEGIN CLIMB</button>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <label style="display:flex;align-items:center;gap:5px;font-size:8px;color:#3a2a18;letter-spacing:1px;cursor:pointer;">
+        <input type="checkbox" id="autoClimb" style="accent-color:var(--amber);"> AUTO-CLIMB
+      </label>
+      <span style="font-size:8px;color:#2a1808;letter-spacing:1px;">(picks random box every 0.8s)</span>
+    </div>
+    <div class="hist-row" id="tHistRow"><span class="hist-lbl">SESSION:</span></div>
   </div>
 </div>
 <script>
 const DIFF_CFG={easy:{floors:8,boxes:3},medium:{floors:10,boxes:3},hard:{floors:12,boxes:2},expert:{floors:16,boxes:2}};
-let diff='easy',balance=0,gameActive=false,currentFloor=0,totalFloors=8,boxCount=3,acting=false,bet=500;
+let diff='easy',balance=0,gameActive=false,currentFloor=0,totalFloors=8,boxCount=3,acting=false,bet=500,tHistory=[],bestFloor=0,tStreak=0;
 async function init(){try{const d=await api('/api/user/me');balance=d.balance;updateBal();}catch(e){}buildFloor();}
 function updateBal(){document.getElementById('balDisplay').textContent='$'+balance.toLocaleString(undefined,{maximumFractionDigits:0});}
 function setDiff(d){diff=d;Object.keys(DIFF_CFG).forEach(k=>{document.getElementById('df'+k.charAt(0).toUpperCase()+k.slice(1)).classList.toggle('active',k===d);});if(!gameActive)buildFloor();}
@@ -198,17 +217,21 @@ async function pickBox(boxIdx){
       gameActive=false;document.getElementById('coBtn').disabled=true;
       setResult('💥 HIT A BOMB — FLOOR '+(d.bust_floor+1),'boom');
       doExplode();balance=await refreshBal();updateBal();
+      pushTHist(false);
     }else{
       currentFloor++;
+      if(currentFloor>bestFloor){bestFloor=currentFloor;document.getElementById('bestFloorDisp').textContent=bestFloor;}
       if(d.at_top){
-        gameActive=false;
+        gameActive=false;tStreak++;document.getElementById('winStreakDisp').textContent=tStreak;
         setResult('🏆 SUMMIT REACHED! +$'+d.auto_win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
         balance=await refreshBal();updateBal();
         document.getElementById('coBtn').disabled=true;
+        pushTHist(true);
       }else{
         updateProgress(currentFloor,d.multiplier,d.potential_win);
         setResult('✅ FLOOR '+(currentFloor)+' CLEAR · '+d.multiplier.toFixed(2)+'×','win');
         document.getElementById('coBtn').disabled=false;
+        if(document.getElementById('autoClimb').checked&&gameActive) setTimeout(()=>{if(!gameActive||acting)return;if(!document.getElementById('autoClimb').checked)return;pickBox(Math.floor(Math.random()*boxCount));},800);
       }
       renderTower();
     }
@@ -221,7 +244,9 @@ async function cashoutTower(){
   try{
     const d=await api('/api/games/medium/tower/cashout',{method:'POST'});
     balance=await refreshBal();updateBal();
+    tStreak++;document.getElementById('winStreakDisp').textContent=tStreak;
     setResult('💰 CASHED OUT FLOOR '+currentFloor+' · '+d.multiplier.toFixed(2)+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),'win');
+    pushTHist(true);
   }catch(e){setResult('ERROR','idle');}
   finally{acting=false;}
 }
@@ -233,6 +258,7 @@ function updateProgress(floor,mult,pot){
 }
 function setResult(t,c){const el=document.getElementById('resultLine');el.className='result-line '+c;el.textContent=t;}
 function doExplode(){const el=document.getElementById('expl');el.classList.remove('show');void el.offsetWidth;el.classList.add('show');}
+function pushTHist(win){tHistory.push(win);if(tHistory.length>20)tHistory.shift();if(!win){tStreak=0;document.getElementById('winStreakDisp').textContent=0;}const el=document.getElementById('tHistRow');if(!el)return;el.innerHTML='<span class="hist-lbl">SESSION:</span>';tHistory.forEach(w=>{const d=document.createElement('div');d.className='hist-dot';d.style.background=w?'#22c55e':'#ef4444';el.appendChild(d);});}
 async function refreshBal(){try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}
 init();

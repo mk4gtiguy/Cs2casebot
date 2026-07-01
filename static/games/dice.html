@@ -211,6 +211,14 @@ input[type=range]::-webkit-slider-thumb{
 
   <button class="btn-roll" id="rollBtn" onclick="roll()">🎲 ROLL THE DICE</button>
 
+  <div style="display:flex;gap:6px;margin-top:10px;align-items:center;">
+    <span style="font-size:8px;color:#334;letter-spacing:1px;flex-shrink:0;">AUTO</span>
+    <div class="qb" id="da5" onclick="diceSetAuto(5)">5×</div>
+    <div class="qb" id="da10" onclick="diceSetAuto(10)">10×</div>
+    <div class="qb" id="da25" onclick="diceSetAuto(25)">25×</div>
+    <button id="diceAutoBtn" onclick="diceToggleAuto()" style="flex:2;padding:8px 4px;background:rgba(0,229,255,0.04);border:1px solid rgba(0,229,255,0.1);border-radius:8px;color:#446;font-family:var(--font);font-size:8px;font-weight:700;letter-spacing:1px;cursor:pointer;">▶ AUTO ROLL</button>
+  </div>
+
   <div class="stats">
     <div class="stt"><div class="sv" id="stW">0</div><div class="sl">WINS</div></div>
     <div class="stt"><div class="sv" id="stL">0</div><div class="sl">LOSSES</div></div>
@@ -220,6 +228,7 @@ input[type=range]::-webkit-slider-thumb{
 
 <script>
 let betType='over', target=50, balance=0, wins=0, losses=0, bestWin=0, rolling=false;
+let diceAutoCount=0,diceAutoRunning=false;
 
 // Number texture
 (function spawnNums(){
@@ -320,6 +329,36 @@ async function roll(){
     rolling=false;
     document.getElementById('rollBtn').disabled=false;
   }
+}
+
+function diceSetAuto(n){
+  diceAutoCount=n;
+  ['5','10','25'].forEach(v=>{
+    const el=document.getElementById('da'+v);
+    el.style.borderColor='';el.style.color='';
+  });
+  const sel=document.getElementById('da'+n);
+  if(sel){sel.style.borderColor='var(--accent)';sel.style.color='var(--accent)';}
+}
+
+async function diceToggleAuto(){
+  if(diceAutoRunning){
+    diceAutoRunning=false;
+    document.getElementById('diceAutoBtn').textContent='▶ AUTO ROLL';
+    return;
+  }
+  if(!diceAutoCount) diceSetAuto(5);
+  diceAutoRunning=true;
+  document.getElementById('diceAutoBtn').textContent='⏹ STOP';
+  let rem=diceAutoCount;
+  while(rem>0&&diceAutoRunning){
+    const bet=parseInt(document.getElementById('betInp').value)||500;
+    if(bet>balance) break;
+    await roll();
+    rem--;
+  }
+  diceAutoRunning=false;
+  document.getElementById('diceAutoBtn').textContent='▶ AUTO ROLL';
 }
 
 function flash(c){

@@ -61,6 +61,9 @@ canvas#plinkoBd{display:block;width:100%;border-radius:8px;}
 .btn-drop:not(:disabled):hover{transform:translateY(-2px);box-shadow:0 6px 32px rgba(155,77,255,0.55);}
 .btn-drop:disabled{opacity:.4;cursor:not-allowed;transform:none!important;}
 
+.hist-row{display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:14px;margin-top:10px;}
+.hist-lbl{font-size:8px;color:#3a2a5a;letter-spacing:1px;flex-shrink:0;margin-right:2px;}
+.hist-dot{width:12px;height:12px;border-radius:50%;}
 #flash{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:200;}
 #flash.g{background:radial-gradient(ellipse at 50% 30%,rgba(255,215,0,0.25),transparent 70%);}
 #flash.show{animation:fl .5s ease;}
@@ -100,11 +103,18 @@ canvas#plinkoBd{display:block;width:100%;border-radius:8px;}
       <div class="qb" onclick="qb(1000)">$1K</div><div class="qb" onclick="qb(5000)">$5K</div><div class="qb" onclick="qb(10000)">$10K</div>
     </div>
     <button class="btn-drop" id="dropBtn" onclick="drop()">⚽ DROP BALL</button>
+    <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
+      <span style="font-size:8px;color:#3a2a5a;letter-spacing:1px;flex-shrink:0;">AUTO</span>
+      <button class="qb" style="flex:1" onclick="autoDrop(5)">×5</button>
+      <button class="qb" style="flex:1" onclick="autoDrop(10)">×10</button>
+      <button class="qb" style="flex:1" onclick="autoDrop(25)">×25</button>
+    </div>
+    <div class="hist-row" id="pHistRow"><span class="hist-lbl">SESSION:</span></div>
   </div>
 </div>
 <script>
 const PAYOUTS={low:[5.6,2.1,1.1,0.5,0.3,0.5,1.1,2.1,5.6],medium:[13,3,1.4,0.7,0.4,0.7,1.4,3,13],high:[29,4,1.5,0.3,0.2,0.3,1.5,4,29]};
-let risk='medium',balance=0,dropping=false;
+let risk='medium',balance=0,dropping=false,pHistory=[],_pAutoRunning=false;
 const canvas=document.getElementById('plinkoBd');
 const ctx=canvas.getContext('2d');
 const ROWS=8,COLS=9;
@@ -177,6 +187,7 @@ async function drop(){
     // Light up winning bucket
     const cell=document.getElementById('mscell'+d.bucket);
     if(cell){cell.classList.add('lit');setTimeout(()=>cell.classList.remove('lit'),800);}
+    pushPHist(d.mult||0);
     if(d.win>bet){
       setResult(d.mult+'× · +$'+d.win.toLocaleString(undefined,{maximumFractionDigits:0}),d.mult>=10?'big':'win');
       flashGold();
@@ -219,6 +230,8 @@ async function animateBall(path,finalBucket){
 
 function setResult(t,c){const el=document.getElementById('rsText');el.className='rs-text '+c;el.textContent=t;}
 function flashGold(){const el=document.getElementById('flash');el.className='g';void el.offsetWidth;el.classList.add('show');}
+function pushPHist(mult){pHistory.push(mult);if(pHistory.length>20)pHistory.shift();const el=document.getElementById('pHistRow');if(!el)return;el.innerHTML='<span class="hist-lbl">SESSION:</span>';pHistory.forEach(m=>{const d=document.createElement('div');d.className='hist-dot';d.style.background=m>=10?'#ffd700':m>=2?'#22c55e':m>=1?'#f97316':'#ef4444';el.appendChild(d);});}
+async function autoDrop(count){if(_pAutoRunning)return;_pAutoRunning=true;let rem=count;while(rem>0&&_pAutoRunning){await drop();rem--;if(rem>0)await delay(400);}_pAutoRunning=false;}
 async function refreshBal(){try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}

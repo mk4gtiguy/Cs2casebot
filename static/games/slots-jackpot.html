@@ -92,6 +92,13 @@ body{background-image:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(124,58,237,
 .jp-amt{font-size:clamp(20px,6vw,36px);font-weight:900;color:#fff;font-family:monospace;}
 .jp-close{padding:12px 28px;background:linear-gradient(135deg,var(--purple),var(--gold));color:#040210;border:none;border-radius:24px;font-family:var(--font);font-size:10px;font-weight:700;letter-spacing:2px;cursor:pointer;margin-top:6px;}
 
+.hist-row{display:flex;gap:4px;flex-wrap:wrap;align-items:center;min-height:14px;margin-top:10px;}
+.hist-lbl{font-size:8px;color:#3a2a5a;letter-spacing:1px;flex-shrink:0;margin-right:2px;}
+.hist-dot{width:12px;height:12px;border-radius:50%;}
+.jstats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;}
+.jstat{background:rgba(124,58,237,0.05);border:1px solid rgba(124,58,237,0.1);border-radius:8px;padding:8px;text-align:center;}
+.jstat .sv{font-size:14px;font-weight:900;font-family:monospace;color:var(--purple);}
+.jstat .sl{font-size:8px;color:#3a2a5a;letter-spacing:1px;margin-top:2px;}
 /* CANVAS CONFETTI */
 #confetti{position:fixed;inset:0;pointer-events:none;z-index:250;}
 </style>
@@ -134,6 +141,12 @@ body{background-image:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(124,58,237,
     </div>
   </div>
 
+  <div class="jstats">
+    <div class="jstat"><div class="sv" id="jWins">0</div><div class="sl">WINS</div></div>
+    <div class="jstat"><div class="sv" id="jSpins">0</div><div class="sl">SPINS</div></div>
+    <div class="jstat"><div class="sv" id="jJPs">0</div><div class="sl">JACKPOTS</div></div>
+  </div>
+
   <div class="ctrls">
     <div class="bet-l">BET AMOUNT</div>
     <div class="bet-d" id="betD">$500</div>
@@ -150,12 +163,19 @@ body{background-image:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(124,58,237,
       <div class="adj" onclick="maxBet()">MAX</div>
     </div>
     <button class="btn-spin5" id="spinBtn" onclick="spin()">🏆 SPIN FOR JACKPOT</button>
+    <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
+      <span style="font-size:8px;color:#3a2a5a;letter-spacing:1px;flex-shrink:0;">AUTO</span>
+      <button class="adj" onclick="autoSpin(5)">×5</button>
+      <button class="adj" onclick="autoSpin(10)">×10</button>
+      <button class="adj" onclick="autoSpin(25)">×25</button>
+    </div>
+    <div class="hist-row" id="jHistRow"><span class="hist-lbl">SESSION:</span></div>
   </div>
 </div>
 
 <script>
 const SYMS=['💀','🔫','💣','🌟','💎','🔑','🏆'];
-let bet=500,balance=0,spinning=false;
+let bet=500,balance=0,spinning=false,jWins=0,jSpins=0,jJPs=0,jHistory=[],_jAutoRunning=false;
 const canvas=document.getElementById('confetti');
 const ctx=canvas.getContext('2d');
 let pieces=[];
@@ -235,12 +255,15 @@ async function spin(){
     await delay(250);
     balance=await refreshBal();updateBal();
 
+    jSpins++;document.getElementById('jSpins').textContent=jSpins;
     if(d.is_jackpot){
       shootConf(200);
       document.getElementById('jpAmt').textContent='$'+d.jackpot_won.toLocaleString(undefined,{maximumFractionDigits:0});
       document.getElementById('jpOv').classList.add('show');
       for(let i=0;i<5;i++){document.getElementById('rw5-'+i).classList.add('lit');document.getElementById('wlp'+i).classList.add('lit');}
       loadPot();
+      jWins++;jJPs++;document.getElementById('jWins').textContent=jWins;document.getElementById('jJPs').textContent=jJPs;
+      pushJHist('jackpot');
     }else if(d.win>0){
       document.getElementById('r5main').className='r5-main win';
       document.getElementById('r5main').textContent=d.label;
@@ -250,9 +273,12 @@ async function spin(){
       const counts={};d.reels.forEach(r=>counts[r]=(counts[r]||0)+1);
       const maxMatch=Math.max(...Object.values(counts));
       for(let i=0;i<maxMatch;i++) document.getElementById('wlp'+i).classList.add('lit');
+      jWins++;document.getElementById('jWins').textContent=jWins;
+      pushJHist('win');
     }else{
       document.getElementById('r5main').className='r5-main lose';
       document.getElementById('r5main').textContent='NO MATCH';
+      pushJHist('miss');
     }
     document.getElementById('potAmount').textContent='$'+(Number(d.current_pool||0)).toLocaleString(undefined,{maximumFractionDigits:0});
   }catch(e){
@@ -263,6 +289,8 @@ async function spin(){
 }
 
 function closeJP(){document.getElementById('jpOv').classList.remove('show');}
+function pushJHist(type){jHistory.push(type);if(jHistory.length>20)jHistory.shift();const el=document.getElementById('jHistRow');if(!el)return;el.innerHTML='<span class="hist-lbl">SESSION:</span>';jHistory.forEach(t=>{const d=document.createElement('div');d.className='hist-dot';d.style.background=t==='jackpot'?'#ffd700':t==='win'?'#22c55e':'#2a1a4a';el.appendChild(d);});}
+async function autoSpin(count){if(_jAutoRunning)return;_jAutoRunning=true;let rem=count;while(rem>0&&_jAutoRunning){await spin();rem--;if(rem>0)await delay(400);}_jAutoRunning=false;}
 async function refreshBal(){try{const d=await api('/api/user/me');return d.balance;}catch(e){return balance;}}
 async function api(url,opts={}){const r=await fetch(url,{credentials:'include',headers:{'Content-Type':'application/json'},...opts});if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.detail||'Error');}return r.json();}
 function delay(ms){return new Promise(r=>setTimeout(r,ms));}
