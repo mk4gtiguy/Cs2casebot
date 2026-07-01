@@ -3,6 +3,12 @@
 <head>
     <title>CS2CaseBot Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#ffd700">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="CS2CaseBot">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
     <!-- Auth functions defined early so onclick handlers never throw ReferenceError -->
     <script>
@@ -21,7 +27,6 @@
             min-height: 100vh;
             padding: 20px;
             background-image: radial-gradient(ellipse at top, #1a1a2e 0%, #0a0a0f 70%);
-            touch-action: manipulation;
         }
         .container { max-width: 1200px; margin: 0 auto; }
         .header {
@@ -221,10 +226,10 @@
             margin: 15px 0;
             flex-wrap: wrap;
         }
-        .tab-bar .btn { background: rgba(42, 42, 78, 0.6); color: white; border: 2px solid transparent; }
+        .tab-bar .btn { background: rgba(42, 42, 78, 0.6); color: white; border: 2px solid transparent; backdrop-filter: blur(5px); }
         .tab-bar .btn.active { background: linear-gradient(135deg, #ffd700, #f0a500); color: #0a0a0f; border-color: #ffd700; box-shadow: 0 4px 30px rgba(255, 215, 0, 0.3); }
         .tab-bar .btn:hover { border-color: rgba(255, 215, 0, 0.5); }
-        .tab-content { display: none; }
+        .tab-content { display: none; animation: fadeIn 0.5s ease; }
         .tab-content.active { display: block; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         /* ── Inventory Grid ── */
@@ -447,12 +452,13 @@
             width: 100%;
             height: 100%;
             background: rgba(0, 0, 0, 0.92);
+            backdrop-filter: blur(20px);
             z-index: 9999;
             justify-content: center;
             align-items: center;
-            opacity: 1;
+            animation: fadeInPopup 0.3s ease;
         }
-        .popup-overlay.show { display: flex; opacity: 1; }
+        .popup-overlay.show { display: flex; }
         @keyframes fadeInPopup { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
         .popup-content {
             background: rgba(26, 26, 46, 0.95);
@@ -1425,20 +1431,20 @@
         <div class="card"><h3>⭐ Featured Cases</h3><div class="featured-carousel" id="featuredCarousel"></div></div>
 
         <div class="tab-bar">
-            <button class="btn" data-tab="premium">🎟️ Premium</button>
-            <button class="btn active" data-tab="cases">📦 Cases</button>
-            <button class="btn" data-tab="capsules">🫙 Capsules</button>
-            <button class="btn" data-tab="battles">⚔️ Battles</button>
-            <button class="btn" data-tab="games">🎮 Games</button>
-            <button class="btn" data-tab="quests">📋 Quests</button>
-            <button class="btn" data-tab="inventory">🎒 Inventory</button>
-            <button class="btn" data-tab="trade">🔄 Trade</button>
-            <button class="btn" data-tab="stats">📊 Stats</button>
-            <button class="btn" data-tab="leaderboard">🏆 Leaderboard</button>
-            <button class="btn" data-tab="achievements">🏅 Achievements</button>
-            <button class="btn" data-tab="profile">👤 Profile</button>
-            <button class="btn" data-tab="friends" id="friendsTabBtn">👥 Friends</button>
-            <button class="btn" data-tab="market">🛒 Market</button>
+            <button class="btn" onclick="switchTab('premium')">🎟️ Premium</button>
+            <button class="btn active" onclick="switchTab('cases')">📦 Cases</button>
+            <button class="btn" onclick="switchTab('capsules')">🫙 Capsules</button>
+            <button class="btn" onclick="location.href='/battle-setup'">⚔️ Battles</button>
+            <button class="btn" onclick="location.href='/games'">🎮 Games</button>
+            <button class="btn" onclick="switchTab('quests')">📋 Quests</button>
+            <button class="btn" onclick="switchTab('inventory')">🎒 Inventory</button>
+            <button class="btn" onclick="switchTab('trade')">🔄 Trade</button>
+            <button class="btn" onclick="switchTab('stats')">📊 Stats</button>
+            <button class="btn" onclick="switchTab('leaderboard')">🏆 Leaderboard</button>
+            <button class="btn" onclick="switchTab('achievements')">🏅 Achievements</button>
+            <button class="btn" onclick="switchTab('profile')">👤 Profile</button>
+            <button class="btn" onclick="switchTab('friends')" id="friendsTabBtn">👥 Friends</button>
+            <button class="btn" onclick="location.href='/market'">🛒 Market</button>
         </div>
 
         <!-- TAB: CASES -->
@@ -1818,6 +1824,7 @@
             <label>Spin Speed</label><select id="speedSelect" onchange="saveSettings()"><option value="chill">🐢 Chill (4s)</option><option value="normal">⚡ Normal (3s)</option><option value="fast">🚀 Fast (2s)</option></select>
             <label>Confetti</label><select id="confettiSelect" onchange="saveSettings()"><option value="always">🎉 Always</option><option value="gold">⭐ Gold Only</option><option value="never">🚫 Never</option></select>
             <div class="checkbox-row"><input type="checkbox" id="soundToggle" onchange="saveSettings()"><label for="soundToggle">🔊 Sound Effects</label></div>
+            <div class="checkbox-row"><input type="checkbox" id="installPromptToggle" onchange="toggleInstallPromptSetting(this.checked)"><label for="installPromptToggle">📲 Show "Add to Home Screen" tip</label></div>
             <button class="btn btn-primary" onclick="closeSettings()">Save & Close</button>
         </div>
     </div>
@@ -1830,6 +1837,19 @@
         </div>
     </div>
 
+    <!-- PWA INSTALL BANNER -->
+    <div id="pwaInstallBanner" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:9999;background:#16161f;border-top:2px solid #ffd700;padding:16px 16px 20px;box-shadow:0 -4px 24px rgba(255,215,0,0.12);">
+        <button onclick="dismissPwaBanner()" style="position:absolute;top:10px;right:12px;background:none;border:none;color:#666;font-size:20px;cursor:pointer;line-height:1;">✕</button>
+        <div style="display:flex;align-items:center;gap:14px;max-width:480px;margin:0 auto;">
+            <img src="/static/icons/icon-192.png" style="width:50px;height:50px;border-radius:12px;flex-shrink:0;image-rendering:pixelated;">
+            <div style="flex:1;min-width:0;">
+                <div style="font-family:'Orbitron',sans-serif;font-size:13px;font-weight:700;color:#ffd700;margin-bottom:5px;">Add CS2CaseBot to your home screen</div>
+                <div id="pwaBannerMsg" style="font-size:12px;color:#aaa;line-height:1.6;"></div>
+            </div>
+        </div>
+        <div id="pwaBannerActions" style="margin-top:12px;text-align:center;max-width:480px;margin-left:auto;margin-right:auto;"></div>
+    </div>
+
     <!-- CONFETTI & PARTICLES -->
     <div class="confetti-container" id="confettiContainer"></div>
     <div class="particle-container" id="particleContainer"></div>
@@ -1839,32 +1859,6 @@
     JAVASCRIPT - FULL INTEGRATED VERSION (ALL WORKING)
     ============================================ -->
     <script>
-    // WKWebView (Discord Activity) silently ignores onclick HTML attributes.
-    // Convert all existing and future onclick attributes to JS .onclick properties,
-    // which WKWebView does execute correctly.
-    (function() {
-        function patchEl(el) {
-            if (!el || el.nodeType !== 1 || !el.hasAttribute('onclick')) return;
-            var code = el.getAttribute('onclick');
-            el.removeAttribute('onclick');
-            el.onclick = new Function('event', code);
-        }
-        function patchTree(root) {
-            if (root.querySelectorAll) {
-                root.querySelectorAll('[onclick]').forEach(patchEl);
-            }
-        }
-        patchTree(document);
-        new MutationObserver(function(muts) {
-            muts.forEach(function(m) {
-                m.addedNodes.forEach(function(n) {
-                    patchEl(n);
-                    patchTree(n);
-                });
-            });
-        }).observe(document.body || document.documentElement, { childList: true, subtree: true });
-    })();
-
     const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     // ============================================
     // SECTION 1: CONFIGURATION & CONSTANTS
@@ -1938,6 +1932,7 @@
     let audioCtx = null;
     function getAudioCtx() {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
         return audioCtx;
     }
     function playTone(freq, duration, type = 'sine', volume = 0.15) {
@@ -2138,6 +2133,7 @@
             document.getElementById('speedSelect').value = data.spin_speed || 'normal';
             document.getElementById('confettiSelect').value = data.confetti_mode || 'always';
             document.getElementById('soundToggle').checked = data.sound_enabled !== false;
+            document.getElementById('installPromptToggle').checked = localStorage.getItem('pwa_dismissed') !== '1';
             applyTheme(data.theme || 'casino');
         } catch (e) { console.error('Load settings error:', e); }
     }
@@ -2204,38 +2200,17 @@
     function closeSettings() { document.getElementById('settingsModal').style.display = 'none'; }
 
     function switchTab(tab) {
-        const _btns = document.querySelectorAll('.tab-bar .btn');
-        // Remove active from all tab buttons — use inline styles too (WKWebView paint fix)
-        _btns.forEach(b => {
-            b.classList.remove('active');
-            b.style.background = 'rgba(42,42,78,0.6)';
-            b.style.color = 'white';
-            b.style.borderColor = 'transparent';
-            b.style.boxShadow = '';
-        });
-        // Hide all tab content panes via inline style (WKWebView paint fix)
-        document.querySelectorAll('.tab-content').forEach(t => {
-            t.classList.remove('active');
-            t.style.display = 'none';
-        });
-        let _activated = null;
-        for (let i = 0; i < _btns.length; i++) {
-            if (_btns[i].textContent.trim().toLowerCase().includes(tab.toLowerCase())) {
-                _btns[i].classList.add('active');
-                _btns[i].style.background = 'linear-gradient(135deg,#ffd700,#f0a500)';
-                _btns[i].style.color = '#0a0a0f';
-                _btns[i].style.borderColor = '#ffd700';
-                _btns[i].style.boxShadow = '0 4px 30px rgba(255,215,0,0.3)';
-                _activated = _btns[i].textContent.trim().slice(0, 12);
+        document.querySelectorAll('.tab-bar .btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+        const buttons = document.querySelectorAll('.tab-bar .btn');
+        for (let i = 0; i < buttons.length; i++) {
+            if (buttons[i].textContent.trim().toLowerCase().includes(tab.toLowerCase())) {
+                buttons[i].classList.add('active');
                 break;
             }
         }
         const tabElement = document.getElementById('tab-' + tab);
-        if (tabElement) {
-            tabElement.classList.add('active');
-            tabElement.style.display = 'block';
-        }
-        void document.body.offsetHeight;
+        if (tabElement) tabElement.classList.add('active');
         if (tab === 'cases') { loadFavorites(); loadCases(); }
         if (tab === 'inventory') { loadInventory(); loadLoadout(); }
         if (tab === 'leaderboard') loadLeaderboard();
@@ -2249,18 +2224,6 @@
         if (tab === 'battles') { loadBattleHistory(); loadBattleFeeOptions(); }
         if (tab === 'friends') loadFriendsTab();
     }
-
-    // Delegated listener for tab bar — avoids WKWebView onclick-attribute scope issues
-    document.querySelector('.tab-bar').addEventListener('click', function(e) {
-        const btn = e.target.closest('button[data-tab]');
-        if (!btn) return;
-        const tab = btn.dataset.tab;
-        if (tab === 'market') {
-            showToast('🛒 Market is only available in the full browser version', 'info');
-            return;
-        }
-        switchTab(tab);
-    });
 
     // ============================================
     // SECTION 5: BALANCE, TICKETS, STREAK
@@ -2413,9 +2376,6 @@
         state.popupItems = [];
         const overlay = document.getElementById('popupOverlay');
         overlay.classList.add('show');
-        overlay.style.setProperty('display', 'flex', 'important');
-        overlay.style.setProperty('opacity', '1', 'important');
-        void overlay.offsetHeight;
         document.getElementById('popupBody').innerHTML = `<div class="loading" style="font-size:18px;padding:40px;">Opening case${quantity > 1 ? 'es' : ''}...</div>`;
         openCaseBatch(caseId, quantity).finally(() => { isOpening = false; });
     }
@@ -2867,10 +2827,7 @@
     }
 
     function closePopup() {
-        const _po = document.getElementById('popupOverlay');
-        _po.classList.remove('show');
-        _po.style.setProperty('display', 'none', 'important');
-        _po.style.setProperty('opacity', '0', 'important');
+        document.getElementById('popupOverlay').classList.remove('show');
         document.getElementById('popupBody').innerHTML = '';
         state.popupItems = [];
         state.popupIndex = 0;
@@ -3049,7 +3006,6 @@
         lastCapsuleId = capsuleId;
         const overlay = document.getElementById('popupOverlay');
         overlay.classList.add('show');
-        overlay.style.display = 'flex';
 
         const capsuleInfo = STICKER_CAPSULES.find(c => c.id === capsuleId);
         const capsuleImgSrc = capsuleInfo && capsuleInfo.image
@@ -3570,8 +3526,7 @@ window.setInvTypeFilter = setInvTypeFilter;
                 <div style="display:flex;flex-direction:column;gap:8px;max-height:50vh;overflow-y:auto;-webkit-overflow-scrolling:touch;">${stickerList}</div>
                 <button class="btn btn-secondary" style="margin-top:14px;width:100%;padding:12px;font-size:14px;" onclick="closePopup()">Cancel</button>
             `;
-            const _ov = document.getElementById('popupOverlay');
-            _ov.classList.add('show'); _ov.style.display = 'flex';
+            document.getElementById('popupOverlay').classList.add('show');
         } catch(e) { showToast('❌ Error loading stickers'); }
     }
 
@@ -3961,7 +3916,7 @@ window.setInvTypeFilter = setInvTypeFilter;
                 await loadStats();
                 // Open the reel popup so spinner animations are visible
                 const overlay = document.getElementById('popupOverlay');
-                overlay.classList.add('show'); overlay.style.display = 'flex';
+                overlay.classList.add('show');
                 state.popupItems = [];
                 state.popupCaseId = 'premium_batch';
                 // Show items using bulk reel (each case spins before revealing)
@@ -3997,7 +3952,7 @@ window.setInvTypeFilter = setInvTypeFilter;
                 await loadTicketBalance();
                 await loadStats();
                 const overlay = document.getElementById('popupOverlay');
-                overlay.classList.add('show'); overlay.style.display = 'flex';
+                overlay.classList.add('show');
                 state.popupItems = [data.item];
                 state.popupCaseId = 'ticket_case';
                 showReelForItem(data.item, 0, 1);
@@ -4519,7 +4474,7 @@ async function executeTrade() {
             ? item.image_url
             : `/api/skin-image?name=${encodeURIComponent(cleanName)}&t=${Date.now()}`;
         const overlay = document.getElementById('popupOverlay');
-        overlay.classList.add('show'); overlay.style.display = 'flex';
+        overlay.classList.add('show');
         document.getElementById('popupBody').innerHTML = `
             <div style="color:#4caf50;font-size:18px;margin-bottom:15px;">✅ Trade Complete!</div>
             <div style="display:flex;gap:8px;justify-content:center;margin:20px 0;padding:20px;background:rgba(0,0,0,0.3);border-radius:12px;border:1px solid rgba(255,255,255,0.05);min-height:120px;align-items:center;position:relative;overflow:visible;">
@@ -4559,7 +4514,7 @@ async function executeTrade() {
                 return;
             }
             const overlay = document.getElementById('popupOverlay');
-            overlay.classList.add('show'); overlay.style.display = 'flex';
+            overlay.classList.add('show');
             document.getElementById('popupBody').innerHTML = `
                 <h3 style="color:#ffd700;margin-bottom:15px;">🛒 Buy Tickets</h3>
                 <p style="color:#888;font-size:13px;margin-bottom:20px;">Tickets are used to open premium cases. Bulk discounts available!</p>
@@ -4629,7 +4584,7 @@ async function executeTrade() {
     // ============================================
     function openGamePopup(gameType) {
         const overlay = document.getElementById('popupOverlay');
-        overlay.classList.add('show'); overlay.style.display = 'flex';
+        overlay.classList.add('show');
         const html = {
             'coinflip': `
                 <h3 style="color:#ffd700;">🪙 Coinflip vs Computer</h3>
@@ -5541,6 +5496,15 @@ async function joinBattleQueue() {
     }
 }
 
+// ─── Override switchTab to load battle data ──────────────
+const originalSwitchTab = window.switchTab;
+window.switchTab = function(tab) {
+    originalSwitchTab(tab);
+    if (tab === 'battles') {
+        loadBattleHistory();
+        loadBattleFeeOptions();
+    }
+};
     // ============================================
     // SECTION 34: GOAL DATA
     // ============================================
@@ -5827,87 +5791,7 @@ async function joinBattleQueue() {
     console.log('🔧 FIXED: Discord IDs stored as strings (no truncation)');
     console.log('🔧 FIXED: Trade item IDs stored as strings (no truncation)');
 
-    // Discord Embedded App SDK — runs only when inside a Discord Activity iframe.
-    //
-    // Key ordering constraint:
-    //   Before sdk.ready() → window.fetch is unpatched; relative URLs like /api/...
-    //   go directly to discordsays.com (no proxy) and 404. Use /.proxy/ prefix manually.
-    //   After sdk.ready()  → SDK patches window.fetch to prepend /.proxy/ automatically.
-    //
-    // Auth strategy: Discord's proxy may strip Set-Cookie, so we skip cookies entirely.
-    // We return the session token in the JSON body, store in sessionStorage, and inject
-    // it as X-Activity-Token on every API request. The server reads this header in
-    // get_user_id_from_session() before checking cookies.
-
-    async function initDiscordActivity() {
-        const inActivity = window.location.hostname.endsWith('.discordsays.com') ||
-                           new URLSearchParams(window.location.search).has('frame_id');
-        if (!inActivity) return false;
-
-        function _wrapFetchWithToken(token) {
-            const _base = window.fetch;
-            window.fetch = function(url, opts) {
-                opts = opts ? { ...opts } : {};
-                opts.headers = Object.assign({}, opts.headers || {}, { 'X-Activity-Token': token });
-                return _base.call(this, url, opts);
-            };
-            window._activityToken = token;
-        }
-
-        try {
-            const cfgResp = await fetch('/.proxy/api/discord-activity/config');
-            if (!cfgResp.ok) return false;
-            const { client_id } = await cfgResp.json();
-            if (!client_id) return false;
-
-            const { DiscordSDK } = await import('/static/js/discord-sdk/index.mjs');
-            const sdk = new DiscordSDK(client_id);
-            window._discordSdk = sdk;
-            await Promise.race([
-                sdk.ready(),
-                new Promise((_, rej) => setTimeout(() => rej(new Error('sdk.ready() timed out')), 15000))
-            ]);
-
-            const storedToken = sessionStorage.getItem('activity_token');
-            if (storedToken) {
-                _wrapFetchWithToken(storedToken);
-                return true;
-            }
-
-            const { code } = await sdk.commands.authorize({
-                client_id: client_id,
-                scope: ['identify'],
-                response_type: 'code',
-            });
-
-            const tokenResp = await fetch('/api/discord-activity/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code }),
-            });
-            if (!tokenResp.ok) return false;
-            const data = await tokenResp.json();
-            if (data.success && data.session_token) {
-                sessionStorage.setItem('activity_token', data.session_token);
-                _wrapFetchWithToken(data.session_token);
-                return true;
-            }
-            return false;
-        } catch (e) {
-            console.error('Discord Activity init failed:', e);
-            return false;
-        }
-    }
-
-    (async () => {
-        let inActivity = await initDiscordActivity();
-        let authed = await checkAuth();
-        if (!authed && inActivity) {
-            sessionStorage.removeItem('activity_token');
-            inActivity = await initDiscordActivity();
-            authed = await checkAuth();
-        }
-    })();
+    checkAuth();
 
     // Show post-payment success toast when redirected back from Stripe
     (function() {
@@ -6658,6 +6542,83 @@ async function joinBattleQueue() {
     console.log('⭐ Features: Case Opening, Stickers, Trade-Ups, Quests, Achievements');
     console.log('🎯 Premium Goals: $500 or 1000 users unlocks Premium!');
     console.log('🔧 All bugs fixed! Clean organized code!');
+
+    // ============================================
+    // SECTION 100: PWA INSTALL BANNER
+    // ============================================
+    var _deferredInstallPrompt = null;
+
+    function _isInstalled() {
+        return window.matchMedia('(display-mode: standalone)').matches ||
+               navigator.standalone === true;
+    }
+
+    function showPwaBanner() {
+        if (_isInstalled()) return;
+        if (localStorage.getItem('pwa_dismissed') === '1') return;
+
+        var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
+        var msg = document.getElementById('pwaBannerMsg');
+        var actions = document.getElementById('pwaBannerActions');
+
+        if (isIOS) {
+            msg.innerHTML = 'In Safari tap the <strong style="color:#ffd700">Share &#x2B06;</strong> button, then <strong style="color:#ffd700">"Add to Home Screen"</strong>';
+            actions.innerHTML = '';
+        } else if (_deferredInstallPrompt) {
+            msg.textContent = 'Install the app for a faster, full-screen experience.';
+            actions.innerHTML = '<button onclick="triggerPwaInstall()" style="background:#ffd700;color:#0a0a0f;border:none;padding:9px 28px;border-radius:6px;font-family:Orbitron,sans-serif;font-weight:700;font-size:13px;cursor:pointer;letter-spacing:0.5px;">Install App</button>';
+        } else {
+            return;
+        }
+
+        document.getElementById('pwaInstallBanner').style.display = 'block';
+    }
+
+    function triggerPwaInstall() {
+        if (!_deferredInstallPrompt) return;
+        _deferredInstallPrompt.prompt();
+        _deferredInstallPrompt.userChoice.then(function(r) {
+            if (r.outcome === 'accepted') dismissPwaBanner();
+            _deferredInstallPrompt = null;
+        });
+    }
+
+    function dismissPwaBanner() {
+        document.getElementById('pwaInstallBanner').style.display = 'none';
+        localStorage.setItem('pwa_dismissed', '1');
+        var tog = document.getElementById('installPromptToggle');
+        if (tog) tog.checked = false;
+    }
+
+    function toggleInstallPromptSetting(enabled) {
+        if (enabled) {
+            localStorage.removeItem('pwa_dismissed');
+            showPwaBanner();
+        } else {
+            localStorage.setItem('pwa_dismissed', '1');
+            document.getElementById('pwaInstallBanner').style.display = 'none';
+        }
+    }
+
+    window.addEventListener('beforeinstallprompt', function(e) {
+        e.preventDefault();
+        _deferredInstallPrompt = e;
+        showPwaBanner();
+    });
+
+    window.addEventListener('appinstalled', function() {
+        document.getElementById('pwaInstallBanner').style.display = 'none';
+    });
+
+    window.addEventListener('load', function() {
+        // Show banner on iOS (beforeinstallprompt never fires there)
+        var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) && !window.MSStream;
+        if (isIOS) setTimeout(showPwaBanner, 2500);
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(function() {});
+        }
+    });
     </script>
 </body>
 </html>
